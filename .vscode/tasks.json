@@ -1,0 +1,364 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Setup: Install Dependencies",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "source ${workspaceFolder}/.venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Setup: Config Directory",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "mkdir -p ${workspaceFolder}/config && cd ${workspaceFolder} && rm -f config/custom_components && ln -sf $(pwd)/custom_components config/custom_components"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": false,
+                "reveal": "silent"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Dev: Start Home Assistant",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "source ${workspaceFolder}/.venv/bin/activate && hass --config ${workspaceFolder}/config --debug"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": [],
+            "isBackground": true,
+            "dependsOn": "Setup: Config Directory"
+        },
+        {
+            "label": "Test: Run Tests",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "source ${workspaceFolder}/.venv/bin/activate && python -m pytest tests/ -v"
+            ],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Lint: Python (Ruff)",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "source ${workspaceFolder}/.venv/bin/activate && ruff --config .linter/ruff.toml format . && ruff --config .linter/ruff.toml check . --fix"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Lint: Python (Pylint)",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "source ${workspaceFolder}/.venv/bin/activate && pylint --rcfile=.linter/pylintrc custom_components/"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": {
+                "owner": "pylint",
+                "fileLocation": "relative",
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+):\\s+(\\w+):\\s+(.*)\\s+\\((.*)\\)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "message": 5,
+                    "code": 6
+                }
+            }
+        },
+        {
+            "label": "Lint: Markdown",
+            "type": "shell",
+            "command": "npm",
+            "args": [
+                "run",
+                "lint:markdown:fix"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": {
+                "owner": "markdownlint",
+                "fileLocation": "relative",
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+)\\s+(MD\\d+\\/[^\\s]+)\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "code": 4,
+                    "message": 5
+                }
+            }
+        },
+        {
+            "label": "Lint: YAML",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "source ${workspaceFolder}/.venv/bin/activate && yamllint --config-file .linter/yamllint ."
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": {
+                "owner": "yamllint",
+                "fileLocation": "relative",
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+)\\s+\\[(error|warning)\\]\\s+(.*)\\s+\\((.*)\\)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "message": 5,
+                    "code": 6
+                }
+            }
+        },
+        {
+            "label": "Check: Type (MyPy)",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "source ${workspaceFolder}/.venv/bin/activate && mypy --config-file .linter/mypy.ini custom_components/"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": {
+                "owner": "mypy",
+                "fileLocation": "relative",
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+):\\s+(error|warning|note):\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "message": 5
+                }
+            }
+        },
+        {
+            "label": "Check: Security (Bandit)",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "source ${workspaceFolder}/.venv/bin/activate && bandit -r custom_components/"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Check: Spelling",
+            "type": "shell",
+            "command": "npm",
+            "args": [
+                "run",
+                "spell:check"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": {
+                "owner": "cspell",
+                "fileLocation": "relative",
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+)\\s+-\\s+(.*)\\s+-\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "message": 4,
+                    "code": 5
+                }
+            }
+        },
+        {
+            "label": "Check: Docstring Coverage",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "source ${workspaceFolder}/.venv/bin/activate && interrogate custom_components/"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Check: Docstring Style",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "source ${workspaceFolder}/.venv/bin/activate && pydocstyle custom_components/"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": {
+                "owner": "pydocstyle",
+                "fileLocation": "relative",
+                "pattern": {
+                    "regexp": "^(.*):(\\d+)\\s+in\\s+.*:\\s+(D\\d+):\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "code": 3,
+                    "message": 4
+                }
+            }
+        },
+        {
+            "label": "Check: Dead Code",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "source ${workspaceFolder}/.venv/bin/activate && vulture custom_components/"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Tools: Update Repository References",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "cd ${workspaceFolder} && ./.vscode/dependencies/update_repo_references.sh"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Tools: Pre-commit",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "source ${workspaceFolder}/.venv/bin/activate && pre-commit run --all-files"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "All: Full Quality Check",
+            "type": "shell",
+            "command": "${workspaceFolder}/.vscode/scripts/full_quality_check.sh",
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new",
+                "clear": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "WORKSPACE_FOLDER": "${workspaceFolder}"
+                }
+            },
+            "problemMatcher": []
+        }
+    ]
+}

@@ -1,0 +1,28 @@
+{
+  // markdownlint configuration for Home Assistant Integration Template
+  "default": true,
+
+  // Disable line length rule (often too restrictive for documentation)
+  "MD013": false,
+
+  // Allow inline HTML (useful for badges, styling)
+  "MD033": false,
+
+  // Don't require h1 as first line (README often starts with badges)
+  "MD041": false,
+
+  // Allow bare URLs (useful for reference links)
+  "MD034": false,
+
+  // Configure heading styles
+  "MD003": { "style": "atx" },
+
+  // Configure unordered list style
+  "MD004": { "style": "dash" },
+
+  // Configure ordered list style
+  "MD029": { "style": "ordered" },
+
+  // Allow emphasis markers
+  "MD036": false
+}

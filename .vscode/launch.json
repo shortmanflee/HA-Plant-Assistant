@@ -1,0 +1,66 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Home Assistant (Debug)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/.venv/bin/hass",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "--config",
+                "${workspaceFolder}/config",
+                "--debug",
+                "--verbose"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "justMyCode": true,
+            "subProcess": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/custom_components"
+            }
+        },
+        {
+            "name": "Home Assistant (Safe Mode)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/.venv/bin/hass",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "--config",
+                "${workspaceFolder}/config",
+                "--debug",
+                "--safe-mode"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "justMyCode": true,
+            "subProcess": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/custom_components"
+            }
+        },
+        {
+            "name": "Test Integration",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "${workspaceFolder}/tests/",
+                "-v"
+            ],
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/custom_components"
+            },
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false,
+            "justMyCode": true,
+            "subProcess": true
+        }
+    ]
+}

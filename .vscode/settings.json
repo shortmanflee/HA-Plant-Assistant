@@ -1,0 +1,28 @@
+{
+    "python.defaultInterpreterPath": "./.venv/bin/python",
+    "python.terminal.activateEnvironment": true,
+    "python.testing.pytestEnabled": true,
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "python.linting.enabled": true,
+    "python.linting.ruffEnabled": true,
+    "python.formatting.provider": "black",
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/.pytest_cache": true,
+        "**/htmlcov": true,
+        "**/.coverage": true,
+        "**/coverage.xml": true
+    },
+    "python.analysis.extraPaths": [
+        "./custom_components"
+    ],
+    "git.inputValidation": true,
+    "git.inputValidationLength": 72,
+    "git.inputValidationSubjectLength": 50,
+    "cSpell.import": [
+        "./.linter/cspell.json"
+    ]
+}

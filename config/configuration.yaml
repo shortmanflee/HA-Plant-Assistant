@@ -1,0 +1,17 @@
+# https://www.home-assistant.io/integrations/default_config/
+default_config:
+
+# https://www.home-assistant.io/integrations/homeassistant/
+homeassistant:
+  debug: true
+
+# https://www.home-assistant.io/integrations/logger/
+logger:
+  default: info
+
+# https://www.home-assistant.io/integrations/http/
+http:
+  server_port: 8080
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - ::1

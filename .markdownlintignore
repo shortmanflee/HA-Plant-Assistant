@@ -1,0 +1,4 @@
+node_modules/
+.linter/
+.git/
+.venv/

@@ -1,0 +1,156 @@
+name: Lint
+
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "main"
+
+permissions: {}
+
+jobs:
+  ruff:
+    name: "Ruff (Format & Lint)"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install requirements
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Check formatting
+        run: python3 -m ruff format --config .linter/ruff.toml . --check
+
+      - name: Lint with Ruff
+        run: python3 -m ruff check --config .linter/ruff.toml .
+
+  mypy:
+    name: "MyPy (Type Checking)"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install requirements
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Type check with MyPy
+        run: python3 -m mypy --config-file .linter/mypy.ini custom_components/
+
+  pylint:
+    name: "Pylint (Additional Python Linting)"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install requirements
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Lint with Pylint
+        run: python3 -m pylint --rcfile=.linter/pylintrc custom_components/
+
+  bandit:
+    name: "Bandit (Security Scanning)"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install requirements
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Security scan with Bandit
+        run: python3 -m bandit -r custom_components/
+
+  yamllint:
+    name: "YAML Lint"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install requirements
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Lint YAML files
+        run: python3 -m yamllint --config-file .linter/yamllint .
+
+  markdownlint:
+    name: "Markdown Lint"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "lts/*"
+
+      - name: Install Node.js dependencies
+        run: npm install
+
+      - name: Lint Markdown files
+        run: npm run lint:markdown
+
+  spell-check:
+    name: "Spell Check (CSpell)"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "lts/*"
+
+      - name: Install Node.js dependencies
+        run: npm install
+
+      - name: Spell check
+        run: npm run spell:check
+
+  summary:
+    name: "Lint Summary"
+    runs-on: "ubuntu-latest"
+    needs: [ruff, mypy, pylint, bandit, yamllint, markdownlint, spell-check]
+    if: always()
+    steps:
+      - name: Check all jobs success
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1

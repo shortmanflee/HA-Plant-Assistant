@@ -1,0 +1,36 @@
+[MASTER]
+load-plugins=pylint.extensions.code_style,
+             pylint.extensions.typing,
+             pylint.extensions.docstyle
+
+[MESSAGES CONTROL]
+disable=
+    too-few-public-methods,
+    too-many-arguments,
+    too-many-instance-attributes,
+    too-many-locals,
+    too-many-branches,
+    too-many-statements,
+    duplicate-code,
+    import-error,
+    missing-module-docstring,
+    # Home Assistant specific
+    no-member,
+    unused-argument,
+    broad-exception-caught
+
+[FORMAT]
+max-line-length=88
+good-names=i,j,k,ex,Run,_,id,ip
+
+[DESIGN]
+max-args=10
+max-locals=25
+max-returns=6
+max-branches=20
+max-statements=100
+
+[SIMILARITIES]
+min-similarity-lines=10
+ignore-comments=yes
+ignore-docstrings=yes
