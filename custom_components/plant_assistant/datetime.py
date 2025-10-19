@@ -499,7 +499,10 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
                     len(subentry_datetime_entities),
                     subentry_id,
                 )
-                async_add_entities(subentry_datetime_entities)
+                async_add_entities(
+                    subentry_datetime_entities,
+                    config_subentry_id=subentry_id,  # type: ignore[call-arg]
+                )
 
     else:
         # Process legacy entries or direct configuration if needed
