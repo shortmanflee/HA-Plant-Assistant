@@ -20,7 +20,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_track_state_change
 
 from . import aggregation
-from .const import DOMAIN
+from .const import ATTR_PLANT_DEVICE_IDS, DOMAIN
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -190,18 +190,21 @@ async def async_setup_entry(
             if "device_id" in subentry.data:
                 subentry_entities = []
 
-                # Create location entity for this subentry
                 location_name = subentry.data.get("name", "Plant Location")
                 location_device_id = (
                     subentry.subentry_id
                 )  # Use subentry ID as device identifier
-                location_entity = PlantLocationSensor(
+
+                # Create plant count entity for this location
+                plant_slots = subentry.data.get("plant_slots", {})
+                plant_count_entity = PlantCountLocationSensor(
                     hass=hass,
                     entry_id=subentry.subentry_id,
                     location_name=location_name,
                     location_device_id=location_device_id,
+                    plant_slots=plant_slots,
                 )
-                subentry_entities.append(location_entity)
+                subentry_entities.append(plant_count_entity)
 
                 # Add entities with proper subentry association (like openplantbook_ref)
                 _LOGGER.debug(
@@ -249,8 +252,8 @@ def _metric_to_attr(metric: str) -> str:
     return metric
 
 
-class PlantLocationSensor(SensorEntity):
-    """A sensor that represents a plant location and creates the location device."""
+class PlantCountLocationSensor(SensorEntity):
+    """A sensor that counts the number of plants assigned to slots in a location."""
 
     def __init__(
         self,
@@ -258,18 +261,22 @@ class PlantLocationSensor(SensorEntity):
         entry_id: str,
         location_name: str,
         location_device_id: str,
+        plant_slots: dict[str, Any],
     ) -> None:
-        """Initialize the plant location sensor."""
+        """Initialize the plant count location sensor."""
         self.hass = hass
         self.entry_id = entry_id
         self.location_device_id = location_device_id
         self._location_name = location_name
+        self._plant_slots = plant_slots
 
-        self._attr_name = "Plant Location"
-        self._attr_unique_id = f"{DOMAIN}_{entry_id}_location"
-        self._attr_icon = "mdi:flower"
+        # Entity name includes device name for better entity_id formatting
+        self._attr_name = f"{location_name} Plant Count"
+        self._attr_unique_id = f"{DOMAIN}_{entry_id}_plant_count"
+        self._attr_icon = "mdi:flower-tulip"
+        self._attr_native_unit_of_measurement = "plants"
 
-        # Set up device info - this will create a simple standalone device
+        # Set up device info - associate with the location device
         device_info = DeviceInfo(
             identifiers={(DOMAIN, location_device_id)},
             name=location_name,
@@ -279,21 +286,26 @@ class PlantLocationSensor(SensorEntity):
 
         self._attr_device_info = device_info
 
-    async def async_added_to_hass(self) -> None:
-        """Add entity to Home Assistant."""
-        await super().async_added_to_hass()
-
     @property
-    def native_value(self) -> str:
-        """Return the location name as the sensor value."""
-        return self._location_name
+    def native_value(self) -> int:
+        """Return the count of plants assigned to slots."""
+        count = 0
+        for slot in self._plant_slots.values():
+            if isinstance(slot, dict) and slot.get("plant_device_id"):
+                count += 1
+        return count
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return attributes about the location."""
+        """Return attributes about the plants assigned to slots."""
+        plant_device_ids = [
+            plant_id
+            for slot in self._plant_slots.values()
+            if isinstance(slot, dict) and (plant_id := slot.get("plant_device_id"))
+        ]
         return {
+            ATTR_PLANT_DEVICE_IDS: plant_device_ids,
             "location_device_id": self.location_device_id,
-            "entry_id": self.entry_id,
         }
 
 

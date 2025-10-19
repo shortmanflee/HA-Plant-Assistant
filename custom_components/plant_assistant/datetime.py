@@ -534,9 +534,8 @@ class TemperatureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         self._attr_unique_id = (
             f"{DOMAIN}_{subentry_id}_temperature_low_threshold_ignore_until"
         )
+        self._attr_has_entity_name = False
         self._attr_icon = "mdi:thermometer-alert"
-        self._attr_has_entity_name = True
-
         # Device created by device registry with config_subentry_id
         # Following OpenAI integration pattern
         self._attr_device_info = DeviceInfo(
@@ -678,7 +677,7 @@ class TemperatureHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
             f"{DOMAIN}_{subentry_id}_temperature_high_threshold_ignore_until"
         )
         self._attr_icon = "mdi:thermometer-chevron-up"
-        self._attr_has_entity_name = True
+        self._attr_has_entity_name = False
 
         # Device created by device registry with config_subentry_id
         # Following OpenAI integration pattern
@@ -816,7 +815,7 @@ class HumidityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         # Keep unique ID stable so existing entities are migrated without recreation
         self._attr_unique_id = f"{DOMAIN}_{subentry_id}_humidity_ignore_until"
         self._attr_icon = "mdi:water-percent-alert"
-        self._attr_has_entity_name = True
+        self._attr_has_entity_name = False
 
         # Device created by device registry with config_subentry_id
         # Following OpenAI integration pattern
@@ -953,7 +952,7 @@ class HumidityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
             f"{DOMAIN}_{subentry_id}_humidity_high_threshold_ignore_until"
         )
         self._attr_icon = "mdi:water-alert"
-        self._attr_has_entity_name = True
+        self._attr_has_entity_name = False
 
         # Device created by device registry with config_subentry_id
         # Following OpenAI integration pattern
@@ -1089,7 +1088,7 @@ class SoilMoistureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         # Keep unique ID stable so existing entities are migrated without recreation
         self._attr_unique_id = f"{DOMAIN}_{subentry_id}_soil_moisture_ignore_until"
         self._attr_icon = "mdi:water-percent-alert"
-        self._attr_has_entity_name = True
+        self._attr_has_entity_name = False
 
         # Device created by device registry with config_subentry_id
         # Following OpenAI integration pattern
@@ -1228,7 +1227,7 @@ class SoilMoistureHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
             f"{DOMAIN}_{subentry_id}_soil_moisture_high_threshold_ignore_until"
         )
         self._attr_icon = "mdi:water-alert"
-        self._attr_has_entity_name = True
+        self._attr_has_entity_name = False
 
         # Device created by device registry with config_subentry_id
         # Following OpenAI integration pattern
@@ -1369,7 +1368,7 @@ class SoilConductivityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntit
         )
         self._attr_unique_id = f"{DOMAIN}_{subentry_id}_soil_conductivity_ignore_until"
         self._attr_icon = "mdi:flash-outline"
-        self._attr_has_entity_name = True
+        self._attr_has_entity_name = False
 
         # Device created by device registry with config_subentry_id
         self._attr_device_info = DeviceInfo(
@@ -1507,7 +1506,7 @@ class SoilConductivityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEnti
             f"{DOMAIN}_{subentry_id}_soil_conductivity_high_threshold_ignore_until"
         )
         self._attr_icon = "mdi:flash-alert"
-        self._attr_has_entity_name = True
+        self._attr_has_entity_name = False
 
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, subentry_id)},
@@ -1640,7 +1639,7 @@ class DLIHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         self._attr_name = f"{location_name} DLI High Threshold Ignore Until"
         self._attr_unique_id = f"{DOMAIN}_{subentry_id}_dli_high_threshold_ignore_until"
         self._attr_icon = "mdi:brightness-7"
-        self._attr_has_entity_name = True
+        self._attr_has_entity_name = False
 
         # Device created by device registry with config_subentry_id
         # Following OpenAI integration pattern
@@ -1777,7 +1776,7 @@ class DLILowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         self._attr_name = f"{location_name} DLI Low Threshold Ignore Until"
         self._attr_unique_id = f"{DOMAIN}_{subentry_id}_dli_low_threshold_ignore_until"
         self._attr_icon = "mdi:brightness-4"
-        self._attr_has_entity_name = True
+        self._attr_has_entity_name = False
 
         # Device created by device registry with config_subentry_id
         # Following OpenAI integration pattern
