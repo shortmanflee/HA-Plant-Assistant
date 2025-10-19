@@ -10,6 +10,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.const import Platform
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
@@ -23,6 +24,8 @@ from .const import DOMAIN
 # Entity monitor is now handled per-sensor (like HA-Battery-Notes approach)
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, _config: dict[str, Any]) -> bool:
