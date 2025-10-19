@@ -1,15 +1,16 @@
 {
     "domain": "plant_assistant",
     "name": "Plant Assistant",
-    "version": "0.1.0",
-    "requirements": [],
-    "dependencies": [
-        "openplantbook_ref"
-    ],
-    "documentation": "https://example.invalid",
     "codeowners": [
         "@shortmanflee"
     ],
     "config_flow": true,
-    "iot_class": "local_polling"
+    "dependencies": [
+        "openplantbook_ref"
+    ],
+    "documentation": "https://github.com/shortmanflee/HA-Plant-Assistant",
+    "iot_class": "local_polling",
+    "issue_tracker": "https://github.com/shortmanflee/HA-Plant-Assistant/issues",
+    "requirements": [],
+    "version": "0.0.1"
 }
