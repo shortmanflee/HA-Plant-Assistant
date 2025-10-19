@@ -1,0 +1,16 @@
+{
+    "domain": "plant_assistant",
+    "name": "Plant Assistant",
+    "version": "0.1.0",
+    "requirements": [],
+    "dependencies": [
+        "openplantbook_ref"
+    ],
+    "documentation": "https://example.invalid",
+    "codeowners": [
+        "@shortmanflee"
+    ],
+    "config_flow": true,
+    "iot_class": "local_polling",
+    "homeassistant": "2025.8"
+}

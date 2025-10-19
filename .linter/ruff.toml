@@ -1,6 +1,7 @@
 # The contents of this file is based on https://github.com/home-assistant/core/blob/dev/pyproject.toml
 
 target-version = "py313"
+line-length = 88
 
 [lint]
 select = [
@@ -30,4 +31,12 @@ max-complexity = 25
     "S105",  # Possible hardcoded password - test fixtures use fake values
     "SLF001", # Private member accessed - tests need to access private members
     "TC002", # Move third-party import into TYPE_CHECKING block - tests need runtime imports
+    "ANN",   # Explicit type annotations are optional in tests
+    "D",     # Relax docstring requirements for tests
+    "PLC0415", # Allow local imports in tests
+    "PLR2004", # Allow magic values in tests
+    "T201",  # Allow print statements in tests for debugging context
+    "FBT002", # Allow boolean defaults in helper definitions
 ]
+
+[format]
