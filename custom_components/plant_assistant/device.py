@@ -5,29 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC
 
 from .const import DOMAIN
-
-
-def async_get_or_create_location_device_centralized(
-    hass: Any, entry: Any, location_name: str, location_device_id: str
-) -> Any:
-    """Create or get a location device using centralized approach like ESPHome."""
-    device_registry = dr.async_get(hass)
-
-    # Use synthetic connection ID for consistent referencing
-    connection_id = f"plant_assistant_{location_device_id}"
-
-    # Create device with both identifiers and connections
-    return device_registry.async_get_or_create(
-        config_entry_id=entry.entry_id,
-        connections={(CONNECTION_NETWORK_MAC, connection_id)},
-        identifiers={(DOMAIN, location_device_id)},
-        manufacturer="Plant Assistant",
-        model="Plant Location Device",
-        name=location_name,
-    )
 
 
 def async_get_or_create_zone_device(hass: Any, entry: Any, zone: dict[str, Any]) -> Any:
