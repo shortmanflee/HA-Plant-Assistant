@@ -50,9 +50,6 @@ def async_get_or_create_location_device(
     # Use provided via_device (identifier tuple) or extract from zone_device
     if via_device is None and zone_device and zone_device.identifiers:
         via_device = next(iter(zone_device.identifiers))
-    elif via_device is None and zone_device:
-        # Fallback to device ID if no identifiers (shouldn't happen in normal cases)
-        via_device = zone_device.id
 
     return device_registry.async_get_or_create(
         config_entry_id=entry.entry_id,
