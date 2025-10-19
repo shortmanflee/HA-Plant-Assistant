@@ -100,6 +100,80 @@ def _get_monitoring_device_sensors(
     return device_sensors
 
 
+def _create_location_mirrored_sensors(
+    hass: HomeAssistant,
+    entry_id: str,
+    location_device_id: str,
+    location_name: str,
+    monitoring_device_id: str,
+) -> list[SensorEntity]:
+    """
+    Create mirrored sensors at a plant location for a monitoring device's entities.
+
+    Args:
+        hass: The Home Assistant instance.
+        entry_id: The config entry ID.
+        location_device_id: The device ID of the location.
+        location_name: The name of the location.
+        monitoring_device_id: The device ID of the monitoring device.
+
+    Returns:
+        A list of SensorEntity objects that mirror the monitoring device's sensors.
+
+    """
+    mirrored_sensors: list[SensorEntity] = []
+
+    try:
+        # Get device and entity registries
+        dev_reg = dr.async_get(hass)
+        ent_reg = er.async_get(hass)
+
+        # Get the monitoring device
+        monitoring_device = dev_reg.async_get(monitoring_device_id)
+        if not monitoring_device:
+            _LOGGER.warning(
+                "Monitoring device %s not found for location %s",
+                monitoring_device_id,
+                location_name,
+            )
+            return mirrored_sensors
+
+        # Scan for all sensor entities on the monitoring device
+        for entity_entry in ent_reg.entities.values():
+            if (
+                entity_entry.device_id == monitoring_device.id
+                and entity_entry.domain == "sensor"
+            ):
+                # Create a mirrored sensor for this entity
+                config = {
+                    "entry_id": entry_id,
+                    "source_entity_id": entity_entry.entity_id,
+                    "device_name": location_name,
+                    "entity_name": entity_entry.name or entity_entry.entity_id,
+                }
+
+                mirrored_sensor = MonitoringSensor(
+                    hass=hass,
+                    config=config,
+                    location_device_id=location_device_id,
+                )
+                mirrored_sensors.append(mirrored_sensor)
+                _LOGGER.debug(
+                    "Created mirrored sensor for %s at location %s",
+                    entity_entry.entity_id,
+                    location_name,
+                )
+
+    except (AttributeError, KeyError, ValueError, TypeError) as exc:
+        _LOGGER.warning(
+            "Error creating location mirrored sensors for %s: %s",
+            location_name,
+            exc,
+        )
+
+    return mirrored_sensors
+
+
 @dataclass
 class SimplePlantSensorDescription:
     """Description for a simple plant sensor."""
@@ -157,6 +231,7 @@ async def async_setup_entry(
     to `min_light` for initial implementation).
 
     For subentries with monitoring devices, also create monitoring sensors.
+    For locations with monitoring devices, create mirrored sensors.
     """
     _LOGGER.debug(
         "Setting up sensors for entry: %s (%s)",
@@ -205,6 +280,25 @@ async def async_setup_entry(
                     plant_slots=plant_slots,
                 )
                 subentry_entities.append(plant_count_entity)
+
+                # Create mirrored sensors for monitoring device if present
+                monitoring_device_id = subentry.data.get("monitoring_device_id")
+                if monitoring_device_id:
+                    mirrored_sensors = _create_location_mirrored_sensors(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        monitoring_device_id=monitoring_device_id,
+                    )
+                    subentry_entities.extend(mirrored_sensors)
+                    _LOGGER.debug(
+                        "Added %d mirrored sensors for monitoring device %s"
+                        " at location %s",
+                        len(mirrored_sensors),
+                        monitoring_device_id,
+                        location_name,
+                    )
 
                 # Add entities with proper subentry association (like openplantbook_ref)
                 _LOGGER.debug(
