@@ -536,8 +536,6 @@ class TemperatureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         )
         self._attr_has_entity_name = False
         self._attr_icon = "mdi:thermometer-alert"
-        self._attr_has_entity_name = False
-
         # Device created by device registry with config_subentry_id
         # Following OpenAI integration pattern
         self._attr_device_info = DeviceInfo(
