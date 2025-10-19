@@ -23,7 +23,7 @@ repos:
     hooks:
       - id: mypy
         args: [--config-file, .linter/mypy.ini]
-        additional_dependencies: [types-requests]
+        additional_dependencies: [types-requests, homeassistant, voluptuous]
 
   - repo: https://github.com/PyCQA/bandit
     rev: 1.8.6
@@ -55,3 +55,15 @@ repos:
     hooks:
       - id: markdownlint
         args: [--config, .linter/.markdownlint.jsonc, --fix]
+
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: python -m pytest
+        language: python
+        types: [python]
+        pass_filenames: false
+        always_run: true
+        additional_dependencies:
+          [pytest, pytest-cov, pytest-homeassistant-custom-component]

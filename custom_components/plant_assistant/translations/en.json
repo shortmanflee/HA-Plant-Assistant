@@ -1,0 +1,334 @@
+{
+  "config": {
+    "step": {
+      "device_selection": {
+        "title": "Select Device",
+        "description": "Choose an existing device or continue without one to create a new instance.",
+        "data": {
+          "linked_device_id": "Select Device (optional)"
+        },
+        "data_description": {
+          "linked_device_id": "Select an existing device to use its name for the instance, or leave empty to provide a custom name."
+        }
+      },
+      "manual_name": {
+        "title": "Instance Name",
+        "description": "Provide a name for this Plant Assistant instance. A new device will be created with this name.",
+        "data": {
+          "name": "Instance Name"
+        },
+        "data_description": {
+          "name": "Enter a unique name for this Plant Assistant integration instance"
+        }
+      }
+    },
+    "error": {
+      "name_required": "Name is required",
+      "duplicate_name": "A zone with this name already exists",
+      "device_not_found": "Selected device not found",
+      "device_already_used": "This device is already associated with another Plant Assistant instance"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Plant Assistant Options",
+        "description": "Configure irrigation zones, locations and plant slots. {description}",
+        "data": {
+          "action": "Action"
+        }
+      },
+      "add_zone": {
+        "title": "Add Irrigation Zone",
+        "description": "Create a new irrigation zone",
+        "data": {
+          "name": "Zone Name",
+          "linked_device_id": "Linked Irrigation Device (optional)"
+        },
+        "data_description": {
+          "name": "Enter a name for this irrigation zone",
+          "linked_device_id": "Optional: select an existing irrigation device to link to this zone"
+        }
+      },
+      "select_zone": {
+        "title": "Select Irrigation Zone",
+        "description": "Choose a zone to edit",
+        "data": {
+          "zone_id": "Irrigation Zone"
+        }
+      },
+      "edit_zone": {
+        "title": "Edit Irrigation Zone",
+        "description": "Edit zone: {zone_name}",
+        "data": {
+          "action": "Action"
+        }
+      },
+      "link_device": {
+        "title": "Link Irrigation Device",
+        "description": "Link an irrigation device to zone: {zone_name}",
+        "data": {
+          "linked_device_id": "Irrigation Device"
+        }
+      },
+      "delete_zone": {
+        "title": "Delete Irrigation Zone",
+        "description": "Are you sure you want to delete zone: {zone_name}? This will also delete all plant locations and plants in this zone.",
+        "data": {
+          "confirm": "Yes, delete this zone"
+        }
+      },
+      "manage_locations": {
+        "title": "Manage Plant Locations",
+        "description": "Manage locations for zone: {zone_name}",
+        "data": {
+          "action": "Action"
+        }
+      },
+      "add_location": {
+        "title": "Add Plant Location",
+        "description": "Create a new plant location in zone: {zone_name}",
+        "data": {
+          "name": "Location Name",
+          "monitoring_device_id": "Plant Monitoring Device (optional)",
+          "humidity_entity_id": "Humidity Sensor (optional)"
+        },
+        "data_description": {
+          "name": "Enter a name for this plant location",
+          "monitoring_device_id": "Optional: select a plant monitoring device for this location",
+          "humidity_entity_id": "Optional: select a humidity sensor for this location"
+        }
+      },
+      "select_location": {
+        "title": "Select Plant Location",
+        "description": "Choose a location to edit",
+        "data": {
+          "location_id": "Plant Location"
+        }
+      },
+      "select_location_for_delete": {
+        "title": "Select Plant Location to Delete",
+        "description": "Choose a location to delete",
+        "data": {
+          "location_id": "Plant Location"
+        }
+      },
+      "edit_location": {
+        "title": "Edit Plant Location",
+        "description": "Edit location: {location_name}",
+        "data": {
+          "action": "Action"
+        }
+      },
+      "rename_location": {
+        "title": "Rename Plant Location",
+        "description": "Change the name of location: {location_name}",
+        "data": {
+          "name": "New Location Name"
+        }
+      },
+      "link_monitoring_device": {
+        "title": "Link Monitoring Device",
+        "description": "Link a monitoring device to location: {location_name}",
+        "data": {
+          "monitoring_device_id": "Plant Monitoring Device"
+        }
+      },
+      "link_humidity_entity": {
+        "title": "Link Humidity Sensor",
+        "description": "Link a humidity sensor to location: {location_name}",
+        "data": {
+          "humidity_entity_id": "Humidity Sensor"
+        }
+      },
+      "delete_location": {
+        "title": "Delete Plant Location",
+        "description": "Are you sure you want to delete location: {location_name}? This will also delete all plants in this location.",
+        "data": {
+          "confirm": "Yes, delete this location"
+        }
+      },
+      "manage_slots": {
+        "title": "Manage Plant Slots",
+        "description": "Manage plant slots for location: {location_name} (up to 20 slots)",
+        "data": {
+          "action": "Action"
+        }
+      },
+      "add_slot": {
+        "title": "Manage Plant Slots",
+        "description": "Assign plants to slots 1-10. Each slot represents a position where you can place a plant. Leave a slot empty if you don't want a plant assigned to it.",
+        "data": {
+          "slot_1": "Slot 1",
+          "slot_2": "Slot 2",
+          "slot_3": "Slot 3",
+          "slot_4": "Slot 4",
+          "slot_5": "Slot 5",
+          "slot_6": "Slot 6",
+          "slot_7": "Slot 7",
+          "slot_8": "Slot 8",
+          "slot_9": "Slot 9",
+          "slot_10": "Slot 10"
+        },
+        "data_description": {
+          "slot_1": "Choose a plant device from OpenPlantbook for slot 1",
+          "slot_2": "Choose a plant device from OpenPlantbook for slot 2",
+          "slot_3": "Choose a plant device from OpenPlantbook for slot 3",
+          "slot_4": "Choose a plant device from OpenPlantbook for slot 4",
+          "slot_5": "Choose a plant device from OpenPlantbook for slot 5",
+          "slot_6": "Choose a plant device from OpenPlantbook for slot 6",
+          "slot_7": "Choose a plant device from OpenPlantbook for slot 7",
+          "slot_8": "Choose a plant device from OpenPlantbook for slot 8",
+          "slot_9": "Choose a plant device from OpenPlantbook for slot 9",
+          "slot_10": "Choose a plant device from OpenPlantbook for slot 10"
+        }
+      },
+      "select_slot": {
+        "title": "Select Plant Slot",
+        "description": "Choose a slot to edit",
+        "data": {
+          "slot_id": "Plant Slot"
+        }
+      },
+      "edit_slot": {
+        "title": "Edit Plant Slot",
+        "description": "Edit slot: {slot_name}",
+        "data": {
+          "slot_name": "Slot Name",
+          "plant_device_id": "Plant Device"
+        },
+        "data_description": {
+          "plant_device_id": "Select a plant device from OpenPlantbook Reference or leave empty"
+        }
+      },
+      "delete_slot": {
+        "title": "Delete Plant Slot",
+        "description": "Are you sure you want to delete slot: {slot_name}?",
+        "data": {
+          "confirm": "Yes, delete this slot"
+        }
+      },
+      "reorder_slots": {
+        "title": "Reorder Plant Slots",
+        "description": "Enter comma-separated slot IDs in the desired order for location: {location_name}",
+        "data": {
+          "order": "Slot Order"
+        },
+        "data_description": {
+          "order": "Example: slot-1,slot-3,slot-2 to reorder the slots"
+        }
+      }
+    },
+    "error": {
+      "max_slots": "Maximum of 20 plant slots allowed per location",
+      "no_slots": "No plant slots configured for this location",
+      "invalid_json": "Invalid JSON provided",
+      "no_locations": "No plant locations defined for this zone",
+      "no_zones": "No irrigation zones defined for this integration",
+      "zone_not_found": "The selected irrigation zone was not found",
+      "location_not_found": "The selected plant location was not found",
+      "slot_not_found": "The selected plant slot was not found",
+      "device_not_found": "The selected device was not found",
+      "device_already_used": "This device is already associated with another Plant Assistant instance",
+      "entity_not_found": "The selected entity was not found",
+      "invalid_plant_device": "The selected device is not from OpenPlantbook Reference",
+      "duplicate_name": "A zone/location with this name already exists",
+      "name_required": "Name is required",
+      "invalid_order": "Invalid slot order format. Use comma-separated slot IDs",
+      "slots_not_found": "One or more slots in the order were not found",
+      "zone_has_locations": "Cannot delete zone with existing locations. Delete locations first.",
+      "location_has_slots": "Cannot delete location with existing plant slots. Delete slots first."
+    },
+    "abort": {
+      "not_found": "The requested item was not found",
+      "not_implemented": "This feature is not implemented",
+      "already_configured": "This integration is already configured",
+      "cannot_connect": "Failed to connect to required services",
+      "no_locations_available": "No plant locations are available. Please add a location first before creating plant slots."
+    }
+  },
+  "config_subentries": {
+    "location": {
+      "flow_title": "Add Plant Location",
+      "initiate_flow": {
+        "user": "Add Location"
+      },
+      "entry_type": "Plant Location",
+      "step": {
+        "user": {
+          "title": "Add Plant Location",
+          "description": "Create a new plant location within this zone",
+          "data": {
+            "name": "Location Name",
+            "monitoring_device_id": "Monitoring Device (optional)",
+            "humidity_entity_id": "Humidity Sensor (optional)"
+          },
+          "data_description": {
+            "name": "Enter a name for this plant location",
+            "monitoring_device_id": "Optional: select a monitoring device for this location",
+            "humidity_entity_id": "Optional: select a humidity sensor for this location"
+          }
+        },
+        "reconfigure": {
+          "title": "Manage Plant Slots",
+          "description": "Manage plant slots for {location_name}. Current slots: {slot_count}",
+          "data": {
+            "action": "Action"
+          }
+        },
+        "add_slot": {
+          "title": "Manage Plant Slots",
+          "description": "Assign plants to slots 1-10. Each slot represents a position where you can place a plant. Leave a slot empty if you don't want a plant assigned to it.",
+          "data": {
+            "slot_1": "Slot 1",
+            "slot_2": "Slot 2",
+            "slot_3": "Slot 3",
+            "slot_4": "Slot 4",
+            "slot_5": "Slot 5",
+            "slot_6": "Slot 6",
+            "slot_7": "Slot 7",
+            "slot_8": "Slot 8",
+            "slot_9": "Slot 9",
+            "slot_10": "Slot 10"
+          },
+          "data_description": {
+            "slot_1": "Choose a plant device from OpenPlantbook for slot 1",
+            "slot_2": "Choose a plant device from OpenPlantbook for slot 2",
+            "slot_3": "Choose a plant device from OpenPlantbook for slot 3",
+            "slot_4": "Choose a plant device from OpenPlantbook for slot 4",
+            "slot_5": "Choose a plant device from OpenPlantbook for slot 5",
+            "slot_6": "Choose a plant device from OpenPlantbook for slot 6",
+            "slot_7": "Choose a plant device from OpenPlantbook for slot 7",
+            "slot_8": "Choose a plant device from OpenPlantbook for slot 8",
+            "slot_9": "Choose a plant device from OpenPlantbook for slot 9",
+            "slot_10": "Choose a plant device from OpenPlantbook for slot 10"
+          }
+        },
+        "edit_location": {
+          "title": "Edit Plant Location",
+          "description": "Edit the selected plant location",
+          "data": {
+            "name": "Location Name",
+            "monitoring_device_id": "Monitoring Device (optional)",
+            "humidity_entity_id": "Humidity Sensor (optional)"
+          },
+          "data_description": {
+            "name": "Enter a name for this plant location",
+            "monitoring_device_id": "Optional: select a monitoring device for this location",
+            "humidity_entity_id": "Optional: select a humidity sensor for this location"
+          }
+        }
+      },
+      "error": {
+        "name_required": "Name is required",
+        "device_not_found": "Selected device not found",
+        "entity_not_found": "Selected entity not found"
+      },
+      "abort": {
+        "already_configured": "Location already exists",
+        "reconfigure_successful": "Location updated successfully",
+        "no_slots": "No plant slots configured for this location"
+      }
+    }
+  }
+}
