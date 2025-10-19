@@ -60,8 +60,10 @@ repos:
     hooks:
       - id: pytest
         name: pytest
-        entry: bash -c 'source .venv/bin/activate && python -m pytest'
-        language: system
+        entry: python -m pytest
+        language: python
         types: [python]
         pass_filenames: false
         always_run: true
+        additional_dependencies:
+          [pytest, pytest-cov, pytest-homeassistant-custom-component]
