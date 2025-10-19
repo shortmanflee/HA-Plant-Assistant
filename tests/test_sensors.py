@@ -123,7 +123,7 @@ class TestPlantCountLocationSensor:
         )
 
         # Check sensor name and unit
-        assert sensor.name == "Plant Count"
+        assert sensor.name == "Test Location Plant Count"
         assert sensor.native_unit_of_measurement == "plants"
         assert sensor.icon == "mdi:flower-tulip"
 

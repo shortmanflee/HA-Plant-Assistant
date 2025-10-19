@@ -326,7 +326,8 @@ class PlantCountLocationSensor(SensorEntity):
         self._location_name = location_name
         self._plant_slots = plant_slots
 
-        self._attr_name = "Plant Count"
+        # Entity name includes device name for better entity_id formatting
+        self._attr_name = f"{location_name} Plant Count"
         self._attr_unique_id = f"{DOMAIN}_{entry_id}_plant_count"
         self._attr_icon = "mdi:flower-tulip"
         self._attr_native_unit_of_measurement = "plants"
