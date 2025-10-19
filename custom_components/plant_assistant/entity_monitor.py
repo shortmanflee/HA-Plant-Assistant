@@ -44,7 +44,7 @@ class EntityMonitor:
 
         _LOGGER.debug("Entity monitor setup complete")
 
-    @callback  # type: ignore[misc]
+    @callback
     def _handle_entity_registry_updated(self, event: Event) -> None:
         """Handle entity registry update events."""
         try:

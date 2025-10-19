@@ -52,7 +52,7 @@ def _get_lock(entry_id: str) -> asyncio.Lock:
     return _LOCKS[entry_id]
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg,misc]
+class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Plant Assistant."""
 
     VERSION = 1
@@ -232,7 +232,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         return used_devices
 
     @classmethod
-    @callback  # type: ignore[misc]
+    @callback
     def async_get_supported_subentry_types(
         cls, _config_entry: config_entries.ConfigEntry[dict[str, Any]]
     ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
@@ -242,7 +242,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         }
 
 
-class LocationSubentryFlowHandler(config_entries.ConfigSubentryFlow):  # type: ignore[misc]
+class LocationSubentryFlowHandler(config_entries.ConfigSubentryFlow):
     """Handle subentry flow for adding and modifying plant locations."""
 
     def __init__(self) -> None:

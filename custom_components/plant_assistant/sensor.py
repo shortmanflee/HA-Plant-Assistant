@@ -112,7 +112,7 @@ class SimplePlantSensorDescription:
     unit: str | None = None
 
 
-class PlantCountSensor(SensorEntity):  # type: ignore[misc]
+class PlantCountSensor(SensorEntity):
     """A minimal plant count sensor used for examples and tests."""
 
     _attr_name = "Plant Assistant Plant Count"
@@ -214,7 +214,7 @@ async def async_setup_entry(
                 # Note: config_subentry_id exists in HA 2025.8.3+ but not in type hint
                 async_add_entities(
                     subentry_entities,
-                    config_subentry_id=subentry_id,  # type: ignore[arg-type,unused-ignore]
+                    config_subentry_id=subentry_id,  # type: ignore[call-arg]
                 )
             else:
                 _LOGGER.warning("Subentry %s missing device_id", subentry_id)
@@ -251,7 +251,7 @@ def _metric_to_attr(metric: str) -> str:
     return metric
 
 
-class PlantLocationSensor(SensorEntity):  # type: ignore[misc]
+class PlantLocationSensor(SensorEntity):
     """A sensor that represents a plant location and creates the location device."""
 
     def __init__(
@@ -299,7 +299,7 @@ class PlantLocationSensor(SensorEntity):  # type: ignore[misc]
         }
 
 
-class MonitoringSensor(SensorEntity):  # type: ignore[misc]
+class MonitoringSensor(SensorEntity):
     """A sensor that mirrors data from a monitoring device under a subentry."""
 
     def __init__(
@@ -341,7 +341,7 @@ class MonitoringSensor(SensorEntity):  # type: ignore[misc]
                 exc,
             )
 
-    @callback  # type: ignore[misc]
+    @callback
     def _source_state_changed(
         self, _entity_id: str, _old_state: Any, new_state: Any
     ) -> None:
@@ -388,7 +388,7 @@ class MonitoringSensor(SensorEntity):  # type: ignore[misc]
             self._unsubscribe()
 
 
-class AggregatedSensor(SensorEntity):  # type: ignore[misc]
+class AggregatedSensor(SensorEntity):
     """Aggregated sensor for a location metric (e.g., min_light)."""
 
     def __init__(
@@ -454,7 +454,7 @@ class AggregatedSensor(SensorEntity):  # type: ignore[misc]
         """Return the native value of the sensor."""
         return self._value
 
-    @callback  # type: ignore[misc]
+    @callback
     def _state_changed(self, _entity_id: str, _old_state: Any, _new_state: Any) -> None:
         """Recompute aggregation when a tracked plant entity changes."""
         if getattr(self, "_plant_entity_ids", None):
@@ -632,7 +632,7 @@ def _plants_from_entity_states(
     return out
 
 
-class PlantMoistureSensor(SensorEntity):  # type: ignore[misc]
+class PlantMoistureSensor(SensorEntity):
     """
     A placeholder plant moisture sensor.
 

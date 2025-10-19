@@ -508,7 +508,7 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
         # Add logic here if you need to support non-subentry configurations
 
 
-class TemperatureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  # type: ignore[misc]
+class TemperatureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     """Datetime entity for low temperature threshold ignore until."""
 
     def __init__(
@@ -647,7 +647,7 @@ class TemperatureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  
         return has_monitoring_device and has_plant_slots
 
 
-class TemperatureHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  # type: ignore[misc]
+class TemperatureHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     """Datetime entity for high temperature threshold ignore until."""
 
     def __init__(
@@ -782,7 +782,7 @@ class TemperatureHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity): 
         return has_monitoring_device and has_plant_slots
 
 
-class HumidityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  # type: ignore[misc]
+class HumidityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     """Datetime entity for low humidity threshold ignore until."""
 
     def __init__(
@@ -914,7 +914,7 @@ class HumidityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  # t
         return has_humidity_sensor and has_plant_slots
 
 
-class HumidityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  # type: ignore[misc]
+class HumidityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     """Datetime entity for high humidity threshold ignore until."""
 
     def __init__(
@@ -1047,7 +1047,7 @@ class HumidityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  # 
         return has_humidity_sensor and has_plant_slots
 
 
-class SoilMoistureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  # type: ignore[misc]
+class SoilMoistureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     """Datetime entity for low soil moisture threshold ignore until."""
 
     def __init__(
@@ -1181,7 +1181,7 @@ class SoilMoistureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity): 
         return has_monitoring_device and has_plant_slots
 
 
-class SoilMoistureHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  # type: ignore[misc]
+class SoilMoistureHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     """Datetime entity for high soil moisture threshold ignore until."""
 
     def __init__(
@@ -1316,7 +1316,7 @@ class SoilMoistureHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         return has_monitoring_device and has_plant_slots
 
 
-class SoilConductivityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  # type: ignore[misc]
+class SoilConductivityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     """Datetime entity for low soil conductivity threshold ignore until."""
 
     def __init__(  # noqa: PLR0913
@@ -1448,7 +1448,7 @@ class SoilConductivityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntit
         return has_monitoring_device and has_plant_slots and has_conductivity_sensor
 
 
-class SoilConductivityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  # type: ignore[misc]
+class SoilConductivityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     """Datetime entity for high soil conductivity threshold ignore until."""
 
     def __init__(  # noqa: PLR0913
@@ -1581,7 +1581,7 @@ class SoilConductivityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEnti
         return has_monitoring_device and has_plant_slots and has_conductivity_sensor
 
 
-class DLIHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  # type: ignore[misc]
+class DLIHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     """Datetime entity for DLI high threshold ignore until."""
 
     def __init__(  # noqa: PLR0913
@@ -1714,7 +1714,7 @@ class DLIHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  # type:
         return has_illuminance_sensor and has_plant_slots
 
 
-class DLILowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):  # type: ignore[misc]
+class DLILowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     """Datetime entity for DLI low threshold ignore until."""
 
     def __init__(  # noqa: PLR0913
