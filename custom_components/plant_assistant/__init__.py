@@ -14,12 +14,12 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
+from . import device as device_helper
+from .const import DOMAIN
+
 if TYPE_CHECKING:
     from homeassistant import config_entries
     from homeassistant.core import HomeAssistant
-
-from . import device as device_helper
-from .const import DOMAIN
 
 # Entity monitor is now handled per-sensor (like HA-Battery-Notes approach)
 
@@ -67,8 +67,7 @@ async def async_setup_location_subentry(
             entry.title,
         )
         return False
-    else:
-        return True
+    return True
 
 
 async def async_setup_entry(
@@ -109,8 +108,7 @@ async def async_setup_entry(
     # Entity monitoring is now handled per-sensor (like HA-Battery-Notes approach)
 
     # Handle device association if a device was selected during setup
-    linked_device_id = getattr(entry, "data", {}).get("linked_device_id")
-    if linked_device_id:
+    if linked_device_id := getattr(entry, "data", {}).get("linked_device_id"):
         await device_helper.async_add_to_existing_device(hass, entry, linked_device_id)
 
     # If options include irrigation_zones, handle devices
@@ -133,8 +131,7 @@ async def async_setup_entry(
                 )
 
                 # Handle monitoring device association for existing locations
-                monitoring_device_id = loc.get("monitoring_device_id")
-                if monitoring_device_id:
+                if monitoring_device_id := loc.get("monitoring_device_id"):
                     await device_helper.async_add_to_existing_device(
                         hass, entry, monitoring_device_id
                     )
@@ -258,12 +255,11 @@ def _build_diagnostics_mappings(
 
                 for st in states_all:
                     attrs = getattr(st, "attributes", {}) or {}
-                    if attrs.get("plant_id") is not None or (
-                        mon and attrs.get("device_id") == mon
-                    ):
-                        entity_id = getattr(st, "entity_id", None)
-                        if entity_id:
-                            found.append(entity_id)
+                    if (
+                        attrs.get("plant_id") is not None
+                        or (mon and attrs.get("device_id") == mon)
+                    ) and (entity_id := getattr(st, "entity_id", None)):
+                        found.append(entity_id)
 
             mappings[f"{z.get('id')}/{loc.get('id')}"] = list(dict.fromkeys(found))
 

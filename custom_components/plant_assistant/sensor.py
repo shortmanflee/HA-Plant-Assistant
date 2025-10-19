@@ -19,15 +19,14 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_track_state_change
 
+from . import aggregation
+from .const import DOMAIN
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
-
-from . import aggregation
-from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -73,8 +72,7 @@ def _get_monitoring_device_sensors(
         ent_reg = er.async_get(hass)
 
         # Try to get the device by ID
-        device = dev_reg.async_get(monitoring_device_id)
-        if not device:
+        if not (device := dev_reg.async_get(monitoring_device_id)):
             return device_sensors
 
         # Get all sensor entities for this device
@@ -323,8 +321,7 @@ class MonitoringSensor(SensorEntity):
         self._unsubscribe = None
 
         # Initialize with current state of source entity
-        source_state = hass.states.get(self.source_entity_id)
-        if source_state:
+        if source_state := hass.states.get(self.source_entity_id):
             self._state = source_state.state
             self._attributes = dict(source_state.attributes)
             self._attributes["source_entity"] = self.source_entity_id
@@ -544,11 +541,12 @@ class AggregatedSensor(SensorEntity):
         if not device:
             return plant_entity_ids
 
-        for ent in getattr(ent_reg, "entities", {}).values():
-            if self._is_matching_sensor_entity(ent, device.id):
-                eid = getattr(ent, "entity_id", None)
-                if eid:
-                    plant_entity_ids.append(eid)
+        plant_entity_ids.extend(
+            eid
+            for ent in getattr(ent_reg, "entities", {}).values()
+            if self._is_matching_sensor_entity(ent, device.id)
+            and (eid := getattr(ent, "entity_id", None))
+        )
 
         return plant_entity_ids
 
@@ -561,17 +559,14 @@ class AggregatedSensor(SensorEntity):
 
     def _get_entities_from_state_scan(self, mon_device_id: str | None) -> list[str]:
         """Get plant entities by scanning states."""
-        plant_entity_ids = []
-
         states_all = self._get_all_sensor_states()
 
-        for st in states_all:
-            if self._state_matches_criteria(st, mon_device_id):
-                entity_id = getattr(st, "entity_id", None)
-                if entity_id:
-                    plant_entity_ids.append(entity_id)
-
-        return plant_entity_ids
+        return [
+            entity_id
+            for st in states_all
+            if self._state_matches_criteria(st, mon_device_id)
+            and (entity_id := getattr(st, "entity_id", None))
+        ]
 
     def _get_all_sensor_states(self) -> list[Any]:
         """Get all sensor states from Home Assistant."""
@@ -624,8 +619,7 @@ def _plants_from_entity_states(
     """
     out: list[dict[str, Any]] = []
     for ent in entity_ids:
-        st = hass.states.get(ent)
-        if not st:
+        if not (st := hass.states.get(ent)):
             continue
         attrs = getattr(st, "attributes", {}) or {}
         out.append(dict(attrs))

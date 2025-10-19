@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.datetime import DateTimeEntity
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
@@ -75,8 +76,6 @@ async def _cleanup_orphaned_datetime_entities(  # noqa: PLR0912
 ) -> None:
     """Clean up datetime entities that are no longer configured."""
     try:
-        from homeassistant.helpers import entity_registry as er  # noqa: PLC0415
-
         entity_registry = er.async_get(hass)
         expected_datetime_entities = set()
 
@@ -614,6 +613,10 @@ class TemperatureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
             value.isoformat(),
         )
 
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
@@ -749,6 +752,10 @@ class TemperatureHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
             value.isoformat(),
         )
 
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
@@ -883,6 +890,10 @@ class HumidityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
             value.isoformat(),
         )
 
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
@@ -1016,6 +1027,10 @@ class HumidityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
             value.isoformat(),
         )
 
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
@@ -1147,6 +1162,10 @@ class SoilMoistureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
             self._location_name,
             value.isoformat(),
         )
+
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -1283,6 +1302,10 @@ class SoilMoistureHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
             value.isoformat(),
         )
 
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
@@ -1414,6 +1437,10 @@ class SoilConductivityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntit
             self._location_name,
             value.isoformat(),
         )
+
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -1547,6 +1574,10 @@ class SoilConductivityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEnti
             self._location_name,
             value.isoformat(),
         )
+
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -1683,6 +1714,10 @@ class DLIHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
             value.isoformat(),
         )
 
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
@@ -1815,6 +1850,10 @@ class DLILowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
             self._location_name,
             value.isoformat(),
         )
+
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

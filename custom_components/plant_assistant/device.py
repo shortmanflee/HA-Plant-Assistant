@@ -35,15 +35,14 @@ def async_get_or_create_zone_device(hass: Any, entry: Any, zone: dict[str, Any])
     device_registry = dr.async_get(hass)
 
     # If the zone has a linked device ID, use that existing device
-    linked_device_id = zone.get("linked_device_id")
-    if linked_device_id:
-        existing_device = device_registry.async_get(linked_device_id)
-        if existing_device:
-            # Associate this config entry with the existing device
-            device_registry.async_update_device(
-                linked_device_id, add_config_entry_id=entry.entry_id
-            )
-            return existing_device
+    if (linked_device_id := zone.get("linked_device_id")) and (
+        existing_device := device_registry.async_get(linked_device_id)
+    ):
+        # Associate this config entry with the existing device
+        device_registry.async_update_device(
+            linked_device_id, add_config_entry_id=entry.entry_id
+        )
+        return existing_device
 
     # Otherwise, create a new device
     identifiers = {(DOMAIN, f"{entry.entry_id}_zone_{zone['id']}")}
@@ -97,15 +96,14 @@ def async_get_or_create_monitoring_device(
     device_registry = dr.async_get(hass)
 
     # If the location has a monitoring device ID, use that existing device
-    monitoring_device_id = loc.get("monitoring_device_id")
-    if monitoring_device_id:
-        existing_device = device_registry.async_get(monitoring_device_id)
-        if existing_device:
-            # Associate this config entry with the existing device
-            device_registry.async_update_device(
-                monitoring_device_id, add_config_entry_id=entry.entry_id
-            )
-            return existing_device
+    if (monitoring_device_id := loc.get("monitoring_device_id")) and (
+        existing_device := device_registry.async_get(monitoring_device_id)
+    ):
+        # Associate this config entry with the existing device
+        device_registry.async_update_device(
+            monitoring_device_id, add_config_entry_id=entry.entry_id
+        )
+        return existing_device
 
     # Determine via_device for hierarchy (link to location device)
     via_device = None
@@ -127,9 +125,8 @@ def async_get_or_create_monitoring_device(
 async def async_add_to_existing_device(hass: Any, entry: Any, device_id: str) -> None:
     """Associate this config entry with an existing device."""
     device_registry = dr.async_get(hass)
-    device = device_registry.async_get(device_id)
 
-    if device:
+    if device_registry.async_get(device_id):
         device_registry.async_update_device(
             device_id, add_config_entry_id=entry.entry_id
         )

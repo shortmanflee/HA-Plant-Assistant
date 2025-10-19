@@ -63,6 +63,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._instance_name: str | None = None
         self._selected_device_id: str | None = None
 
+    def is_matching(self, _discovery_info: Any) -> bool:  # pylint: disable=arguments-renamed
+        """Return True if flow matches the discovery info."""
+        return False
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
@@ -85,13 +89,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
             )
 
-        linked_device_id = user_input.get(CONF_LINKED_DEVICE_ID)
-
-        if linked_device_id:
+        if linked_device_id := user_input.get(CONF_LINKED_DEVICE_ID):
             # Device was selected, validate it and use its name
             device_registry = dr.async_get(self.hass)
-            device = device_registry.async_get(linked_device_id)
-            if not device:
+            if not (device := device_registry.async_get(linked_device_id)):
                 return self.async_show_form(
                     step_id=STEP_DEVICE_SELECTION,
                     data_schema=vol.Schema(
@@ -145,8 +146,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
         # Validate the instance name
-        title = user_input.get(CONF_NAME, "").strip()
-        if not title:
+        if not (title := user_input.get(CONF_NAME, "").strip()):
             return self.async_show_form(
                 step_id=STEP_MANUAL_NAME,
                 data_schema=vol.Schema({vol.Required(CONF_NAME): str}),
@@ -378,15 +378,13 @@ class LocationSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         subentry = self._get_reconfigure_subentry()
         errors = {}
 
-        if user_input is not None:
-            errors = self._validate_location_input(user_input)
-            if not errors:
-                new_data, new_title = self._process_location_update(
-                    subentry, user_input
-                )
-                return self.async_update_and_abort(
-                    self._get_entry(), subentry, data_updates=new_data, title=new_title
-                )
+        if user_input is not None and not (
+            errors := self._validate_location_input(user_input)
+        ):
+            new_data, new_title = self._process_location_update(subentry, user_input)
+            return self.async_update_and_abort(
+                self._get_entry(), subentry, data_updates=new_data, title=new_title
+            )
 
         return self._show_location_form(subentry, errors)
 
@@ -573,8 +571,7 @@ class LocationSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         # Validate device if one is selected
         if device_id:
             device_registry = dr.async_get(self.hass)
-            device = device_registry.async_get(device_id)
-            if not device:
+            if not (device := device_registry.async_get(device_id)):
                 _LOGGER.error("  Invalid device %s, clearing to None", device_id)
                 return None
             device_name = device.name_by_user or device.name or device_id[:8]
@@ -619,8 +616,7 @@ class LocationSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         device_registry = dr.async_get(self.hass)
         for i in range(1, 11):
             slot_data = plant_slots.get(f"slot_{i}", {})
-            device_id = slot_data.get("plant_device_id")
-            if device_id:
+            if device_id := slot_data.get("plant_device_id"):
                 device = device_registry.async_get(device_id)
                 device_name = "Unknown Device"
                 if device:
@@ -642,8 +638,7 @@ class LocationSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             )
 
             slot_data = plant_slots.get(slot_key, {})
-            current_assignment = slot_data.get("plant_device_id")
-            if current_assignment:
+            if current_assignment := slot_data.get("plant_device_id"):
                 suggested_values[slot_key] = current_assignment
 
         return schema_dict, suggested_values
