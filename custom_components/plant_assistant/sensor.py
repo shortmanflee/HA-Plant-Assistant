@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -20,7 +20,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_track_state_change
 
 from . import aggregation
-from .const import ATTR_PLANT_DEVICE_IDS, DOMAIN
+from .const import ATTR_PLANT_DEVICE_IDS, DOMAIN, MONITORING_SENSOR_MAPPINGS
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -28,7 +28,76 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+
+class MonitoringSensorMapping(TypedDict, total=False):
+    """Type definition for monitoring sensor mappings."""
+
+    device_class: SensorDeviceClass | str | None
+    suffix: str
+    icon: str
+    name: str
+    unit: str | None
+
+
 _LOGGER = logging.getLogger(__name__)
+
+
+def _detect_sensor_type_from_entity(hass: HomeAssistant, entity_id: str) -> str | None:
+    """
+    Detect the sensor type from a source entity's device_class or entity_id.
+
+    Args:
+        hass: The Home Assistant instance.
+        entity_id: The entity ID to detect the type from.
+
+    Returns:
+        The sensor type key (e.g., 'temperature', 'illuminance') or
+        None if not detected.
+
+    """
+    # Map device_class to sensor type
+    device_class_mapping = {
+        "temperature": "temperature",
+        "illuminance": "illuminance",
+        "moisture": "soil_moisture",
+        "conductivity": "soil_conductivity",
+        "battery": "battery",
+        "signal_strength": "signal_strength",
+    }
+
+    # Map entity_id patterns to sensor type
+    entity_id_patterns = {
+        "temperature": "temperature",
+        "illuminance": "illuminance",
+        "light": "illuminance",
+        "moisture": "soil_moisture",
+        "conductivity": "soil_conductivity",
+        "battery": "battery",
+        "signal": "signal_strength",
+        "rssi": "signal_strength",
+    }
+
+    try:
+        ent_reg = er.async_get(hass)
+        if entity := ent_reg.async_get(entity_id):
+            device_class = entity.device_class
+            if device_class in device_class_mapping:
+                return device_class_mapping[device_class]
+
+        # Fallback to entity_id pattern matching
+        entity_id_lower = entity_id.lower()
+        for pattern, sensor_type in entity_id_patterns.items():
+            if pattern in entity_id_lower:
+                return sensor_type
+
+    except (AttributeError, KeyError, ValueError) as exc:
+        _LOGGER.debug(
+            "Error detecting sensor type for %s: %s",
+            entity_id,
+            exc,
+        )
+
+    return None
 
 
 def _has_plants_in_slots(data: Mapping[str, Any]) -> bool:
@@ -85,10 +154,21 @@ def _get_monitoring_device_sensors(
                     device_sensors["illuminance"] = entity.entity_id
                 elif device_class == "soil_conductivity":
                     device_sensors["soil_conductivity"] = entity.entity_id
+                elif device_class == "battery":
+                    device_sensors["battery"] = entity.entity_id
+                elif device_class == "signal_strength":
+                    device_sensors["signal_strength"] = entity.entity_id
                 elif "illuminance" in entity.entity_id.lower():
                     device_sensors["illuminance"] = entity.entity_id
                 elif "conductivity" in entity.entity_id.lower():
                     device_sensors["soil_conductivity"] = entity.entity_id
+                elif "battery" in entity.entity_id.lower():
+                    device_sensors["battery"] = entity.entity_id
+                elif (
+                    "signal" in entity.entity_id.lower()
+                    or "rssi" in entity.entity_id.lower()
+                ):
+                    device_sensors["signal_strength"] = entity.entity_id
 
     except (AttributeError, KeyError, ValueError, TypeError) as exc:
         _LOGGER.debug(
@@ -144,12 +224,29 @@ def _create_location_mirrored_sensors(
                 entity_entry.device_id == monitoring_device.id
                 and entity_entry.domain == "sensor"
             ):
+                # Detect sensor type to get proper naming
+                sensor_type = _detect_sensor_type_from_entity(
+                    hass, entity_entry.entity_id
+                )
+
+                # Get display name from mappings if available, otherwise use entity name
+                if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
+                    mapping: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[
+                        sensor_type
+                    ]
+                    display_name = mapping.get(
+                        "name", entity_entry.name or entity_entry.entity_id
+                    )
+                else:
+                    display_name = entity_entry.name or entity_entry.entity_id
+
                 # Create a mirrored sensor for this entity
                 config = {
                     "entry_id": entry_id,
                     "source_entity_id": entity_entry.entity_id,
                     "device_name": location_name,
-                    "entity_name": entity_entry.name or entity_entry.entity_id,
+                    "entity_name": display_name,
+                    "sensor_type": sensor_type,
                 }
 
                 mirrored_sensor = MonitoringSensor(
@@ -419,18 +516,57 @@ class MonitoringSensor(SensorEntity):
         self.location_device_id = location_device_id
         device_name = config["device_name"]
         entity_name = config["entity_name"]
+        sensor_type = config.get("sensor_type")
+
+        # Set entity name to include device name for better entity_id formatting
         self._attr_name = f"{device_name} {entity_name}"
-        source_entity_safe = self.source_entity_id.replace(".", "_")
-        self._attr_unique_id = f"{DOMAIN}_{self.entry_id}_monitor_{source_entity_safe}"
+
+        # Generate unique_id using device name and sensor type suffix
+        # Format: plant_assistant_<entry_id>_<device_name>_<sensor_type_suffix>
+        if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
+            mapping: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[sensor_type]
+            suffix = mapping.get("suffix", sensor_type)
+        else:
+            # Fallback to sanitized source entity id
+            source_entity_safe = self.source_entity_id.replace(".", "_")
+            suffix = f"monitor_{source_entity_safe}"
+
+        # Create a safe device name for the unique_id
+        device_name_safe = device_name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{DOMAIN}_{self.entry_id}_{device_name_safe}_{suffix}"
+
         self._state = None
         self._attributes = {}
         self._unsubscribe = None
+
+        # Set device_class, icon, and unit from mappings if available
+        if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
+            mapping_config: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[
+                sensor_type
+            ]
+            device_class_val = mapping_config.get("device_class")
+            if device_class_val:
+                try:
+                    self._attr_device_class = SensorDeviceClass(device_class_val)
+                except ValueError:
+                    self._attr_device_class = None
+            self._attr_icon = mapping_config.get("icon")
+            # Use unit from mapping if available, otherwise get from source
+            unit = mapping_config.get("unit")
+            if unit:
+                self._attr_native_unit_of_measurement = unit
 
         # Initialize with current state of source entity
         if source_state := hass.states.get(self.source_entity_id):
             self._state = source_state.state
             self._attributes = dict(source_state.attributes)
             self._attributes["source_entity"] = self.source_entity_id
+
+            # If no unit was set from mapping, try to get it from source entity
+            if not hasattr(self, "_attr_native_unit_of_measurement"):
+                source_unit = source_state.attributes.get("unit_of_measurement")
+                if source_unit:
+                    self._attr_native_unit_of_measurement = source_unit
 
         # Subscribe to source entity state changes
         try:
@@ -463,6 +599,10 @@ class MonitoringSensor(SensorEntity):
     @property
     def native_value(self) -> Any:
         """Return the state of the sensor."""
+        # Return None for unavailable/unknown states to avoid Home Assistant errors
+        # when device_class expects numeric values
+        if self._state in ("unavailable", "unknown", None):
+            return None
         return self._state
 
     @property
