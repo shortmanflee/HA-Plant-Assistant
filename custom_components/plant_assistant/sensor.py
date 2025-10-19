@@ -190,18 +190,10 @@ async def async_setup_entry(
             if "device_id" in subentry.data:
                 subentry_entities = []
 
-                # Create location entity for this subentry
                 location_name = subentry.data.get("name", "Plant Location")
                 location_device_id = (
                     subentry.subentry_id
                 )  # Use subentry ID as device identifier
-                location_entity = PlantLocationSensor(
-                    hass=hass,
-                    entry_id=subentry.subentry_id,
-                    location_name=location_name,
-                    location_device_id=location_device_id,
-                )
-                subentry_entities.append(location_entity)
 
                 # Create plant count entity for this location
                 plant_slots = subentry.data.get("plant_slots", {})
@@ -258,54 +250,6 @@ def _metric_to_attr(metric: str) -> str:
     if metric.startswith("avg_"):
         return f"minimum_{metric[4:]}"
     return metric
-
-
-class PlantLocationSensor(SensorEntity):
-    """A sensor that represents a plant location and creates the location device."""
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        entry_id: str,
-        location_name: str,
-        location_device_id: str,
-    ) -> None:
-        """Initialize the plant location sensor."""
-        self.hass = hass
-        self.entry_id = entry_id
-        self.location_device_id = location_device_id
-        self._location_name = location_name
-
-        self._attr_name = "Plant Location"
-        self._attr_unique_id = f"{DOMAIN}_{entry_id}_location"
-        self._attr_icon = "mdi:flower"
-
-        # Set up device info - this will create a simple standalone device
-        device_info = DeviceInfo(
-            identifiers={(DOMAIN, location_device_id)},
-            name=location_name,
-            manufacturer="Plant Assistant",
-            model="Plant Location Device",
-        )
-
-        self._attr_device_info = device_info
-
-    async def async_added_to_hass(self) -> None:
-        """Add entity to Home Assistant."""
-        await super().async_added_to_hass()
-
-    @property
-    def native_value(self) -> str:
-        """Return the location name as the sensor value."""
-        return self._location_name
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return attributes about the location."""
-        return {
-            "location_device_id": self.location_device_id,
-            "entry_id": self.entry_id,
-        }
 
 
 class PlantCountLocationSensor(SensorEntity):
