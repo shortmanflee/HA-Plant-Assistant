@@ -118,7 +118,7 @@ async def test_initial_config_flow_validation_errors():
     assert result.get("type") == "form"
     errors = result.get("errors")
     assert errors is not None
-    assert errors.get("name") == "Name cannot be empty"
+    assert errors.get(CONF_NAME) == "name_required"
 
     # Test invalid device
     device_input = {CONF_LINKED_DEVICE_ID: "invalid_device_id"}

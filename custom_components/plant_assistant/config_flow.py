@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -38,18 +37,6 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-# Global locks for options flow to prevent race conditions
-_LOCKS: dict[str, asyncio.Lock] = {}
-
-_LOGGER = logging.getLogger(__name__)
-
-
-def _get_lock(entry_id: str) -> asyncio.Lock:
-    """Get or create a lock for the given entry ID."""
-    if entry_id not in _LOCKS:
-        _LOCKS[entry_id] = asyncio.Lock()
-    return _LOCKS[entry_id]
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -150,7 +137,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id=STEP_MANUAL_NAME,
                 data_schema=vol.Schema({vol.Required(CONF_NAME): str}),
-                errors={"name": "Name cannot be empty"},
+                errors={CONF_NAME: "name_required"},
             )
 
         self._instance_name = title
