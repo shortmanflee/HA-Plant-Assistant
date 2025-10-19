@@ -495,13 +495,10 @@ class LocationSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         self, subentry: Any, user_input: dict[str, Any]
     ) -> dict[str, Any]:
         """Process user input for slot management."""
-        # DEBUG: Log what we received from Home Assistant
-        _LOGGER.error("=== SLOT MANAGEMENT DEBUG ===")
-        _LOGGER.error("Raw user_input received: %s", user_input)
-
         # Get current slots for comparison
         current_slots = subentry.data.get("plant_slots", {})
-        _LOGGER.error("Current slots before processing: %s", current_slots)
+        _LOGGER.debug("Raw user_input received: %s", user_input)
+        _LOGGER.debug("Current slots before processing: %s", current_slots)
 
         # Update subentry data with all slot assignments
         new_data = dict(subentry.data)
@@ -518,8 +515,7 @@ class LocationSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 i, slot_key, user_input, current_slots, new_data["plant_slots"]
             )
 
-        _LOGGER.error("Final new_data['plant_slots']: %s", new_data["plant_slots"])
-        _LOGGER.error("=== END SLOT MANAGEMENT DEBUG ===")
+        _LOGGER.debug("Final new_data['plant_slots']: %s", new_data["plant_slots"])
         return new_data
 
     def _process_individual_slot(
@@ -535,10 +531,10 @@ class LocationSubentryFlowHandler(config_entries.ConfigSubentryFlow):
 
         if slot_key not in user_input:
             # User didn't submit this slot = they want to clear it
-            _LOGGER.error("Clearing %s: not in user input (user cleared it)", slot_key)
+            _LOGGER.debug("Clearing %s: not in user input (user cleared it)", slot_key)
             new_slots[slot_key] = {"name": f"Slot {slot_num}", "plant_device_id": None}
             if current_device:
-                _LOGGER.error("  CHANGE: %s -> None (CLEARED)", current_device)
+                _LOGGER.debug("  CHANGE: %s -> None (CLEARED)", current_device)
         else:
             # User submitted this slot = process their choice
             plant_device_id = self._validate_slot_device(user_input.get(slot_key))
@@ -552,17 +548,17 @@ class LocationSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         """Validate and normalize a slot device ID."""
         # Normalize empty strings to None
         if device_id == "":
-            _LOGGER.error("  Normalized empty string to None")
+            _LOGGER.debug("Normalized empty string to None")
             return None
 
         # Validate device if one is selected
         if device_id:
             device_registry = dr.async_get(self.hass)
             if not (device := device_registry.async_get(device_id)):
-                _LOGGER.error("  Invalid device %s, clearing to None", device_id)
+                _LOGGER.debug("Invalid device %s, clearing to None", device_id)
                 return None
             device_name = device.name_by_user or device.name or device_id[:8]
-            _LOGGER.error("  Valid device: %s", device_name)
+            _LOGGER.debug("Valid device: %s", device_name)
 
         return device_id
 
@@ -570,11 +566,11 @@ class LocationSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         self, _slot_key: str, current_device: str | None, new_device: str | None
     ) -> None:
         """Log slot changes for debugging."""
-        _LOGGER.error("  Final result: %s", new_device)
+        _LOGGER.debug("Final result: %s", new_device)
         if current_device != new_device:
-            _LOGGER.error("  CHANGE: %s -> %s", current_device, new_device)
+            _LOGGER.debug("CHANGE: %s -> %s", current_device, new_device)
         else:
-            _LOGGER.error("  NO CHANGE: %s", new_device)
+            _LOGGER.debug("NO CHANGE: %s", new_device)
 
     def _show_slot_form(
         self, subentry: Any, errors: dict[str, str]
