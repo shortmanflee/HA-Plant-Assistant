@@ -1209,6 +1209,10 @@ class AggregatedLocationSensor(SensorEntity):
             self._attr_native_unit_of_measurement = unit
         if icon:
             self._attr_icon = icon
+        # Suggest no decimal places for aggregated metrics (follow HA best practice
+        # as used by the linked humidity sensor). Consumers can still override
+        # the display precision in Home Assistant if desired.
+        self._attr_suggested_display_precision = 0
 
         # Set device info to associate with location device
         device_info = DeviceInfo(
@@ -1493,6 +1497,11 @@ class AggregatedSensor(SensorEntity):
         self._attr_unique_id = (
             f"{DOMAIN}_{entry_id}_zone_{zone_id}_loc_{loc_id}_{metric}"
         )
+        # Suggest no decimal places for aggregated metrics by default.
+        # This follows the same pattern used for linked humidity sensors so
+        # that aggregated numeric values are displayed as integers unless
+        # the user overrides the precision in Home Assistant.
+        self._attr_suggested_display_precision = 0
         self._unsubscribe = None
         self._plant_entity_ids: list[str] | None = None
 
