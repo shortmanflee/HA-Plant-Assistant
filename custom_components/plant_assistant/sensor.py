@@ -20,7 +20,12 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_track_state_change
 
 from . import aggregation
-from .const import ATTR_PLANT_DEVICE_IDS, DOMAIN, MONITORING_SENSOR_MAPPINGS
+from .const import (
+    AGGREGATED_SENSOR_MAPPINGS,
+    ATTR_PLANT_DEVICE_IDS,
+    DOMAIN,
+    MONITORING_SENSOR_MAPPINGS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -202,21 +207,30 @@ def _get_monitoring_device_sensors(
     return device_sensors
 
 
-def _expected_entities_for_subentry(
+def _expected_entities_for_subentry(  # noqa: PLR0912
     hass: HomeAssistant, subentry: Any
-) -> tuple[set[str], set[str]]:
+) -> tuple[set[str], set[str], set[str]]:
     """
-    Return expected monitoring and humidity unique_ids for a subentry.
+    Return expected monitoring, humidity, and aggregated unique_ids for a subentry.
 
     This encapsulates the logic used by the cleanup routine so the main
     cleanup function stays small and within complexity limits.
+
+    Returns:
+        Tuple of (expected_monitoring, expected_humidity, expected_aggregated)
+
     """
     expected_monitoring: set[str] = set()
     expected_humidity: set[str] = set()
+    expected_aggregated: set[str] = set()
 
     if "device_id" not in getattr(subentry, "data", {}):
-        return expected_monitoring, expected_humidity
+        return expected_monitoring, expected_humidity, expected_aggregated
 
+    location_name = subentry.data.get("name", "Plant Location")
+    location_name_safe = location_name.lower().replace(" ", "_")
+
+    # Handle monitoring sensors
     monitoring_device_id = subentry.data.get("monitoring_device_id")
     if monitoring_device_id:
         try:
@@ -225,8 +239,7 @@ def _expected_entities_for_subentry(
                 detected_type = _detect_sensor_type_from_entity(hass, source_entity_id)
                 sensor_type = detected_type if detected_type else mapped_type
 
-                location_name = subentry.data.get("name", "Plant Location")
-                device_name_safe = location_name.lower().replace(" ", "_")
+                device_name_safe = location_name_safe
 
                 if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
                     mapping = MONITORING_SENSOR_MAPPINGS[sensor_type]
@@ -249,16 +262,57 @@ def _expected_entities_for_subentry(
                 discovery_error,
             )
 
+    # Handle humidity linked sensors
     humidity_entity_id = subentry.data.get("humidity_entity_id")
     if humidity_entity_id:
-        location_name = subentry.data.get("name", "Plant Location")
-        location_name_safe = location_name.lower().replace(" ", "_")
         humidity_unique_id = (
             f"{DOMAIN}_{subentry.subentry_id}_{location_name_safe}_humidity_linked"
         )
         expected_humidity.add(humidity_unique_id)
 
-    return expected_monitoring, expected_humidity
+    # Handle aggregated location sensors
+    # These are created when plants are in slots and either monitoring
+    # device or humidity entity exists
+    plant_slots = subentry.data.get("plant_slots", {})
+    has_plants = any(
+        isinstance(slot, dict) and slot.get("plant_device_id")
+        for slot in plant_slots.values()
+    )
+
+    if has_plants:
+        # Determine which aggregated metrics to expect
+        metrics_to_expect = []
+
+        if monitoring_device_id:
+            # Environmental metrics that require monitoring device
+            metrics_to_expect.extend(
+                [
+                    "min_temperature",
+                    "max_temperature",
+                    "min_illuminance",
+                    "max_illuminance",
+                    "min_soil_moisture",
+                    "max_soil_moisture",
+                    "min_soil_conductivity",
+                    "max_soil_conductivity",
+                ]
+            )
+
+        if humidity_entity_id:
+            # Humidity metrics that require humidity entity
+            metrics_to_expect.extend(["min_humidity", "max_humidity"])
+
+        # Build unique_ids for all expected aggregated sensors
+        for metric_key in metrics_to_expect:
+            if metric_key in AGGREGATED_SENSOR_MAPPINGS:
+                metric_config: dict[str, Any] = AGGREGATED_SENSOR_MAPPINGS[metric_key]
+                suffix = metric_config.get("suffix", metric_key)
+                aggregated_unique_id = (
+                    f"{DOMAIN}_{subentry.subentry_id}_{location_name_safe}_{suffix}"
+                )
+                expected_aggregated.add(aggregated_unique_id)
+
+    return expected_monitoring, expected_humidity, expected_aggregated
 
 
 def _create_location_mirrored_sensors(
@@ -387,7 +441,32 @@ class PlantCountSensor(SensorEntity):
         self._state = 0
 
 
-async def _cleanup_orphaned_monitoring_sensors(
+def _is_aggregated_sensor(unique_id: str) -> bool:
+    """
+    Check if a sensor unique_id belongs to an aggregated location sensor.
+
+    Aggregated sensors have suffixes from AGGREGATED_SENSOR_MAPPINGS.
+
+    Args:
+        unique_id: The unique_id to check.
+
+    Returns:
+        True if this is an aggregated sensor, False otherwise.
+
+    """
+    # Extract all suffixes from aggregated sensor mappings
+    aggregated_suffixes = set()
+    for metric_config in AGGREGATED_SENSOR_MAPPINGS.values():
+        metric_config_typed: dict[str, Any] = metric_config
+        suffix = metric_config_typed.get("suffix", "")
+        if suffix:
+            aggregated_suffixes.add(f"_{suffix}")
+
+    # Check if unique_id contains any aggregated sensor suffix
+    return any(suffix in unique_id for suffix in aggregated_suffixes)
+
+
+async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
     hass: HomeAssistant, entry: ConfigEntry[Any]
 ) -> None:
     """
@@ -403,15 +482,18 @@ async def _cleanup_orphaned_monitoring_sensors(
         entity_registry = er.async_get(hass)
         expected_monitoring_entities = set()
         expected_humidity_entities = set()
+        expected_aggregated_entities = set()
 
-        # Collect expected monitoring and humidity unique_ids from subentries
+        # Collect expected monitoring, humidity, and aggregated unique_ids
+        # from subentries
         if entry.subentries:
             for subentry in entry.subentries.values():
-                monitoring_set, humidity_set = _expected_entities_for_subentry(
-                    hass, subentry
+                monitoring_set, humidity_set, aggregated_set = (
+                    _expected_entities_for_subentry(hass, subentry)
                 )
                 expected_monitoring_entities.update(monitoring_set)
                 expected_humidity_entities.update(humidity_set)
+                expected_aggregated_entities.update(aggregated_set)
 
         # Find and remove orphaned entities
         entities_to_remove = []
@@ -425,6 +507,14 @@ async def _cleanup_orphaned_monitoring_sensors(
                 continue
 
             unique_id = entity_entry.unique_id
+
+            # Check if this is an orphaned aggregated sensor
+            # Remove if not in expected set but is identified as aggregated
+            if unique_id not in expected_aggregated_entities and _is_aggregated_sensor(
+                unique_id
+            ):
+                entities_to_remove.append(entity_id)
+                continue
 
             # Derive monitoring sensor suffixes from MONITORING_SENSOR_MAPPINGS
             monitoring_suffixes: list[str] = []
@@ -478,6 +568,100 @@ async def async_setup_platform(
 ) -> None:
     """Set up the sensor platform (legacy)."""
     async_add_entities([PlantCountSensor()])
+
+
+def _create_aggregated_location_sensors(  # noqa: PLR0913
+    hass: HomeAssistant,
+    entry_id: str,
+    location_device_id: str,
+    location_name: str,
+    monitoring_device_id: str | None = None,
+    humidity_entity_id: str | None = None,
+    plant_slots: dict[str, Any] | None = None,
+) -> list[SensorEntity]:
+    """
+    Create aggregated location sensors for a plant location.
+
+    Creates sensors that aggregate plant metrics:
+    - Temperature (min/max)
+    - Illuminance (min/max)
+    - Soil Moisture (min/max)
+    - Soil Conductivity (min/max)
+    - Humidity (min/max) - if humidity entity is linked
+
+    Args:
+        hass: The Home Assistant instance.
+        entry_id: The subentry ID.
+        location_device_id: The device ID of the location.
+        location_name: The name of the location.
+        monitoring_device_id: The monitoring device ID (used to determine which
+                             sensors to create).
+        humidity_entity_id: The humidity entity ID (used to determine if humidity
+                           sensors should be created).
+        plant_slots: The plant slots dict containing assigned plant device IDs.
+
+    Returns:
+        A list of AggregatedLocationSensor objects.
+
+    """
+    sensors: list[SensorEntity] = []
+
+    # Determine which metrics to create based on configuration
+    # Monitor sensors require a monitoring device
+    if monitoring_device_id:
+        monitor_metrics = [
+            "min_temperature",
+            "max_temperature",
+            "min_illuminance",
+            "max_illuminance",
+            "min_soil_moisture",
+            "max_soil_moisture",
+            "min_soil_conductivity",
+            "max_soil_conductivity",
+        ]
+    else:
+        monitor_metrics = []
+
+    # Humidity sensors require a humidity entity
+    humidity_metrics = ["min_humidity", "max_humidity"] if humidity_entity_id else []
+
+    all_metrics = monitor_metrics + humidity_metrics
+
+    # Create sensors for each metric that is configured
+    for metric_key in all_metrics:
+        if metric_key not in AGGREGATED_SENSOR_MAPPINGS:
+            _LOGGER.warning(
+                "Aggregated sensor mapping not found for metric: %s", metric_key
+            )
+            continue
+
+        metric_config = AGGREGATED_SENSOR_MAPPINGS[metric_key]
+
+        try:
+            sensor = AggregatedLocationSensor(
+                hass=hass,
+                entry_id=entry_id,
+                location_device_id=location_device_id,
+                location_name=location_name,
+                metric_key=metric_key,
+                metric_config=metric_config,
+                plant_slots=plant_slots or {},
+            )
+            sensors.append(sensor)
+            _LOGGER.debug(
+                "Created aggregated location sensor: %s for metric %s",
+                sensor.name,
+                metric_key,
+            )
+        except Exception as exc:  # noqa: BLE001 - Defensive
+            _LOGGER.warning(
+                "Failed to create aggregated sensor for metric %s at location %s: %s",
+                metric_key,
+                location_name,
+                exc,
+            )
+
+    return sensors
 
 
 async def async_setup_entry(
@@ -579,6 +763,24 @@ async def async_setup_entry(
                     _LOGGER.debug(
                         "Added humidity linked sensor for entity %s at location %s",
                         humidity_entity_id,
+                        location_name,
+                    )
+
+                # Create aggregated location sensors if plant slots are configured
+                if _has_plants_in_slots(subentry.data):
+                    aggregated_sensors = _create_aggregated_location_sensors(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        monitoring_device_id=monitoring_device_id,
+                        humidity_entity_id=humidity_entity_id,
+                        plant_slots=plant_slots,
+                    )
+                    subentry_entities.extend(aggregated_sensors)
+                    _LOGGER.debug(
+                        "Added %d aggregated location sensors for location %s",
+                        len(aggregated_sensors),
                         location_name,
                     )
 
@@ -936,6 +1138,348 @@ class HumidityLinkedSensor(SensorEntity):
             self._unsubscribe()
 
 
+class AggregatedLocationSensor(SensorEntity):
+    """
+    Aggregated sensor for plant location metrics.
+
+    This sensor aggregates plant metrics (min/max requirements) for plants
+    assigned to slots in a location. It uses:
+    - max_of_mins: Maximum of all minimum values (most restrictive minimum)
+    - min_of_maxs: Minimum of all maximum values (most restrictive maximum)
+    """
+
+    def __init__(  # noqa: PLR0913
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        metric_key: str,
+        metric_config: dict[str, Any],
+        plant_slots: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Initialize the aggregated location sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The subentry ID.
+            location_device_id: The device ID of the location.
+            location_name: The name of the location.
+            metric_key: The metric key (e.g., 'min_temperature').
+            metric_config: Configuration dict with aggregation settings.
+            plant_slots: The plant slots dict containing assigned plant device IDs.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self.location_name = location_name
+        self.metric_key = metric_key
+        self.metric_config = metric_config
+        self.plant_slots = plant_slots or {}
+
+        self._value: Any = None
+        self._unsubscribe = None
+        self._plant_entity_ids: list[str] | None = None
+
+        # Extract configuration
+        display_name = metric_config.get("name", metric_key)
+        suffix = metric_config.get("suffix", metric_key)
+        device_class_str = metric_config.get("device_class")
+        unit = metric_config.get("unit")
+        icon = metric_config.get("icon")
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} {display_name}"
+
+        # Generate unique_id
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{DOMAIN}_{entry_id}_{location_name_safe}_{suffix}"
+
+        # Set device class if provided
+        if device_class_str:
+            try:
+                self._attr_device_class = SensorDeviceClass(device_class_str)
+            except ValueError:
+                self._attr_device_class = None
+
+        # Set unit and icon
+        if unit:
+            self._attr_native_unit_of_measurement = unit
+        if icon:
+            self._attr_icon = icon
+        # Suggest no decimal places for aggregated metrics (follow HA best practice
+        # as used by the linked humidity sensor). Consumers can still override
+        # the display precision in Home Assistant if desired.
+        self._attr_suggested_display_precision = 0
+
+        # Set device info to associate with location device
+        device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+        self._attr_device_info = device_info
+
+    def _get_plants_from_slots(self) -> list[dict[str, Any]]:
+        """Get plant attribute dictionaries from slot assignments."""
+        plants: list[dict[str, Any]] = []
+
+        try:
+            # Build a set of plant device IDs that are assigned to this location's slots
+            assigned_plant_device_ids: set[str] = set()
+            for slot in self.plant_slots.values():
+                if isinstance(slot, dict) and (plant_id := slot.get("plant_device_id")):
+                    assigned_plant_device_ids.add(plant_id)
+
+            if not assigned_plant_device_ids:
+                _LOGGER.debug(
+                    "No plant device IDs assigned to slots at location %s",
+                    self.location_name,
+                )
+                return plants
+
+            # Get plant device IDs from the location's plant slots
+            # This requires accessing the subentry data to get plant_slots
+            dev_reg = dr.async_get(self.hass)
+            ent_reg = er.async_get(self.hass)
+
+            # Get the location device - this gives us access to associated entities
+            location_device = dev_reg.async_get_device(
+                {("plant_assistant", self.location_device_id)}
+            )
+
+            if not location_device:
+                _LOGGER.debug("Location device %s not found", self.location_device_id)
+                return plants
+
+            _LOGGER.debug(
+                "Scanning for plant entities from openplantbook_ref integration "
+                "for location %s with assigned plant IDs: %s",
+                self.location_name,
+                assigned_plant_device_ids,
+            )
+
+            # Scan all plant sensors from openplantbook_ref, but only include those
+            # assigned to this location's slots
+            for entity in ent_reg.entities.values():
+                if entity.domain != "sensor" or entity.platform != "openplantbook_ref":
+                    continue
+
+                # Get the device associated with this entity
+                entity_device_id = entity.device_id
+                if not entity_device_id:
+                    continue
+
+                # Check if this plant entity is in our assigned list
+                if entity_device_id not in assigned_plant_device_ids:
+                    _LOGGER.debug(
+                        "Skipping plant entity %s - device %s not assigned to "
+                        "location %s",
+                        entity.entity_id,
+                        entity_device_id,
+                        self.location_name,
+                    )
+                    continue
+
+                if state := self.hass.states.get(entity.entity_id):
+                    attrs: dict[str, Any] = state.attributes or {}
+
+                    # Collect min/max attributes from the plant sensor
+                    plant_dict = {
+                        "minimum_light": attrs.get("minimum_light"),
+                        "maximum_light": attrs.get("maximum_light"),
+                        "minimum_temperature": attrs.get("minimum_temperature"),
+                        "maximum_temperature": attrs.get("maximum_temperature"),
+                        "minimum_humidity": attrs.get("minimum_humidity"),
+                        "maximum_humidity": attrs.get("maximum_humidity"),
+                        "minimum_moisture": attrs.get("minimum_moisture"),
+                        "maximum_moisture": attrs.get("maximum_moisture"),
+                        "minimum_soil_ec": attrs.get("minimum_soil_ec"),
+                        "maximum_soil_ec": attrs.get("maximum_soil_ec"),
+                    }
+
+                    # Only add if it has at least one valid value
+                    if any(plant_dict.values()):
+                        plants.append(plant_dict)
+                        _LOGGER.debug(
+                            "Found assigned plant sensor: %s with attributes: %s",
+                            entity.entity_id,
+                            {k: v for k, v in plant_dict.items() if v is not None},
+                        )
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error getting plants from slots: %s", exc)
+
+        _LOGGER.debug(
+            "Collected %d plants for aggregation at location %s",
+            len(plants),
+            self.location_name,
+        )
+        return plants
+
+    def _compute_value(self) -> Any:
+        """Compute the aggregated value based on configuration."""
+        plants = self._get_plants_from_slots()
+
+        if not plants:
+            _LOGGER.debug(
+                "No plants found for aggregation at location %s", self.location_name
+            )
+            return None
+
+        aggregation_type = self.metric_config.get("aggregation_type")
+        plant_attr_min = self.metric_config.get("plant_attr_min")
+        plant_attr_max = self.metric_config.get("plant_attr_max")
+
+        result = None
+        if aggregation_type == "max_of_mins" and plant_attr_min:
+            result = aggregation.max_of_mins(plants, plant_attr_min)
+            _LOGGER.debug(
+                "Computed max_of_mins for %s using key '%s': %s",
+                self.metric_key,
+                plant_attr_min,
+                result,
+            )
+        elif aggregation_type == "min_of_maximums" and plant_attr_max:
+            result = aggregation.min_of_maxs(plants, plant_attr_max)
+            _LOGGER.debug(
+                "Computed min_of_maxs for %s using key '%s': %s",
+                self.metric_key,
+                plant_attr_max,
+                result,
+            )
+        else:
+            _LOGGER.debug(
+                "Unknown aggregation type %s or missing key for metric %s",
+                aggregation_type,
+                self.metric_key,
+            )
+
+        return result
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        return self._value
+
+    @callback
+    def _on_plant_entity_change(
+        self, _entity_id: str, _old_state: Any, _new_state: Any
+    ) -> None:
+        """Handle plant entity state changes."""
+        self._value = self._compute_value()
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass and subscribe to plant sensors."""
+        try:
+            _LOGGER.debug("Setting up aggregated location sensor: %s", self._attr_name)
+
+            # Get plant entity IDs from slots
+            plant_entity_ids = await self._discover_plant_entities()
+
+            if plant_entity_ids:
+                self._plant_entity_ids = plant_entity_ids
+                self._unsubscribe = async_track_state_change(
+                    self.hass, plant_entity_ids, self._on_plant_entity_change
+                )
+                _LOGGER.info(
+                    "Subscribed to %d plant entities for aggregated sensor: %s",
+                    len(plant_entity_ids),
+                    self._attr_name,
+                )
+            else:
+                _LOGGER.debug(
+                    "No plant entities found for aggregated sensor: %s",
+                    self._attr_name,
+                )
+
+            # Compute initial value
+            self._value = self._compute_value()
+            _LOGGER.info(
+                "Aggregated sensor %s initial value: %s",
+                self._attr_name,
+                self._value,
+            )
+            self.async_write_ha_state()
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Error setting up aggregated location sensor %s: %s",
+                self._attr_name,
+                exc,
+            )
+
+    async def _discover_plant_entities(self) -> list[str]:
+        """Discover plant entity IDs assigned to slots in this location."""
+        plant_entity_ids: list[str] = []
+
+        try:
+            # Build a set of plant device IDs that are assigned to this location's slots
+            assigned_plant_device_ids: set[str] = set()
+            for slot in self.plant_slots.values():
+                if isinstance(slot, dict) and (plant_id := slot.get("plant_device_id")):
+                    assigned_plant_device_ids.add(plant_id)
+
+            if not assigned_plant_device_ids:
+                _LOGGER.debug(
+                    "No plant device IDs assigned to slots at location %s",
+                    self.location_name,
+                )
+                return plant_entity_ids
+
+            ent_reg = er.async_get(self.hass)
+
+            # Scan for plant sensors from openplantbook_ref, but only include those
+            # assigned to this location's slots
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.domain != "sensor"
+                    or entity.platform != "openplantbook_ref"
+                    or not entity.entity_id
+                ):
+                    continue
+
+                # Get the device associated with this entity
+                entity_device_id = entity.device_id
+                if not entity_device_id:
+                    continue
+
+                # Check if this plant entity is in our assigned list
+                if entity_device_id not in assigned_plant_device_ids:
+                    _LOGGER.debug(
+                        "Skipping plant entity %s - device %s not assigned to "
+                        "location %s",
+                        entity.entity_id,
+                        entity_device_id,
+                        self.location_name,
+                    )
+                    continue
+
+                plant_entity_ids.append(entity.entity_id)
+                _LOGGER.debug(
+                    "Discovered assigned plant entity for tracking: %s (device: %s)",
+                    entity.entity_id,
+                    entity_device_id,
+                )
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error discovering plant entities: %s", exc)
+
+        _LOGGER.debug(
+            "Found %d assigned plant entities to track", len(plant_entity_ids)
+        )
+        return plant_entity_ids
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
 class AggregatedSensor(SensorEntity):
     """Aggregated sensor for a location metric (e.g., min_light)."""
 
@@ -953,6 +1497,11 @@ class AggregatedSensor(SensorEntity):
         self._attr_unique_id = (
             f"{DOMAIN}_{entry_id}_zone_{zone_id}_loc_{loc_id}_{metric}"
         )
+        # Suggest no decimal places for aggregated metrics by default.
+        # This follows the same pattern used for linked humidity sensors so
+        # that aggregated numeric values are displayed as integers unless
+        # the user overrides the precision in Home Assistant.
+        self._attr_suggested_display_precision = 0
         self._unsubscribe = None
         self._plant_entity_ids: list[str] | None = None
 

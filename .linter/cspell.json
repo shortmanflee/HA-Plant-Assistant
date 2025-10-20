@@ -47,6 +47,7 @@
         "Linters",
         "ludeeus",
         "markdownlint",
+        "maxs",
         "mccabe",
         "mypy",
         "openplantbook",
