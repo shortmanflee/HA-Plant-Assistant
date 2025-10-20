@@ -306,6 +306,128 @@ class PlantCountSensor(SensorEntity):
         self._state = 0
 
 
+async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
+    hass: HomeAssistant, entry: ConfigEntry[Any]
+) -> None:
+    """
+    Clean up monitoring sensors that are no longer configured.
+
+    When a monitoring device is disassociated from a location, any monitoring
+    sensors that were created for that device should be fully removed rather
+    than being left in an unavailable state.
+    """
+    try:
+        entity_registry = er.async_get(hass)
+        expected_monitoring_entities = set()
+
+        # Collect expected monitoring sensor entities from all subentries
+        if entry.subentries:
+            for subentry in entry.subentries.values():
+                if "device_id" in subentry.data:
+                    monitoring_device_id = subentry.data.get("monitoring_device_id")
+                    if monitoring_device_id:
+                        try:
+                            device_sensors = _get_monitoring_device_sensors(
+                                hass, monitoring_device_id
+                            )
+                            # For each sensor on the monitoring device, add the
+                            # unique_id of the mirrored sensor to expected entities
+                            for mapped_type, source_entity_id in device_sensors.items():
+                                # Detect sensor type if needed
+                                detected_type = _detect_sensor_type_from_entity(
+                                    hass, source_entity_id
+                                )
+                                sensor_type = (
+                                    detected_type if detected_type else mapped_type
+                                )
+
+                                # Build unique_id pattern for mirrored sensors
+                                # Format: plant_assistant_<entry_id>_<device>_<suffix>
+                                location_name = subentry.data.get(
+                                    "name", "Plant Location"
+                                )
+                                device_name_safe = location_name.lower().replace(
+                                    " ", "_"
+                                )
+
+                                if (
+                                    sensor_type
+                                    and sensor_type in MONITORING_SENSOR_MAPPINGS
+                                ):
+                                    mapping: MonitoringSensorMapping = (
+                                        MONITORING_SENSOR_MAPPINGS[sensor_type]
+                                    )
+                                    suffix = mapping.get("suffix", sensor_type)
+                                else:
+                                    # Fallback to sanitized source entity id
+                                    source_entity_safe = source_entity_id.replace(
+                                        ".", "_"
+                                    )
+                                    suffix = f"monitor_{source_entity_safe}"
+
+                                unique_id = (
+                                    f"{DOMAIN}_{subentry.subentry_id}_"
+                                    f"{device_name_safe}_{suffix}"
+                                )
+                                expected_monitoring_entities.add(unique_id)
+                        except (
+                            ValueError,
+                            TypeError,
+                        ) as discovery_error:  # pragma: no cover
+                            _LOGGER.debug(
+                                "Failed to discover monitoring device sensors "
+                                "for %s during monitoring sensor cleanup: %s",
+                                monitoring_device_id,
+                                discovery_error,
+                            )
+
+        # Find and remove orphaned monitoring entities
+        entities_to_remove = []
+        for entity_id, entity_entry in entity_registry.entities.items():
+            if (
+                entity_entry.platform != DOMAIN
+                or entity_entry.domain != "sensor"
+                or not entity_entry.unique_id
+                or entity_entry.config_entry_id != entry.entry_id
+            ):
+                continue
+
+            # Check if this is a monitoring sensor (has monitoring sensor suffixes)
+            unique_id = entity_entry.unique_id
+            monitoring_suffixes = [
+                "_temperature_mirror",
+                "_illuminance_mirror",
+                "_soil_moisture_mirror",
+                "_soil_conductivity_mirror",
+                "_battery_level",
+                "_signal_strength",
+                "_monitor_",  # Fallback pattern for custom sensors
+            ]
+
+            if any(suffix in unique_id for suffix in monitoring_suffixes) and (
+                unique_id not in expected_monitoring_entities
+            ):
+                entities_to_remove.append(entity_id)
+
+        # Remove orphaned monitoring entities
+        for entity_id in entities_to_remove:
+            entity_registry.async_remove(entity_id)
+            _LOGGER.debug("Removed orphaned monitoring sensor entity: %s", entity_id)
+
+        if entities_to_remove:
+            _LOGGER.info(
+                "Cleaned up %d orphaned monitoring sensor entities for entry %s",
+                len(entities_to_remove),
+                entry.entry_id,
+            )
+
+    except Exception as exc:  # noqa: BLE001 - Defensive logging
+        _LOGGER.warning(
+            "Failed to cleanup orphaned monitoring sensors: %s",
+            exc,
+        )
+
+
 async def async_setup_platform(
     _hass: HomeAssistant,
     _config: dict[str, Any] | None,
@@ -353,6 +475,10 @@ async def async_setup_entry(
     # Main entry - process subentries like openplantbook_ref
     if entry.subentries:
         _LOGGER.info("Processing main entry with %d subentries", len(entry.subentries))
+
+        # Clean up orphaned monitoring sensors before creating new ones
+        await _cleanup_orphaned_monitoring_sensors(hass, entry)
+
         for subentry_id, subentry in entry.subentries.items():
             _LOGGER.debug(
                 "Processing subentry %s with data: %s",
