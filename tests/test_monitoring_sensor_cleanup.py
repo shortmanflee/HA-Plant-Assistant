@@ -284,7 +284,7 @@ async def test_cleanup_orphaned_monitoring_sensors_removes_battery_sensors():
     orphaned_battery_entity.platform = DOMAIN
     orphaned_battery_entity.domain = "sensor"
     orphaned_battery_entity.unique_id = (
-        f"{DOMAIN}_old_subentry_test_location_battery_level"
+        f"{DOMAIN}_old_subentry_test_location_monitor_battery_level"
     )
     orphaned_battery_entity.config_entry_id = "main_entry_123"
 
@@ -327,7 +327,7 @@ async def test_cleanup_orphaned_monitoring_sensors_removes_signal_strength_senso
     orphaned_signal_entity.platform = DOMAIN
     orphaned_signal_entity.domain = "sensor"
     orphaned_signal_entity.unique_id = (
-        f"{DOMAIN}_old_subentry_test_location_signal_strength"
+        f"{DOMAIN}_old_subentry_test_location_monitor_signal_strength"
     )
     orphaned_signal_entity.config_entry_id = "main_entry_123"
 

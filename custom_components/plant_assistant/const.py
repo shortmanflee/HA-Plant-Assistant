@@ -152,15 +152,15 @@ MONITORING_SENSOR_MAPPINGS = {
     },
     "battery": {
         "device_class": "battery",
-        "suffix": "battery_level",
+        "suffix": "monitor_battery_level",
         "icon": "mdi:battery",
-        "name": "Battery Level",
+        "name": "Monitor Battery Level",
     },
     "signal_strength": {
         "device_class": "signal_strength",
-        "suffix": "signal_strength",
+        "suffix": "monitor_signal_strength",
         "icon": "mdi:wifi",
-        "name": "Signal Strength",
+        "name": "Monitor Signal Strength",
     },
 }
 

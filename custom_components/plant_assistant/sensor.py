@@ -415,8 +415,8 @@ async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
                 "_illuminance_mirror",
                 "_soil_moisture_mirror",
                 "_soil_conductivity_mirror",
-                "_battery_level",
-                "_signal_strength",
+                "_monitor_battery_level",
+                "_monitor_signal_strength",
                 "_monitor_",  # Fallback pattern for custom sensors
             ]
 
