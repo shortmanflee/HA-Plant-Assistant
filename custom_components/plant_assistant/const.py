@@ -21,10 +21,16 @@ SENSOR_MIN_LIGHT = "min_light"
 SENSOR_MAX_LIGHT = "max_light"
 SENSOR_MIN_TEMPERATURE = "min_temperature"
 SENSOR_MAX_TEMPERATURE = "max_temperature"
+SENSOR_MIN_ILLUMINANCE = "min_illuminance"
+SENSOR_MAX_ILLUMINANCE = "max_illuminance"
 SENSOR_MIN_MOISTURE = "min_moisture"
 SENSOR_MAX_MOISTURE = "max_moisture"
+SENSOR_MIN_SOIL_MOISTURE = "min_soil_moisture"
+SENSOR_MAX_SOIL_MOISTURE = "max_soil_moisture"
 SENSOR_MIN_CONDUCTIVITY = "min_conductivity"
 SENSOR_MAX_CONDUCTIVITY = "max_conductivity"
+SENSOR_MIN_SOIL_CONDUCTIVITY = "min_soil_conductivity"
+SENSOR_MAX_SOIL_CONDUCTIVITY = "max_soil_conductivity"
 SENSOR_MIN_HUMIDITY = "min_humidity"
 SENSOR_MAX_HUMIDITY = "max_humidity"
 SENSOR_PPFD = "ppfd"
@@ -191,6 +197,78 @@ AGGREGATED_SENSOR_MAPPINGS = {
         "requires_monitoring": True,
         "requires_humidity": False,
     },
+    "min_temperature": {
+        "plant_attr_min": "minimum_temperature",
+        "plant_attr_max": "maximum_temperature",
+        "aggregation_type": "max_of_mins",
+        "suffix": "min_temperature",
+        "icon": "mdi:thermometer-low",
+        "name": "Minimum Temperature",
+        "device_class": "temperature",
+        "unit": "°C",
+        "requires_monitoring": True,
+        "requires_humidity": False,
+    },
+    "max_temperature": {
+        "plant_attr_min": "minimum_temperature",
+        "plant_attr_max": "maximum_temperature",
+        "aggregation_type": "min_of_maximums",
+        "suffix": "max_temperature",
+        "icon": "mdi:thermometer-high",
+        "name": "Maximum Temperature",
+        "device_class": "temperature",
+        "unit": "°C",
+        "requires_monitoring": True,
+        "requires_humidity": False,
+    },
+    "min_illuminance": {
+        "plant_attr_min": "minimum_light",
+        "plant_attr_max": "maximum_light",
+        "aggregation_type": "max_of_mins",
+        "suffix": "min_illuminance",
+        "icon": "mdi:brightness-7",
+        "name": "Minimum Illuminance",
+        "device_class": "illuminance",
+        "unit": "lx",
+        "requires_monitoring": True,
+        "requires_humidity": False,
+    },
+    "max_illuminance": {
+        "plant_attr_min": "minimum_light",
+        "plant_attr_max": "maximum_light",
+        "aggregation_type": "min_of_maximums",
+        "suffix": "max_illuminance",
+        "icon": "mdi:brightness-5",
+        "name": "Maximum Illuminance",
+        "device_class": "illuminance",
+        "unit": "lx",
+        "requires_monitoring": True,
+        "requires_humidity": False,
+    },
+    "min_soil_moisture": {
+        "plant_attr_min": "minimum_moisture",
+        "plant_attr_max": "maximum_moisture",
+        "aggregation_type": "max_of_mins",
+        "suffix": "min_soil_moisture",
+        "icon": "mdi:water-percent",
+        "name": "Minimum Soil Moisture",
+        "device_class": "moisture",
+        "unit": "%",
+        "requires_monitoring": True,
+        "requires_humidity": False,
+    },
+    "max_soil_moisture": {
+        "plant_attr_min": "minimum_moisture",
+        "plant_attr_max": "maximum_moisture",
+        "aggregation_type": "min_of_maximums",
+        "suffix": "max_soil_moisture",
+        "icon": "mdi:water-percent",
+        "name": "Maximum Soil Moisture",
+        "device_class": "moisture",
+        "unit": "%",
+        "requires_monitoring": True,
+        "requires_humidity": False,
+    },
     "min_moisture": {
         "plant_attr_min": "minimum_moisture",
         "plant_attr_max": "maximum_moisture",
@@ -215,27 +293,27 @@ AGGREGATED_SENSOR_MAPPINGS = {
         "requires_monitoring": True,
         "requires_humidity": False,
     },
-    "min_temperature": {
-        "plant_attr_min": "minimum_temperature",
-        "plant_attr_max": "maximum_temperature",
+    "min_soil_conductivity": {
+        "plant_attr_min": "minimum_soil_ec",
+        "plant_attr_max": "maximum_soil_ec",
         "aggregation_type": "max_of_mins",
-        "suffix": "min_temperature",
-        "icon": "mdi:thermometer-low",
-        "name": "Minimum Temperature",
-        "device_class": "temperature",
-        "unit": "°C",
+        "suffix": "min_soil_conductivity",
+        "icon": "mdi:flash-triangle",
+        "name": "Minimum Soil Conductivity",
+        "device_class": "conductivity",
+        "unit": "µS/cm",
         "requires_monitoring": True,
         "requires_humidity": False,
     },
-    "max_temperature": {
-        "plant_attr_min": "minimum_temperature",
-        "plant_attr_max": "maximum_temperature",
+    "max_soil_conductivity": {
+        "plant_attr_min": "minimum_soil_ec",
+        "plant_attr_max": "maximum_soil_ec",
         "aggregation_type": "min_of_maximums",
-        "suffix": "max_temperature",
-        "icon": "mdi:thermometer-high",
-        "name": "Maximum Temperature",
-        "device_class": "temperature",
-        "unit": "°C",
+        "suffix": "max_soil_conductivity",
+        "icon": "mdi:flash-triangle-outline",
+        "name": "Maximum Soil Conductivity",
+        "device_class": "conductivity",
+        "unit": "µS/cm",
         "requires_monitoring": True,
         "requires_humidity": False,
     },
