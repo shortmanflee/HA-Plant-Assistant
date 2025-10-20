@@ -150,6 +150,18 @@ MONITORING_SENSOR_MAPPINGS = {
             "S/m",
         ],  # Match common conductivity units as backup
     },
+    "battery": {
+        "device_class": "battery",
+        "suffix": "monitor_battery_level",
+        "icon": "mdi:battery",
+        "name": "Monitor Battery Level",
+    },
+    "signal_strength": {
+        "device_class": "signal_strength",
+        "suffix": "monitor_signal_strength",
+        "icon": "mdi:wifi",
+        "name": "Monitor Signal Strength",
+    },
 }
 
 # Aggregated sensor mappings for plant location aggregation

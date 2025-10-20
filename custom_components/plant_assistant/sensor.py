@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -20,7 +20,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_track_state_change
 
 from . import aggregation
-from .const import ATTR_PLANT_DEVICE_IDS, DOMAIN
+from .const import ATTR_PLANT_DEVICE_IDS, DOMAIN, MONITORING_SENSOR_MAPPINGS
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -28,7 +28,85 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+
+class MonitoringSensorMapping(TypedDict, total=False):
+    """Type definition for monitoring sensor mappings."""
+
+    device_class: SensorDeviceClass | str | None
+    suffix: str
+    icon: str
+    name: str
+    unit: str | None
+
+
 _LOGGER = logging.getLogger(__name__)
+
+
+def _detect_sensor_type_from_entity(hass: HomeAssistant, entity_id: str) -> str | None:
+    """
+    Detect the sensor type from a source entity's device_class or entity_id.
+
+    Args:
+        hass: The Home Assistant instance.
+        entity_id: The entity ID to detect the type from.
+
+    Returns:
+        The sensor type key (e.g., 'temperature', 'illuminance') or
+        None if not detected.
+
+    """
+    # Map device_class to sensor type
+    device_class_mapping = {
+        "temperature": "temperature",
+        "illuminance": "illuminance",
+        "moisture": "soil_moisture",
+        "conductivity": "soil_conductivity",
+        "battery": "battery",
+        "signal_strength": "signal_strength",
+    }
+
+    # Map entity_id patterns to sensor type
+    entity_id_patterns = {
+        "temperature": "temperature",
+        "illuminance": "illuminance",
+        "light": "illuminance",
+        "moisture": "soil_moisture",
+        "conductivity": "soil_conductivity",
+        "battery": "battery",
+        "signal": "signal_strength",
+        "rssi": "signal_strength",
+    }
+
+    # Prefer reading device_class from the live state attributes which is
+    # what entity implementations expose at runtime. Fall back to a
+    # best-effort attempt via the entity registry and finally to simple
+    # pattern matching on the entity_id.
+    try:
+        # Check the runtime state first
+        state = hass.states.get(entity_id)
+        if state:
+            device_class = state.attributes.get("device_class")
+            if device_class in device_class_mapping:
+                return device_class_mapping[device_class]
+
+        # Fallback to entity registry (may not expose device_class)
+        ent_reg = er.async_get(hass)
+        entity = ent_reg.async_get(entity_id)
+        if entity:
+            device_class = getattr(entity, "device_class", None)
+            if device_class in device_class_mapping:
+                return device_class_mapping[device_class]
+
+        # Final fallback: pattern match on entity_id
+        entity_id_lower = entity_id.lower()
+        for pattern, sensor_type in entity_id_patterns.items():
+            if pattern in entity_id_lower:
+                return sensor_type
+    # pragma: no cover - defensive
+    except (AttributeError, KeyError, ValueError) as exc:
+        _LOGGER.debug("Error detecting sensor type for %s: %s", entity_id, exc)
+
+    return None
 
 
 def _has_plants_in_slots(data: Mapping[str, Any]) -> bool:
@@ -66,38 +144,212 @@ def _get_monitoring_device_sensors(
     """
     device_sensors: dict[str, str] = {}
 
+    # Get device and entity registries
+    dev_reg = dr.async_get(hass)
+    ent_reg = er.async_get(hass)
+
+    # Try to get the device by ID
+    if not (device := dev_reg.async_get(monitoring_device_id)):
+        return device_sensors
+
+    # Get all sensor entities for this device and map them safely.
+    for entity in ent_reg.entities.values():
+        try:
+            if entity.device_id != device.id or entity.domain != "sensor":
+                continue
+
+            # Prefer device_class from the live state attributes
+            device_class = None
+            try:
+                state = hass.states.get(entity.entity_id)
+                if state:
+                    device_class = state.attributes.get("device_class")
+            except (AttributeError, KeyError, ValueError):
+                # ignore state read errors for robustness
+                device_class = None
+
+            # Fall back to registry attribute if present
+            if not device_class:
+                device_class = getattr(entity, "device_class", None)
+
+            ent_id = entity.entity_id
+            ent_id_lower = ent_id.lower()
+
+            if device_class == "illuminance" or "illuminance" in ent_id_lower:
+                device_sensors["illuminance"] = ent_id
+            elif device_class == "soil_conductivity" or "conductivity" in ent_id_lower:
+                device_sensors["soil_conductivity"] = ent_id
+            elif device_class == "battery" or "battery" in ent_id_lower:
+                device_sensors["battery"] = ent_id
+            elif (
+                device_class == "signal_strength"
+                or "signal" in ent_id_lower
+                or "rssi" in ent_id_lower
+            ):
+                device_sensors["signal_strength"] = ent_id
+        except (
+            AttributeError,
+            KeyError,
+            ValueError,
+            TypeError,
+        ):  # pragma: no cover - defensive per-entity
+            # Don't abort scanning other entities if one entity raises
+            _LOGGER.debug(
+                "Skipping entity during monitoring discovery: %s",
+                getattr(entity, "entity_id", "<unknown>"),
+            )
+
+    return device_sensors
+
+
+def _expected_entities_for_subentry(
+    hass: HomeAssistant, subentry: Any
+) -> tuple[set[str], set[str]]:
+    """
+    Return expected monitoring and humidity unique_ids for a subentry.
+
+    This encapsulates the logic used by the cleanup routine so the main
+    cleanup function stays small and within complexity limits.
+    """
+    expected_monitoring: set[str] = set()
+    expected_humidity: set[str] = set()
+
+    if "device_id" not in getattr(subentry, "data", {}):
+        return expected_monitoring, expected_humidity
+
+    monitoring_device_id = subentry.data.get("monitoring_device_id")
+    if monitoring_device_id:
+        try:
+            device_sensors = _get_monitoring_device_sensors(hass, monitoring_device_id)
+            for mapped_type, source_entity_id in device_sensors.items():
+                detected_type = _detect_sensor_type_from_entity(hass, source_entity_id)
+                sensor_type = detected_type if detected_type else mapped_type
+
+                location_name = subentry.data.get("name", "Plant Location")
+                device_name_safe = location_name.lower().replace(" ", "_")
+
+                if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
+                    mapping = MONITORING_SENSOR_MAPPINGS[sensor_type]
+                    if isinstance(mapping, dict):
+                        suffix = mapping.get("suffix", sensor_type)
+                    else:
+                        suffix = getattr(mapping, "suffix", sensor_type)
+                else:
+                    source_entity_safe = source_entity_id.replace(".", "_")
+                    suffix = f"monitor_{source_entity_safe}"
+
+                unique_id = (
+                    f"{DOMAIN}_{subentry.subentry_id}_{device_name_safe}_{suffix}"
+                )
+                expected_monitoring.add(unique_id)
+        except (ValueError, TypeError) as discovery_error:  # pragma: no cover
+            _LOGGER.debug(
+                "Failed to discover monitoring device sensors for %s: %s",
+                monitoring_device_id,
+                discovery_error,
+            )
+
+    humidity_entity_id = subentry.data.get("humidity_entity_id")
+    if humidity_entity_id:
+        location_name = subentry.data.get("name", "Plant Location")
+        location_name_safe = location_name.lower().replace(" ", "_")
+        humidity_unique_id = (
+            f"{DOMAIN}_{subentry.subentry_id}_{location_name_safe}_humidity_linked"
+        )
+        expected_humidity.add(humidity_unique_id)
+
+    return expected_monitoring, expected_humidity
+
+
+def _create_location_mirrored_sensors(
+    hass: HomeAssistant,
+    entry_id: str,
+    location_device_id: str,
+    location_name: str,
+    monitoring_device_id: str,
+) -> list[SensorEntity]:
+    """
+    Create mirrored sensors at a plant location for a monitoring device's entities.
+
+    Args:
+        hass: The Home Assistant instance.
+        entry_id: The config entry ID.
+        location_device_id: The device ID of the location.
+        location_name: The name of the location.
+        monitoring_device_id: The device ID of the monitoring device.
+
+    Returns:
+        A list of SensorEntity objects that mirror the monitoring device's sensors.
+
+    """
+    mirrored_sensors: list[SensorEntity] = []
+
     try:
         # Get device and entity registries
         dev_reg = dr.async_get(hass)
         ent_reg = er.async_get(hass)
 
-        # Try to get the device by ID
-        if not (device := dev_reg.async_get(monitoring_device_id)):
-            return device_sensors
+        # Get the monitoring device
+        monitoring_device = dev_reg.async_get(monitoring_device_id)
+        if not monitoring_device:
+            _LOGGER.warning(
+                "Monitoring device %s not found for location %s",
+                monitoring_device_id,
+                location_name,
+            )
+            return mirrored_sensors
 
-        # Get all sensor entities for this device
-        for entity in ent_reg.entities.values():
-            if entity.device_id == device.id and entity.domain == "sensor":
-                # Map sensor entity to sensor type based on device class or entity name
-                device_class = entity.device_class
+        # Scan for all sensor entities on the monitoring device
+        for entity_entry in ent_reg.entities.values():
+            if (
+                entity_entry.device_id == monitoring_device.id
+                and entity_entry.domain == "sensor"
+            ):
+                # Detect sensor type to get proper naming
+                sensor_type = _detect_sensor_type_from_entity(
+                    hass, entity_entry.entity_id
+                )
 
-                if device_class == "illuminance":
-                    device_sensors["illuminance"] = entity.entity_id
-                elif device_class == "soil_conductivity":
-                    device_sensors["soil_conductivity"] = entity.entity_id
-                elif "illuminance" in entity.entity_id.lower():
-                    device_sensors["illuminance"] = entity.entity_id
-                elif "conductivity" in entity.entity_id.lower():
-                    device_sensors["soil_conductivity"] = entity.entity_id
+                # Get display name from mappings if available, otherwise use entity name
+                if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
+                    mapping: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[
+                        sensor_type
+                    ]
+                    display_name = mapping.get(
+                        "name", entity_entry.name or entity_entry.entity_id
+                    )
+                else:
+                    display_name = entity_entry.name or entity_entry.entity_id
+
+                # Create a mirrored sensor for this entity
+                config = {
+                    "entry_id": entry_id,
+                    "source_entity_id": entity_entry.entity_id,
+                    "device_name": location_name,
+                    "entity_name": display_name,
+                    "sensor_type": sensor_type,
+                }
+
+                mirrored_sensor = MonitoringSensor(
+                    hass=hass,
+                    config=config,
+                    location_device_id=location_device_id,
+                )
+                mirrored_sensors.append(mirrored_sensor)
+                _LOGGER.debug(
+                    "Created mirrored sensor for %s at location %s",
+                    entity_entry.entity_id,
+                    location_name,
+                )
 
     except (AttributeError, KeyError, ValueError, TypeError) as exc:
-        _LOGGER.debug(
-            "Error getting monitoring device sensors for %s: %s",
-            monitoring_device_id,
+        _LOGGER.warning(
+            "Error creating location mirrored sensors for %s: %s",
+            location_name,
             exc,
         )
 
-    return device_sensors
+    return mirrored_sensors
 
 
 @dataclass
@@ -135,6 +387,89 @@ class PlantCountSensor(SensorEntity):
         self._state = 0
 
 
+async def _cleanup_orphaned_monitoring_sensors(
+    hass: HomeAssistant, entry: ConfigEntry[Any]
+) -> None:
+    """
+    Clean up monitoring sensors that are no longer configured.
+
+    When a monitoring device is disassociated from a location, any monitoring
+    sensors that were created for that device should be fully removed rather
+    than being left in an unavailable state.
+
+    Also removes humidity linked sensors if the humidity_entity_id is removed.
+    """
+    try:
+        entity_registry = er.async_get(hass)
+        expected_monitoring_entities = set()
+        expected_humidity_entities = set()
+
+        # Collect expected monitoring and humidity unique_ids from subentries
+        if entry.subentries:
+            for subentry in entry.subentries.values():
+                monitoring_set, humidity_set = _expected_entities_for_subentry(
+                    hass, subentry
+                )
+                expected_monitoring_entities.update(monitoring_set)
+                expected_humidity_entities.update(humidity_set)
+
+        # Find and remove orphaned entities
+        entities_to_remove = []
+        for entity_id, entity_entry in entity_registry.entities.items():
+            if (
+                entity_entry.platform != DOMAIN
+                or entity_entry.domain != "sensor"
+                or not entity_entry.unique_id
+                or entity_entry.config_entry_id != entry.entry_id
+            ):
+                continue
+
+            unique_id = entity_entry.unique_id
+
+            # Derive monitoring sensor suffixes from MONITORING_SENSOR_MAPPINGS
+            monitoring_suffixes: list[str] = []
+            for key, m in MONITORING_SENSOR_MAPPINGS.items():
+                # m may be a dict-like mapping; be defensive about types
+                if isinstance(m, dict):
+                    suffix_val = m.get("suffix", key)
+                # If it's a TypedDict or unexpected object, try attribute
+                # access and fall back to the key when not present.
+                elif hasattr(m, "suffix"):
+                    suffix_val = m.suffix
+                else:
+                    suffix_val = key
+                monitoring_suffixes.append(f"_{suffix_val}")
+            # Keep a conservative fallback for previously used monitor_ prefix
+            monitoring_suffixes.append("_monitor_")
+
+            if (
+                any(suffix in unique_id for suffix in monitoring_suffixes)
+                and (unique_id not in expected_monitoring_entities)
+            ) or (
+                "_humidity_linked" in unique_id
+                and (unique_id not in expected_humidity_entities)
+            ):
+                entities_to_remove.append(entity_id)
+
+        # Remove orphaned entities
+        for entity_id in entities_to_remove:
+            entity_registry.async_remove(entity_id)
+            _LOGGER.debug("Removed orphaned sensor entity: %s", entity_id)
+
+        if entities_to_remove:
+            _LOGGER.info(
+                "Cleaned up %d orphaned sensor entities for entry %s",
+                len(entities_to_remove),
+                entry.entry_id,
+            )
+
+    except Exception as exc:  # noqa: BLE001 - Defensive logging
+        _LOGGER.warning(
+            "Failed to cleanup orphaned sensors: %s",
+            exc,
+        )
+
+
 async def async_setup_platform(
     _hass: HomeAssistant,
     _config: dict[str, Any] | None,
@@ -157,6 +492,7 @@ async def async_setup_entry(
     to `min_light` for initial implementation).
 
     For subentries with monitoring devices, also create monitoring sensors.
+    For locations with monitoring devices, create mirrored sensors.
     """
     _LOGGER.debug(
         "Setting up sensors for entry: %s (%s)",
@@ -181,6 +517,10 @@ async def async_setup_entry(
     # Main entry - process subentries like openplantbook_ref
     if entry.subentries:
         _LOGGER.info("Processing main entry with %d subentries", len(entry.subentries))
+
+        # Clean up orphaned monitoring sensors before creating new ones
+        await _cleanup_orphaned_monitoring_sensors(hass, entry)
+
         for subentry_id, subentry in entry.subentries.items():
             _LOGGER.debug(
                 "Processing subentry %s with data: %s",
@@ -205,6 +545,42 @@ async def async_setup_entry(
                     plant_slots=plant_slots,
                 )
                 subentry_entities.append(plant_count_entity)
+
+                # Create mirrored sensors for monitoring device if present
+                monitoring_device_id = subentry.data.get("monitoring_device_id")
+                if monitoring_device_id:
+                    mirrored_sensors = _create_location_mirrored_sensors(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        monitoring_device_id=monitoring_device_id,
+                    )
+                    subentry_entities.extend(mirrored_sensors)
+                    _LOGGER.debug(
+                        "Added %d mirrored sensors for monitoring device %s"
+                        " at location %s",
+                        len(mirrored_sensors),
+                        monitoring_device_id,
+                        location_name,
+                    )
+
+                # Create humidity linked sensor if humidity entity is configured
+                humidity_entity_id = subentry.data.get("humidity_entity_id")
+                if humidity_entity_id:
+                    humidity_sensor = HumidityLinkedSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        humidity_entity_id=humidity_entity_id,
+                    )
+                    subentry_entities.append(humidity_sensor)
+                    _LOGGER.debug(
+                        "Added humidity linked sensor for entity %s at location %s",
+                        humidity_entity_id,
+                        location_name,
+                    )
 
                 # Add entities with proper subentry association (like openplantbook_ref)
                 _LOGGER.debug(
@@ -325,18 +701,57 @@ class MonitoringSensor(SensorEntity):
         self.location_device_id = location_device_id
         device_name = config["device_name"]
         entity_name = config["entity_name"]
+        sensor_type = config.get("sensor_type")
+
+        # Set entity name to include device name for better entity_id formatting
         self._attr_name = f"{device_name} {entity_name}"
-        source_entity_safe = self.source_entity_id.replace(".", "_")
-        self._attr_unique_id = f"{DOMAIN}_{self.entry_id}_monitor_{source_entity_safe}"
+
+        # Generate unique_id using device name and sensor type suffix
+        # Format: plant_assistant_<entry_id>_<device_name>_<sensor_type_suffix>
+        if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
+            mapping: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[sensor_type]
+            suffix = mapping.get("suffix", sensor_type)
+        else:
+            # Fallback to sanitized source entity id
+            source_entity_safe = self.source_entity_id.replace(".", "_")
+            suffix = f"monitor_{source_entity_safe}"
+
+        # Create a safe device name for the unique_id
+        device_name_safe = device_name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{DOMAIN}_{self.entry_id}_{device_name_safe}_{suffix}"
+
         self._state = None
         self._attributes = {}
         self._unsubscribe = None
+
+        # Set device_class, icon, and unit from mappings if available
+        if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
+            mapping_config: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[
+                sensor_type
+            ]
+            device_class_val = mapping_config.get("device_class")
+            if device_class_val:
+                try:
+                    self._attr_device_class = SensorDeviceClass(device_class_val)
+                except ValueError:
+                    self._attr_device_class = None
+            self._attr_icon = mapping_config.get("icon")
+            # Use unit from mapping if available, otherwise get from source
+            unit = mapping_config.get("unit")
+            if unit:
+                self._attr_native_unit_of_measurement = unit
 
         # Initialize with current state of source entity
         if source_state := hass.states.get(self.source_entity_id):
             self._state = source_state.state
             self._attributes = dict(source_state.attributes)
             self._attributes["source_entity"] = self.source_entity_id
+
+            # If no unit was set from mapping, try to get it from source entity
+            if not hasattr(self, "_attr_native_unit_of_measurement"):
+                source_unit = source_state.attributes.get("unit_of_measurement")
+                if source_unit:
+                    self._attr_native_unit_of_measurement = source_unit
 
         # Subscribe to source entity state changes
         try:
@@ -369,6 +784,10 @@ class MonitoringSensor(SensorEntity):
     @property
     def native_value(self) -> Any:
         """Return the state of the sensor."""
+        # Return None for unavailable/unknown states to avoid Home Assistant errors
+        # when device_class expects numeric values
+        if self._state in ("unavailable", "unknown", None):
+            return None
         return self._state
 
     @property
@@ -385,6 +804,126 @@ class MonitoringSensor(SensorEntity):
     @property
     def device_info(self) -> DeviceInfo | None:
         """Return device info to associate this entity with the subentry device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class HumidityLinkedSensor(SensorEntity):
+    """A sensor that mirrors data from a humidity entity linked to a location."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        humidity_entity_id: str,
+    ) -> None:
+        """
+        Initialize the humidity linked sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The subentry ID.
+            location_device_id: The device ID of the location.
+            location_name: The name of the location.
+            humidity_entity_id: The entity ID of the humidity sensor to mirror.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self.humidity_entity_id = humidity_entity_id
+
+        # Set entity name to include location name for better entity_id formatting
+        self._attr_name = f"{location_name} Humidity"
+
+        # Generate unique_id for this humidity linked sensor
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_humidity_linked"
+        )
+
+        # Set device class and icon for humidity
+        self._attr_device_class = SensorDeviceClass.HUMIDITY
+        self._attr_icon = "mdi:water-percent"
+        self._attr_native_unit_of_measurement = "%"
+        # Set default precision to 0 decimals (integers) - user can adjust in HA
+        self._attr_suggested_display_precision = 0
+
+        self._state = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+        # Initialize with current state of humidity entity
+        if humidity_state := hass.states.get(self.humidity_entity_id):
+            self._state = humidity_state.state
+            self._attributes = dict(humidity_state.attributes)
+            self._attributes["source_entity"] = self.humidity_entity_id
+
+            # Use unit from source entity if available
+            source_unit = humidity_state.attributes.get("unit_of_measurement")
+            if source_unit:
+                self._attr_native_unit_of_measurement = source_unit
+
+        # Subscribe to humidity entity state changes
+        try:
+            self._unsubscribe = async_track_state_change(
+                hass, self.humidity_entity_id, self._humidity_state_changed
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to humidity entity %s: %s",
+                self.humidity_entity_id,
+                exc,
+            )
+
+    @callback
+    def _humidity_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle humidity entity state changes."""
+        if new_state is None:
+            self._state = None
+            self._attributes = {}
+        else:
+            self._state = new_state.state
+            self._attributes = dict(new_state.attributes)
+            # Add reference to source
+            self._attributes["source_entity"] = self.humidity_entity_id
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the state of the sensor."""
+        # Return None for unavailable/unknown states to avoid Home Assistant errors
+        if self._state in ("unavailable", "unknown", None):
+            return None
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        humidity_state = self.hass.states.get(self.humidity_entity_id)
+        return humidity_state is not None
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
         if self.location_device_id:
             return DeviceInfo(
                 identifiers={(DOMAIN, self.location_device_id)},
