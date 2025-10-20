@@ -171,6 +171,10 @@ MONITORING_SENSOR_MAPPINGS = {
 }
 
 # Aggregated sensor mappings for plant location aggregation
+#
+# Note: each mapping must expose a unique `suffix` value. Duplicated suffixes
+# lead to ambiguities when constructing entity unique_ids and make the
+# configuration harder to maintain.
 AGGREGATED_SENSOR_MAPPINGS = {
     # Environmental sensors (require monitoring device + plant slots)
     "min_light": {
@@ -269,30 +273,6 @@ AGGREGATED_SENSOR_MAPPINGS = {
         "requires_monitoring": True,
         "requires_humidity": False,
     },
-    "min_moisture": {
-        "plant_attr_min": "minimum_moisture",
-        "plant_attr_max": "maximum_moisture",
-        "aggregation_type": "max_of_mins",
-        "suffix": "min_soil_moisture",
-        "icon": "mdi:water-percent",
-        "name": "Minimum Soil Moisture",
-        "device_class": "moisture",
-        "unit": "%",
-        "requires_monitoring": True,
-        "requires_humidity": False,
-    },
-    "max_moisture": {
-        "plant_attr_min": "minimum_moisture",
-        "plant_attr_max": "maximum_moisture",
-        "aggregation_type": "min_of_maximums",
-        "suffix": "max_soil_moisture",
-        "icon": "mdi:water-percent",
-        "name": "Maximum Soil Moisture",
-        "device_class": "moisture",
-        "unit": "%",
-        "requires_monitoring": True,
-        "requires_humidity": False,
-    },
     "min_soil_conductivity": {
         "plant_attr_min": "minimum_soil_ec",
         "plant_attr_max": "maximum_soil_ec",
@@ -306,30 +286,6 @@ AGGREGATED_SENSOR_MAPPINGS = {
         "requires_humidity": False,
     },
     "max_soil_conductivity": {
-        "plant_attr_min": "minimum_soil_ec",
-        "plant_attr_max": "maximum_soil_ec",
-        "aggregation_type": "min_of_maximums",
-        "suffix": "max_soil_conductivity",
-        "icon": "mdi:flash-triangle-outline",
-        "name": "Maximum Soil Conductivity",
-        "device_class": "conductivity",
-        "unit": "µS/cm",
-        "requires_monitoring": True,
-        "requires_humidity": False,
-    },
-    "min_conductivity": {
-        "plant_attr_min": "minimum_soil_ec",
-        "plant_attr_max": "maximum_soil_ec",
-        "aggregation_type": "max_of_mins",
-        "suffix": "min_soil_conductivity",
-        "icon": "mdi:flash-triangle",
-        "name": "Minimum Soil Conductivity",
-        "device_class": "conductivity",
-        "unit": "µS/cm",
-        "requires_monitoring": True,
-        "requires_humidity": False,
-    },
-    "max_conductivity": {
         "plant_attr_min": "minimum_soil_ec",
         "plant_attr_max": "maximum_soil_ec",
         "aggregation_type": "min_of_maximums",
