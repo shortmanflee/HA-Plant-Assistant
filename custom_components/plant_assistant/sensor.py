@@ -315,15 +315,19 @@ async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
     When a monitoring device is disassociated from a location, any monitoring
     sensors that were created for that device should be fully removed rather
     than being left in an unavailable state.
+
+    Also removes humidity linked sensors if the humidity_entity_id is removed.
     """
     try:
         entity_registry = er.async_get(hass)
         expected_monitoring_entities = set()
+        expected_humidity_entities = set()
 
         # Collect expected monitoring sensor entities from all subentries
         if entry.subentries:
             for subentry in entry.subentries.values():
                 if "device_id" in subentry.data:
+                    # Track monitoring sensors
                     monitoring_device_id = subentry.data.get("monitoring_device_id")
                     if monitoring_device_id:
                         try:
@@ -381,7 +385,18 @@ async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
                                 discovery_error,
                             )
 
-        # Find and remove orphaned monitoring entities
+                    # Track humidity linked sensors
+                    humidity_entity_id = subentry.data.get("humidity_entity_id")
+                    if humidity_entity_id:
+                        location_name = subentry.data.get("name", "Plant Location")
+                        location_name_safe = location_name.lower().replace(" ", "_")
+                        humidity_unique_id = (
+                            f"{DOMAIN}_{subentry.subentry_id}_"
+                            f"{location_name_safe}_humidity_linked"
+                        )
+                        expected_humidity_entities.add(humidity_unique_id)
+
+        # Find and remove orphaned entities
         entities_to_remove = []
         for entity_id, entity_entry in entity_registry.entities.items():
             if (
@@ -392,8 +407,9 @@ async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
             ):
                 continue
 
-            # Check if this is a monitoring sensor (has monitoring sensor suffixes)
             unique_id = entity_entry.unique_id
+
+            # Check if this is a monitoring sensor (has monitoring sensor suffixes)
             monitoring_suffixes = [
                 "_temperature_mirror",
                 "_illuminance_mirror",
@@ -404,26 +420,30 @@ async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
                 "_monitor_",  # Fallback pattern for custom sensors
             ]
 
-            if any(suffix in unique_id for suffix in monitoring_suffixes) and (
-                unique_id not in expected_monitoring_entities
+            if (
+                any(suffix in unique_id for suffix in monitoring_suffixes)
+                and (unique_id not in expected_monitoring_entities)
+            ) or (
+                "_humidity_linked" in unique_id
+                and (unique_id not in expected_humidity_entities)
             ):
                 entities_to_remove.append(entity_id)
 
-        # Remove orphaned monitoring entities
+        # Remove orphaned entities
         for entity_id in entities_to_remove:
             entity_registry.async_remove(entity_id)
-            _LOGGER.debug("Removed orphaned monitoring sensor entity: %s", entity_id)
+            _LOGGER.debug("Removed orphaned sensor entity: %s", entity_id)
 
         if entities_to_remove:
             _LOGGER.info(
-                "Cleaned up %d orphaned monitoring sensor entities for entry %s",
+                "Cleaned up %d orphaned sensor entities for entry %s",
                 len(entities_to_remove),
                 entry.entry_id,
             )
 
     except Exception as exc:  # noqa: BLE001 - Defensive logging
         _LOGGER.warning(
-            "Failed to cleanup orphaned monitoring sensors: %s",
+            "Failed to cleanup orphaned sensors: %s",
             exc,
         )
 
@@ -520,6 +540,23 @@ async def async_setup_entry(
                         " at location %s",
                         len(mirrored_sensors),
                         monitoring_device_id,
+                        location_name,
+                    )
+
+                # Create humidity linked sensor if humidity entity is configured
+                humidity_entity_id = subentry.data.get("humidity_entity_id")
+                if humidity_entity_id:
+                    humidity_sensor = HumidityLinkedSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        humidity_entity_id=humidity_entity_id,
+                    )
+                    subentry_entities.append(humidity_sensor)
+                    _LOGGER.debug(
+                        "Added humidity linked sensor for entity %s at location %s",
+                        humidity_entity_id,
                         location_name,
                     )
 
@@ -745,6 +782,124 @@ class MonitoringSensor(SensorEntity):
     @property
     def device_info(self) -> DeviceInfo | None:
         """Return device info to associate this entity with the subentry device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class HumidityLinkedSensor(SensorEntity):
+    """A sensor that mirrors data from a humidity entity linked to a location."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        humidity_entity_id: str,
+    ) -> None:
+        """
+        Initialize the humidity linked sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The subentry ID.
+            location_device_id: The device ID of the location.
+            location_name: The name of the location.
+            humidity_entity_id: The entity ID of the humidity sensor to mirror.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self.humidity_entity_id = humidity_entity_id
+
+        # Set entity name to include location name for better entity_id formatting
+        self._attr_name = f"{location_name} Humidity"
+
+        # Generate unique_id for this humidity linked sensor
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_humidity_linked"
+        )
+
+        # Set device class and icon for humidity
+        self._attr_device_class = SensorDeviceClass.HUMIDITY
+        self._attr_icon = "mdi:water-percent"
+        self._attr_native_unit_of_measurement = "%"
+
+        self._state = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+        # Initialize with current state of humidity entity
+        if humidity_state := hass.states.get(self.humidity_entity_id):
+            self._state = humidity_state.state
+            self._attributes = dict(humidity_state.attributes)
+            self._attributes["source_entity"] = self.humidity_entity_id
+
+            # Use unit from source entity if available
+            source_unit = humidity_state.attributes.get("unit_of_measurement")
+            if source_unit:
+                self._attr_native_unit_of_measurement = source_unit
+
+        # Subscribe to humidity entity state changes
+        try:
+            self._unsubscribe = async_track_state_change(
+                hass, self.humidity_entity_id, self._humidity_state_changed
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to humidity entity %s: %s",
+                self.humidity_entity_id,
+                exc,
+            )
+
+    @callback
+    def _humidity_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle humidity entity state changes."""
+        if new_state is None:
+            self._state = None
+            self._attributes = {}
+        else:
+            self._state = new_state.state
+            self._attributes = dict(new_state.attributes)
+            # Add reference to source
+            self._attributes["source_entity"] = self.humidity_entity_id
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the state of the sensor."""
+        # Return None for unavailable/unknown states to avoid Home Assistant errors
+        if self._state in ("unavailable", "unknown", None):
+            return None
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        humidity_state = self.hass.states.get(self.humidity_entity_id)
+        return humidity_state is not None
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
         if self.location_device_id:
             return DeviceInfo(
                 identifiers={(DOMAIN, self.location_device_id)},
