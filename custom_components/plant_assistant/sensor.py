@@ -77,25 +77,34 @@ def _detect_sensor_type_from_entity(hass: HomeAssistant, entity_id: str) -> str 
         "rssi": "signal_strength",
     }
 
+    # Prefer reading device_class from the live state attributes which is
+    # what entity implementations expose at runtime. Fall back to a
+    # best-effort attempt via the entity registry and finally to simple
+    # pattern matching on the entity_id.
     try:
-        ent_reg = er.async_get(hass)
-        if entity := ent_reg.async_get(entity_id):
-            device_class = entity.device_class
+        # Check the runtime state first
+        state = hass.states.get(entity_id)
+        if state:
+            device_class = state.attributes.get("device_class")
             if device_class in device_class_mapping:
                 return device_class_mapping[device_class]
 
-        # Fallback to entity_id pattern matching
+        # Fallback to entity registry (may not expose device_class)
+        ent_reg = er.async_get(hass)
+        entity = ent_reg.async_get(entity_id)
+        if entity:
+            device_class = getattr(entity, "device_class", None)
+            if device_class in device_class_mapping:
+                return device_class_mapping[device_class]
+
+        # Final fallback: pattern match on entity_id
         entity_id_lower = entity_id.lower()
         for pattern, sensor_type in entity_id_patterns.items():
             if pattern in entity_id_lower:
                 return sensor_type
-
+    # pragma: no cover - defensive
     except (AttributeError, KeyError, ValueError) as exc:
-        _LOGGER.debug(
-            "Error detecting sensor type for %s: %s",
-            entity_id,
-            exc,
-        )
+        _LOGGER.debug("Error detecting sensor type for %s: %s", entity_id, exc)
 
     return None
 
@@ -135,49 +144,121 @@ def _get_monitoring_device_sensors(
     """
     device_sensors: dict[str, str] = {}
 
-    try:
-        # Get device and entity registries
-        dev_reg = dr.async_get(hass)
-        ent_reg = er.async_get(hass)
+    # Get device and entity registries
+    dev_reg = dr.async_get(hass)
+    ent_reg = er.async_get(hass)
 
-        # Try to get the device by ID
-        if not (device := dev_reg.async_get(monitoring_device_id)):
-            return device_sensors
+    # Try to get the device by ID
+    if not (device := dev_reg.async_get(monitoring_device_id)):
+        return device_sensors
 
-        # Get all sensor entities for this device
-        for entity in ent_reg.entities.values():
-            if entity.device_id == device.id and entity.domain == "sensor":
-                # Map sensor entity to sensor type based on device class or entity name
-                device_class = entity.device_class
+    # Get all sensor entities for this device and map them safely.
+    for entity in ent_reg.entities.values():
+        try:
+            if entity.device_id != device.id or entity.domain != "sensor":
+                continue
 
-                if device_class == "illuminance":
-                    device_sensors["illuminance"] = entity.entity_id
-                elif device_class == "soil_conductivity":
-                    device_sensors["soil_conductivity"] = entity.entity_id
-                elif device_class == "battery":
-                    device_sensors["battery"] = entity.entity_id
-                elif device_class == "signal_strength":
-                    device_sensors["signal_strength"] = entity.entity_id
-                elif "illuminance" in entity.entity_id.lower():
-                    device_sensors["illuminance"] = entity.entity_id
-                elif "conductivity" in entity.entity_id.lower():
-                    device_sensors["soil_conductivity"] = entity.entity_id
-                elif "battery" in entity.entity_id.lower():
-                    device_sensors["battery"] = entity.entity_id
-                elif (
-                    "signal" in entity.entity_id.lower()
-                    or "rssi" in entity.entity_id.lower()
-                ):
-                    device_sensors["signal_strength"] = entity.entity_id
+            # Prefer device_class from the live state attributes
+            device_class = None
+            try:
+                state = hass.states.get(entity.entity_id)
+                if state:
+                    device_class = state.attributes.get("device_class")
+            except (AttributeError, KeyError, ValueError):
+                # ignore state read errors for robustness
+                device_class = None
 
-    except (AttributeError, KeyError, ValueError, TypeError) as exc:
-        _LOGGER.debug(
-            "Error getting monitoring device sensors for %s: %s",
-            monitoring_device_id,
-            exc,
-        )
+            # Fall back to registry attribute if present
+            if not device_class:
+                device_class = getattr(entity, "device_class", None)
+
+            ent_id = entity.entity_id
+            ent_id_lower = ent_id.lower()
+
+            if device_class == "illuminance" or "illuminance" in ent_id_lower:
+                device_sensors["illuminance"] = ent_id
+            elif device_class == "soil_conductivity" or "conductivity" in ent_id_lower:
+                device_sensors["soil_conductivity"] = ent_id
+            elif device_class == "battery" or "battery" in ent_id_lower:
+                device_sensors["battery"] = ent_id
+            elif (
+                device_class == "signal_strength"
+                or "signal" in ent_id_lower
+                or "rssi" in ent_id_lower
+            ):
+                device_sensors["signal_strength"] = ent_id
+        except (
+            AttributeError,
+            KeyError,
+            ValueError,
+            TypeError,
+        ):  # pragma: no cover - defensive per-entity
+            # Don't abort scanning other entities if one entity raises
+            _LOGGER.debug(
+                "Skipping entity during monitoring discovery: %s",
+                getattr(entity, "entity_id", "<unknown>"),
+            )
 
     return device_sensors
+
+
+def _expected_entities_for_subentry(
+    hass: HomeAssistant, subentry: Any
+) -> tuple[set[str], set[str]]:
+    """
+    Return expected monitoring and humidity unique_ids for a subentry.
+
+    This encapsulates the logic used by the cleanup routine so the main
+    cleanup function stays small and within complexity limits.
+    """
+    expected_monitoring: set[str] = set()
+    expected_humidity: set[str] = set()
+
+    if "device_id" not in getattr(subentry, "data", {}):
+        return expected_monitoring, expected_humidity
+
+    monitoring_device_id = subentry.data.get("monitoring_device_id")
+    if monitoring_device_id:
+        try:
+            device_sensors = _get_monitoring_device_sensors(hass, monitoring_device_id)
+            for mapped_type, source_entity_id in device_sensors.items():
+                detected_type = _detect_sensor_type_from_entity(hass, source_entity_id)
+                sensor_type = detected_type if detected_type else mapped_type
+
+                location_name = subentry.data.get("name", "Plant Location")
+                device_name_safe = location_name.lower().replace(" ", "_")
+
+                if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
+                    mapping = MONITORING_SENSOR_MAPPINGS[sensor_type]
+                    if isinstance(mapping, dict):
+                        suffix = mapping.get("suffix", sensor_type)
+                    else:
+                        suffix = getattr(mapping, "suffix", sensor_type)
+                else:
+                    source_entity_safe = source_entity_id.replace(".", "_")
+                    suffix = f"monitor_{source_entity_safe}"
+
+                unique_id = (
+                    f"{DOMAIN}_{subentry.subentry_id}_{device_name_safe}_{suffix}"
+                )
+                expected_monitoring.add(unique_id)
+        except (ValueError, TypeError) as discovery_error:  # pragma: no cover
+            _LOGGER.debug(
+                "Failed to discover monitoring device sensors for %s: %s",
+                monitoring_device_id,
+                discovery_error,
+            )
+
+    humidity_entity_id = subentry.data.get("humidity_entity_id")
+    if humidity_entity_id:
+        location_name = subentry.data.get("name", "Plant Location")
+        location_name_safe = location_name.lower().replace(" ", "_")
+        humidity_unique_id = (
+            f"{DOMAIN}_{subentry.subentry_id}_{location_name_safe}_humidity_linked"
+        )
+        expected_humidity.add(humidity_unique_id)
+
+    return expected_monitoring, expected_humidity
 
 
 def _create_location_mirrored_sensors(
@@ -306,7 +387,7 @@ class PlantCountSensor(SensorEntity):
         self._state = 0
 
 
-async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
+async def _cleanup_orphaned_monitoring_sensors(
     hass: HomeAssistant, entry: ConfigEntry[Any]
 ) -> None:
     """
@@ -323,78 +404,14 @@ async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
         expected_monitoring_entities = set()
         expected_humidity_entities = set()
 
-        # Collect expected monitoring sensor entities from all subentries
+        # Collect expected monitoring and humidity unique_ids from subentries
         if entry.subentries:
             for subentry in entry.subentries.values():
-                if "device_id" in subentry.data:
-                    # Track monitoring sensors
-                    monitoring_device_id = subentry.data.get("monitoring_device_id")
-                    if monitoring_device_id:
-                        try:
-                            device_sensors = _get_monitoring_device_sensors(
-                                hass, monitoring_device_id
-                            )
-                            # For each sensor on the monitoring device, add the
-                            # unique_id of the mirrored sensor to expected entities
-                            for mapped_type, source_entity_id in device_sensors.items():
-                                # Detect sensor type if needed
-                                detected_type = _detect_sensor_type_from_entity(
-                                    hass, source_entity_id
-                                )
-                                sensor_type = (
-                                    detected_type if detected_type else mapped_type
-                                )
-
-                                # Build unique_id pattern for mirrored sensors
-                                # Format: plant_assistant_<entry_id>_<device>_<suffix>
-                                location_name = subentry.data.get(
-                                    "name", "Plant Location"
-                                )
-                                device_name_safe = location_name.lower().replace(
-                                    " ", "_"
-                                )
-
-                                if (
-                                    sensor_type
-                                    and sensor_type in MONITORING_SENSOR_MAPPINGS
-                                ):
-                                    mapping: MonitoringSensorMapping = (
-                                        MONITORING_SENSOR_MAPPINGS[sensor_type]
-                                    )
-                                    suffix = mapping.get("suffix", sensor_type)
-                                else:
-                                    # Fallback to sanitized source entity id
-                                    source_entity_safe = source_entity_id.replace(
-                                        ".", "_"
-                                    )
-                                    suffix = f"monitor_{source_entity_safe}"
-
-                                unique_id = (
-                                    f"{DOMAIN}_{subentry.subentry_id}_"
-                                    f"{device_name_safe}_{suffix}"
-                                )
-                                expected_monitoring_entities.add(unique_id)
-                        except (
-                            ValueError,
-                            TypeError,
-                        ) as discovery_error:  # pragma: no cover
-                            _LOGGER.debug(
-                                "Failed to discover monitoring device sensors "
-                                "for %s during monitoring sensor cleanup: %s",
-                                monitoring_device_id,
-                                discovery_error,
-                            )
-
-                    # Track humidity linked sensors
-                    humidity_entity_id = subentry.data.get("humidity_entity_id")
-                    if humidity_entity_id:
-                        location_name = subentry.data.get("name", "Plant Location")
-                        location_name_safe = location_name.lower().replace(" ", "_")
-                        humidity_unique_id = (
-                            f"{DOMAIN}_{subentry.subentry_id}_"
-                            f"{location_name_safe}_humidity_linked"
-                        )
-                        expected_humidity_entities.add(humidity_unique_id)
+                monitoring_set, humidity_set = _expected_entities_for_subentry(
+                    hass, subentry
+                )
+                expected_monitoring_entities.update(monitoring_set)
+                expected_humidity_entities.update(humidity_set)
 
         # Find and remove orphaned entities
         entities_to_remove = []
@@ -409,16 +426,21 @@ async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
 
             unique_id = entity_entry.unique_id
 
-            # Check if this is a monitoring sensor (has monitoring sensor suffixes)
-            monitoring_suffixes = [
-                "_temperature_mirror",
-                "_illuminance_mirror",
-                "_soil_moisture_mirror",
-                "_soil_conductivity_mirror",
-                "_monitor_battery_level",
-                "_monitor_signal_strength",
-                "_monitor_",  # Fallback pattern for custom sensors
-            ]
+            # Derive monitoring sensor suffixes from MONITORING_SENSOR_MAPPINGS
+            monitoring_suffixes: list[str] = []
+            for key, m in MONITORING_SENSOR_MAPPINGS.items():
+                # m may be a dict-like mapping; be defensive about types
+                if isinstance(m, dict):
+                    suffix_val = m.get("suffix", key)
+                # If it's a TypedDict or unexpected object, try attribute
+                # access and fall back to the key when not present.
+                elif hasattr(m, "suffix"):
+                    suffix_val = m.suffix
+                else:
+                    suffix_val = key
+                monitoring_suffixes.append(f"_{suffix_val}")
+            # Keep a conservative fallback for previously used monitor_ prefix
+            monitoring_suffixes.append("_monitor_")
 
             if (
                 any(suffix in unique_id for suffix in monitoring_suffixes)
