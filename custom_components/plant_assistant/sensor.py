@@ -834,6 +834,8 @@ class HumidityLinkedSensor(SensorEntity):
         self._attr_device_class = SensorDeviceClass.HUMIDITY
         self._attr_icon = "mdi:water-percent"
         self._attr_native_unit_of_measurement = "%"
+        # Set default precision to 0 decimals (integers) - user can adjust in HA
+        self._attr_suggested_display_precision = 0
 
         self._state = None
         self._attributes: dict[str, Any] = {}
