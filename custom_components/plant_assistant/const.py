@@ -109,13 +109,13 @@ OPENPLANTBOOK_DOMAIN = "openplantbook_ref"
 
 # Daily Light Integral (DLI) Constants
 # Conversion factors
-DEFAULT_LUX_TO_PPFD = 0.0185  # Standard conversion from lux to PPFD (μmol/m²/s)
-PPFD_DLI_FACTOR = (
-    0.000001  # Convert PPFD integral (μmol/m²) to DLI (mol/m²/d): 1/1,000,000 μmol/mol
-)
+# Standard conversion from lux to μmol/m²/s. To obtain mol/s⋅m² divide
+# the μmol/m²/s value by 1_000_000.
+DEFAULT_LUX_TO_PPFD = 0.0185
+PPFD_DLI_FACTOR = 0.000001  # Convert PPFD integral (μmol/m²) to DLI (mol/m²/d)
 
 # DLI Units and Icons
-UNIT_PPFD = "μmol/m²/s"  # Photosynthetic Photon Flux Density
+UNIT_PPFD = "mol/s⋅m²"  # Photosynthetic Photon Flux Density
 UNIT_DLI = "mol/m²/d"  # Daily Light Integral
 ICON_PPFD = "mdi:white-balance-sunny"
 ICON_DLI = "mdi:counter"

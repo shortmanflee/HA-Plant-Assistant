@@ -9,26 +9,50 @@ keeps implementations test-friendly by only relying on `hass.data` and the
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypedDict
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
+from homeassistant.components.integration.const import METHOD_TRAPEZOIDAL
+from homeassistant.components.integration.sensor import IntegrationSensor
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.utility_meter.const import (
+    DAILY,
+    DATA_TARIFF_SENSORS,
+    DATA_UTILITY,
+)
+from homeassistant.components.utility_meter.sensor import UtilityMeterSensor
+from homeassistant.const import (
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+    EntityCategory,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import async_generate_entity_id
 from homeassistant.helpers.event import async_track_state_change
 
 from . import aggregation
 from .const import (
     AGGREGATED_SENSOR_MAPPINGS,
     ATTR_PLANT_DEVICE_IDS,
+    DEFAULT_LUX_TO_PPFD,
     DOMAIN,
+    ICON_DLI,
+    ICON_PPFD,
     MONITORING_SENSOR_MAPPINGS,
+    READING_DLI,
+    READING_PPFD,
+    UNIT_DLI,
+    UNIT_PPFD,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -455,7 +479,7 @@ def _is_aggregated_sensor(unique_id: str) -> bool:
 
     """
     # Extract all suffixes from aggregated sensor mappings
-    aggregated_suffixes = set()
+    aggregated_suffixes: set[str] = set()
     for metric_config in AGGREGATED_SENSOR_MAPPINGS.values():
         metric_config_typed: dict[str, Any] = metric_config
         suffix = metric_config_typed.get("suffix", "")
@@ -664,7 +688,7 @@ def _create_aggregated_location_sensors(  # noqa: PLR0913
     return sensors
 
 
-async def async_setup_entry(
+async def async_setup_entry(  # noqa: PLR0915
     hass: HomeAssistant,
     entry: ConfigEntry[Any],
     async_add_entities: AddEntitiesCallback,
@@ -711,92 +735,165 @@ async def async_setup_entry(
                 subentry.subentry_id,
                 subentry.data,
             )
-            if "device_id" in subentry.data:
-                subentry_entities = []
 
-                location_name = subentry.data.get("name", "Plant Location")
-                location_device_id = (
-                    subentry.subentry_id
-                )  # Use subentry ID as device identifier
+            location_name = subentry.data.get("name", "Plant Location")
+            location_device_id = subentry.subentry_id
 
-                # Create plant count entity for this location
-                plant_slots = subentry.data.get("plant_slots", {})
-                plant_count_entity = PlantCountLocationSensor(
+            subentry_entities: list[SensorEntity] = []
+
+            # Create plant count entity for this location
+            plant_slots = subentry.data.get("plant_slots", {})
+            plant_count_entity = PlantCountLocationSensor(
+                hass=hass,
+                entry_id=subentry.subentry_id,
+                location_name=location_name,
+                location_device_id=location_device_id,
+                plant_slots=plant_slots,
+            )
+            subentry_entities.append(plant_count_entity)
+
+            # Create mirrored sensors for monitoring device if present
+            monitoring_device_id = subentry.data.get("monitoring_device_id")
+            if monitoring_device_id:
+                mirrored_sensors = _create_location_mirrored_sensors(
                     hass=hass,
                     entry_id=subentry.subentry_id,
-                    location_name=location_name,
                     location_device_id=location_device_id,
+                    location_name=location_name,
+                    monitoring_device_id=monitoring_device_id,
+                )
+                subentry_entities.extend(mirrored_sensors)
+                _LOGGER.debug(
+                    "Added %d mirrored sensors for monitoring device %s at location %s",
+                    len(mirrored_sensors),
+                    monitoring_device_id,
+                    location_name,
+                )
+
+            # Create humidity linked sensor if humidity entity is configured
+            humidity_entity_id = subentry.data.get("humidity_entity_id")
+            if humidity_entity_id:
+                humidity_sensor = HumidityLinkedSensor(
+                    hass=hass,
+                    entry_id=subentry.subentry_id,
+                    location_device_id=location_device_id,
+                    location_name=location_name,
+                    humidity_entity_id=humidity_entity_id,
+                )
+                subentry_entities.append(humidity_sensor)
+                _LOGGER.debug(
+                    "Added humidity linked sensor for entity %s at location %s",
+                    humidity_entity_id,
+                    location_name,
+                )
+
+            # Create aggregated location sensors if plant slots are configured
+            if _has_plants_in_slots(subentry.data):
+                aggregated_sensors = _create_aggregated_location_sensors(
+                    hass=hass,
+                    entry_id=subentry.subentry_id,
+                    location_device_id=location_device_id,
+                    location_name=location_name,
+                    monitoring_device_id=monitoring_device_id,
+                    humidity_entity_id=humidity_entity_id,
                     plant_slots=plant_slots,
                 )
-                subentry_entities.append(plant_count_entity)
-
-                # Create mirrored sensors for monitoring device if present
-                monitoring_device_id = subentry.data.get("monitoring_device_id")
-                if monitoring_device_id:
-                    mirrored_sensors = _create_location_mirrored_sensors(
-                        hass=hass,
-                        entry_id=subentry.subentry_id,
-                        location_device_id=location_device_id,
-                        location_name=location_name,
-                        monitoring_device_id=monitoring_device_id,
-                    )
-                    subentry_entities.extend(mirrored_sensors)
-                    _LOGGER.debug(
-                        "Added %d mirrored sensors for monitoring device %s"
-                        " at location %s",
-                        len(mirrored_sensors),
-                        monitoring_device_id,
-                        location_name,
-                    )
-
-                # Create humidity linked sensor if humidity entity is configured
-                humidity_entity_id = subentry.data.get("humidity_entity_id")
-                if humidity_entity_id:
-                    humidity_sensor = HumidityLinkedSensor(
-                        hass=hass,
-                        entry_id=subentry.subentry_id,
-                        location_device_id=location_device_id,
-                        location_name=location_name,
-                        humidity_entity_id=humidity_entity_id,
-                    )
-                    subentry_entities.append(humidity_sensor)
-                    _LOGGER.debug(
-                        "Added humidity linked sensor for entity %s at location %s",
-                        humidity_entity_id,
-                        location_name,
-                    )
-
-                # Create aggregated location sensors if plant slots are configured
-                if _has_plants_in_slots(subentry.data):
-                    aggregated_sensors = _create_aggregated_location_sensors(
-                        hass=hass,
-                        entry_id=subentry.subentry_id,
-                        location_device_id=location_device_id,
-                        location_name=location_name,
-                        monitoring_device_id=monitoring_device_id,
-                        humidity_entity_id=humidity_entity_id,
-                        plant_slots=plant_slots,
-                    )
-                    subentry_entities.extend(aggregated_sensors)
-                    _LOGGER.debug(
-                        "Added %d aggregated location sensors for location %s",
-                        len(aggregated_sensors),
-                        location_name,
-                    )
-
-                # Add entities with proper subentry association (like openplantbook_ref)
+                subentry_entities.extend(aggregated_sensors)
                 _LOGGER.debug(
-                    "Adding %d entities for subentry %s",
-                    len(subentry_entities),
-                    subentry_id,
+                    "Added %d aggregated location sensors for location %s",
+                    len(aggregated_sensors),
+                    location_name,
                 )
-                # Note: config_subentry_id exists in HA 2025.8.3+ but not in type hint
-                async_add_entities(
-                    subentry_entities,
-                    config_subentry_id=subentry_id,  # type: ignore[call-arg]
-                )
-            else:
-                _LOGGER.warning("Subentry %s missing device_id", subentry_id)
+
+            # Create DLI sensors if monitoring device with illuminance is configured
+            # DLI pipeline: PPFD -> Total Integral -> DLI
+            if monitoring_device_id:
+                # Find illuminance mirrored sensor source entity for this location
+                illuminance_source_entity_id = None
+                for sensor in mirrored_sensors:
+                    if (
+                        isinstance(sensor, MonitoringSensor)
+                        and hasattr(sensor, "source_entity_id")
+                        and "illuminance" in sensor.source_entity_id.lower()
+                    ):
+                        # Use source entity ID (mirrored entity_id not yet created)
+                        illuminance_source_entity_id = sensor.source_entity_id
+                        break
+
+                if illuminance_source_entity_id:
+                    # Create PPFD sensor (converts lux to μmol/m²/s)
+                    ppfd_sensor = PlantLocationPpfdSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        illuminance_entity_id=illuminance_source_entity_id,
+                    )
+                    subentry_entities.append(ppfd_sensor)
+
+                    # Create total integral sensor (integrates PPFD over time)
+                    total_integral_sensor = PlantLocationTotalLightIntegral(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        ppfd_sensor=ppfd_sensor,
+                    )
+
+                    # Add integral sensor immediately so it gets an initial state
+                    _LOGGER.debug(
+                        "Adding Total Integral sensor %s before creating DLI",
+                        total_integral_sensor.entity_id,
+                    )
+                    # Use a cast wrapper to call async_add_entities with the
+                    # `config_subentry_id` kwarg which isn't present in the
+                    # older type stubs.
+                    _add_entities = cast("Callable[..., Any]", async_add_entities)
+                    _add_entities(
+                        [total_integral_sensor],
+                        update_before_add=True,
+                        config_subentry_id=subentry_id,
+                    )
+
+                    # Prepare data used by UtilityMeterSensor.async_reading
+                    hass.data.setdefault(DATA_UTILITY, {})
+                    hass.data[DATA_UTILITY].setdefault(subentry.subentry_id, {})
+                    hass.data[DATA_UTILITY][subentry.subentry_id].setdefault(
+                        DATA_TARIFF_SENSORS, []
+                    )
+
+                    _LOGGER.debug(
+                        "Creating DLI sensor with source %s",
+                        total_integral_sensor.entity_id,
+                    )
+                    dli_sensor = PlantLocationDailyLightIntegral(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        total_integral_sensor=total_integral_sensor,
+                    )
+                    subentry_entities.append(dli_sensor)
+
+                    # Register DLI sensor with utility meter data structure
+                    hass.data[DATA_UTILITY][subentry.subentry_id][
+                        DATA_TARIFF_SENSORS
+                    ].append(dli_sensor)
+
+                    _LOGGER.debug("Added DLI for %s", location_name)
+                else:
+                    _LOGGER.debug("No illuminance sensor for DLI at %s", location_name)
+
+            # Add entities with proper subentry association (like openplantbook_ref)
+            _LOGGER.debug(
+                "Adding %d entities for subentry %s",
+                len(subentry_entities),
+                subentry_id,
+            )
+            # Note: config_subentry_id exists in HA 2025.8.3+ but not in type hint
+            _add_entities = cast("Callable[..., Any]", async_add_entities)
+            _add_entities(subentry_entities, config_subentry_id=subentry_id)
+        _LOGGER.warning("Subentry %s missing device_id", subentry_id)
         return
 
     # Main entry aggregated sensors for locations (if no subentries)
@@ -1724,6 +1821,248 @@ def _plants_from_entity_states(
         attrs = getattr(st, "attributes", {}) or {}
         out.append(dict(attrs))
     return out
+
+
+class PlantLocationPpfdSensor(SensorEntity):
+    """
+    Entity reporting current PPFD calculated from illuminance (lux).
+
+    Converts lux to PPFD (μmol/m²/s) using the standard conversion factor.
+    Based on PlantCurrentPpfd from Olen/homeassistant-plant.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        illuminance_entity_id: str,
+    ) -> None:
+        """Initialize the PPFD sensor."""
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self._illuminance_entity_id = illuminance_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} {READING_PPFD}"
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{DOMAIN}_{entry_id}_{location_name_safe}_ppfd"
+        self._attr_native_unit_of_measurement = UNIT_PPFD
+        self._attr_icon = ICON_PPFD
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        # Make visible for debugging - user can hide if desired
+        self._attr_entity_registry_visible_default = True
+
+        self._state: float | None = None
+        self._unsubscribe = None
+
+        # Generate entity_id so it can be used by IntegrationSensor
+        self.entity_id = async_generate_entity_id(
+            "sensor.{}", self._attr_name.lower().replace(" ", "_"), current_ids={}
+        )
+
+        # Set device info
+        device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+        self._attr_device_info = device_info
+
+        # Initialize with current illuminance value
+        if illuminance_state := hass.states.get(illuminance_entity_id):
+            self._state = self._ppfd_from_lux(illuminance_state.state)
+
+    def _ppfd_from_lux(self, lux_value: Any) -> float | None:
+        """
+        Convert lux value to PPFD (mol/s⋅m²).
+
+        See https://www.apogeeinstruments.com/conversion-ppfd-to-lux/
+        Standard conversion for sunlight: 0.0185 μmol/m²/s per lux.
+        We divide by 1,000,000 to convert from μmol to mol.
+        """
+        if lux_value is None or lux_value in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+
+        try:
+            # Convert lux to PPFD: lux * 0.0185 / 1000000 = mol/s⋅m²
+            # (0.0185 converts lux to μmol/m²/s, then /1000000 converts to mol/s⋅m²)
+            return float(lux_value) * DEFAULT_LUX_TO_PPFD / 1000000
+        except (ValueError, TypeError):
+            return None
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the native value of the sensor."""
+        return self._state
+
+    @property
+    def device_class(self) -> None:
+        """Device class - None for PPFD as there's no standard device class."""
+        return None
+
+    @callback
+    def _illuminance_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle illuminance sensor state changes."""
+        if new_state is None:
+            self._state = None
+        else:
+            self._state = self._ppfd_from_lux(new_state.state)
+
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to illuminance sensor state changes."""
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass, self._illuminance_entity_id, self._illuminance_state_changed
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to illuminance entity %s: %s",
+                self._illuminance_entity_id,
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class PlantLocationTotalLightIntegral(IntegrationSensor):
+    """
+    Entity to calculate total PPFD integral over time.
+
+    Uses trapezoidal integration method to accumulate PPFD values.
+    Based on PlantTotalLightIntegral from Olen/homeassistant-plant.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        ppfd_sensor: PlantLocationPpfdSensor,
+    ) -> None:
+        """Initialize the total light integral sensor."""
+        # entry_id intentionally unused in this implementation; keep for
+        # future compatibility with caller keywords
+        _ = entry_id
+        super().__init__(
+            hass,
+            integration_method=METHOD_TRAPEZOIDAL,
+            # Use a concise display name (don't include the entry id in the unique id)
+            name=f"{location_name} {READING_PPFD} Integral",
+            round_digits=2,
+            source_entity=ppfd_sensor.entity_id,
+            # Use a short unique_id so the generated entity_id is concise
+            unique_id=f"{location_name.lower().replace(' ', '_')}_ppfd_integral",
+            unit_prefix=None,
+            unit_time=UnitOfTime.SECONDS,
+            max_sub_interval=None,
+        )
+        self._unit_of_measurement = UNIT_DLI
+        self._attr_icon = ICON_DLI
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        # Make visible for debugging - user can hide if desired
+        self._attr_entity_registry_visible_default = True
+        self.location_device_id = location_device_id
+
+        # Generate a concise entity_id (e.g. sensor.green_ppfd_integral)
+        self.entity_id = async_generate_entity_id(
+            "sensor.{}",
+            f"{location_name} {READING_PPFD} Integral".lower().replace(" ", "_"),
+            current_ids={},
+        )
+
+    def _unit(self, source_unit: str) -> str:
+        """Override unit to return DLI unit."""
+        # source_unit parameter not used; keep to match IntegrationSensor API
+        _ = source_unit
+        return self._unit_of_measurement or UNIT_DLI
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+
+class PlantLocationDailyLightIntegral(UtilityMeterSensor):
+    """
+    Entity to calculate Daily Light Integral (DLI) from PPFD integral.
+
+    Resets daily to provide daily light accumulation.
+    Based on PlantDailyLightIntegral from Olen/homeassistant-plant.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        total_integral_sensor: PlantLocationTotalLightIntegral,
+    ) -> None:
+        """Initialize the DLI sensor."""
+        # UtilityMeterSensor.__init__ is untyped in upstream stubs. Call via
+        # a cast to Any so mypy doesn't complain about calling an untyped
+        # function while keeping runtime behavior identical.
+        _ums_init = cast("Any", UtilityMeterSensor).__init__
+        _ums_init(
+            self,
+            hass,
+            cron_pattern=None,
+            delta_values=None,
+            meter_offset=timedelta(seconds=0),
+            meter_type=DAILY,
+            name=f"{location_name} {READING_DLI}",
+            net_consumption=None,
+            parent_meter=entry_id,
+            source_entity=total_integral_sensor.entity_id,
+            tariff_entity=None,
+            tariff=None,
+            unique_id=f"{location_name.lower().replace(' ', '_')}_dli",
+            sensor_always_available=True,
+            suggested_entity_id=None,
+            periodically_resetting=True,
+        )
+        self._unit_of_measurement = UNIT_DLI
+        self._attr_icon = ICON_DLI
+        self._attr_suggested_display_precision = 2
+        self.location_device_id = location_device_id
+
+        # Generate a concise entity_id (e.g. sensor.green_dli)
+        self.entity_id = async_generate_entity_id(
+            "sensor.{}",
+            f"{location_name} {READING_DLI}".lower().replace(" ", "_"),
+            current_ids={},
+        )
+
+    @property
+    def device_class(self) -> SensorDeviceClass | None:
+        """Device class for DLI (no standard device class; return None)."""
+        # There is no standard SensorDeviceClass for DLI in Home Assistant.
+        return None
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
 
 
 class PlantMoistureSensor(SensorEntity):
