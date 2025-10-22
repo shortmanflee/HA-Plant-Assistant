@@ -121,8 +121,15 @@ ICON_PPFD = "mdi:white-balance-sunny"
 ICON_DLI = "mdi:counter"
 
 # DLI sensor types
-READING_PPFD = "ppfd"
+# Human-friendly reading name for PPFD (capitalized for display).
+# Keep short tokens/unique ids lowercase elsewhere.
+READING_PPFD = "PPFD"
+# Keep the short token for backwards-compatibility in places that expect 'dli'
 READING_DLI = "dli"
+
+# Friendly display name for Daily Light Integral and a slug for entity ids
+READING_DLI_NAME = "Daily Light Integral"
+READING_DLI_SLUG = "daily_light_integral"
 
 # Attribute keys
 MONITORING_SENSOR_MAPPINGS = {

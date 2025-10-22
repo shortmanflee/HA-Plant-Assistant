@@ -45,7 +45,8 @@ from .const import (
     ICON_DLI,
     ICON_PPFD,
     MONITORING_SENSOR_MAPPINGS,
-    READING_DLI,
+    READING_DLI_NAME,
+    READING_DLI_SLUG,
     READING_PPFD,
     UNIT_DLI,
     UNIT_PPFD,
@@ -2026,13 +2027,13 @@ class PlantLocationDailyLightIntegral(UtilityMeterSensor):
             delta_values=None,
             meter_offset=timedelta(seconds=0),
             meter_type=DAILY,
-            name=f"{location_name} {READING_DLI}",
+            name=f"{location_name} {READING_DLI_NAME}",
             net_consumption=None,
             parent_meter=entry_id,
             source_entity=total_integral_sensor.entity_id,
             tariff_entity=None,
             tariff=None,
-            unique_id=f"{location_name.lower().replace(' ', '_')}_dli",
+            unique_id=f"{location_name.lower().replace(' ', '_')}_{READING_DLI_SLUG}",
             sensor_always_available=True,
             suggested_entity_id=None,
             periodically_resetting=True,
@@ -2042,10 +2043,10 @@ class PlantLocationDailyLightIntegral(UtilityMeterSensor):
         self._attr_suggested_display_precision = 2
         self.location_device_id = location_device_id
 
-        # Generate a concise entity_id (e.g. sensor.green_dli)
+        # Generate a concise entity_id (e.g. sensor.green_daily_light_integral)
         self.entity_id = async_generate_entity_id(
             "sensor.{}",
-            f"{location_name} {READING_DLI}".lower().replace(" ", "_"),
+            f"{location_name} {READING_DLI_NAME}".lower().replace(" ", "_"),
             current_ids={},
         )
 
