@@ -36,7 +36,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import async_generate_entity_id
 from homeassistant.helpers.event import async_track_state_change
 
-from . import aggregation
+from . import aggregation, dli
 from .const import (
     AGGREGATED_SENSOR_MAPPINGS,
     ATTR_PLANT_DEVICE_IDS,
@@ -316,6 +316,8 @@ def _expected_entities_for_subentry(  # noqa: PLR0912
                     "max_temperature",
                     "min_illuminance",
                     "max_illuminance",
+                    "min_dli",
+                    "max_dli",
                     "min_soil_moisture",
                     "max_soil_moisture",
                     "min_soil_conductivity",
@@ -639,6 +641,8 @@ def _create_aggregated_location_sensors(  # noqa: PLR0913
             "max_temperature",
             "min_illuminance",
             "max_illuminance",
+            "min_dli",
+            "max_dli",
             "min_soil_moisture",
             "max_soil_moisture",
             "min_soil_conductivity",
@@ -1431,10 +1435,18 @@ class AggregatedLocationSensor(SensorEntity):
         aggregation_type = self.metric_config.get("aggregation_type")
         plant_attr_min = self.metric_config.get("plant_attr_min")
         plant_attr_max = self.metric_config.get("plant_attr_max")
+        # Some aggregated metrics operate on illuminance but should be
+        # converted to DLI before aggregation. Use specialized helpers
+        # from the dli module when configured.
+        convert_to_dli = bool(self.metric_config.get("convert_illuminance_to_dli"))
 
         result = None
         if aggregation_type == "max_of_mins" and plant_attr_min:
-            result = aggregation.max_of_mins(plants, plant_attr_min)
+            if convert_to_dli:
+                # Convert plant minimum illuminance (lux) to DLI and take max
+                result = dli.max_of_mins_dli(plants, plant_attr_min)
+            else:
+                result = aggregation.max_of_mins(plants, plant_attr_min)
             _LOGGER.debug(
                 "Computed max_of_mins for %s using key '%s': %s",
                 self.metric_key,
@@ -1442,7 +1454,11 @@ class AggregatedLocationSensor(SensorEntity):
                 result,
             )
         elif aggregation_type == "min_of_maximums" and plant_attr_max:
-            result = aggregation.min_of_maxs(plants, plant_attr_max)
+            if convert_to_dli:
+                # Convert plant maximum illuminance (lux) to DLI and take min
+                result = dli.min_of_maxs_dli(plants, plant_attr_max)
+            else:
+                result = aggregation.min_of_maxs(plants, plant_attr_max)
             _LOGGER.debug(
                 "Computed min_of_maxs for %s using key '%s': %s",
                 self.metric_key,
