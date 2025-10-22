@@ -115,7 +115,7 @@ DEFAULT_LUX_TO_PPFD = 0.0185
 PPFD_DLI_FACTOR = 0.000001  # Convert PPFD integral (μmol/m²) to DLI (mol/m²/d)
 
 # DLI Units and Icons
-UNIT_PPFD = "mol/s⋅m²"  # Photosynthetic Photon Flux Density
+UNIT_PPFD = "mol/m²/s"  # Photosynthetic Photon Flux Density
 UNIT_DLI = "mol/m²/d"  # Daily Light Integral
 ICON_PPFD = "mdi:white-balance-sunny"
 ICON_DLI = "mdi:counter"
