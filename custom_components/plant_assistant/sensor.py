@@ -8,6 +8,7 @@ keeps implementations test-friendly by only relying on `hass.data` and the
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import async_generate_entity_id
 from homeassistant.helpers.event import async_track_state_change
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import aggregation, dli
 from .const import (
@@ -884,6 +886,17 @@ async def async_setup_entry(  # noqa: PLR0915
                     hass.data[DATA_UTILITY][subentry.subentry_id][
                         DATA_TARIFF_SENSORS
                     ].append(dli_sensor)
+
+                    # Create a sensor exposing the last_period attribute.
+                    # This represents yesterday's DLI value.
+                    dli_last_period_sensor = DliLastPeriodSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        dli_entity_id=dli_sensor.entity_id,
+                    )
+                    subentry_entities.append(dli_last_period_sensor)
 
                     _LOGGER.debug("Added DLI for %s", location_name)
                 else:
@@ -2080,6 +2093,143 @@ class PlantLocationDailyLightIntegral(UtilityMeterSensor):
                 identifiers={(DOMAIN, self.location_device_id)},
             )
         return None
+
+
+class DliLastPeriodSensor(RestoreEntity, SensorEntity):
+    """
+    Sensor exposing the `last_period` attribute from a DLI UtilityMeterSensor.
+
+    This mirrors the utility meter's last_period attribute (e.g., yesterday's DLI)
+    as a standalone sensor entity for easy access in automations and dashboards.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        dli_entity_id: str,
+    ) -> None:
+        """Initialize the DLI last period sensor."""
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self._dli_entity_id = dli_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} Last Period DLI"
+        location_name_safe = location_name.lower().replace(" ", "_")
+        # use 'last_period' in unique id to match new naming
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_dli_last_period"
+        )
+        self._attr_native_unit_of_measurement = UNIT_DLI
+        self._attr_icon = ICON_DLI
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_suggested_display_precision = 2
+
+        # Set device info
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+
+        self._state: Any = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+        self._restored = False
+
+        # Initialize from current DLI state if available
+        if dli_state := hass.states.get(self._dli_entity_id):
+            self._state = dli_state.attributes.get("last_period")
+            self._attributes = dict(dli_state.attributes)
+            self._attributes["source_entity"] = self._dli_entity_id
+
+        # Generate a concise entity_id based on the new name. For example,
+        # the generated entity_id will look like sensor.green_last_period_dli.
+        # Use a safe, lowercased, underscored location name to create the id.
+        with contextlib.suppress(Exception):
+            self.entity_id = async_generate_entity_id(
+                "sensor.{}",
+                f"{location_name} Last Period DLI".lower().replace(" ", "_"),
+                current_ids={},
+            )
+
+    @callback
+    def _dli_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle DLI sensor state changes."""
+        if new_state is None:
+            self._state = None
+            self._attributes = {}
+        else:
+            self._state = new_state.attributes.get("last_period")
+            self._attributes = dict(new_state.attributes)
+            self._attributes["source_entity"] = self._dli_entity_id
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        dli_state = self.hass.states.get(self._dli_entity_id)
+        return dli_state is not None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to DLI sensor state changes and restore previous state."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (last_state := await self.async_get_last_state()) and not self._restored:
+            self._restored = True
+            if last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                try:
+                    self._state = float(last_state.state)
+                except (ValueError, TypeError):
+                    self._state = last_state.state
+
+                # Restore attributes
+                if last_state.attributes:
+                    self._attributes = dict(last_state.attributes)
+
+                _LOGGER.debug(
+                    "Restored DLI last period sensor %s with state: %s",
+                    self.entity_id,
+                    self._state,
+                )
+
+        # Subscribe to DLI sensor state changes
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass, self._dli_entity_id, self._dli_state_changed
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to DLI entity %s: %s",
+                self._dli_entity_id,
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
 
 
 class PlantMoistureSensor(SensorEntity):
