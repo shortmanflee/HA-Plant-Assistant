@@ -2118,11 +2118,13 @@ class DliLastPeriodSensor(RestoreEntity, SensorEntity):
         self._dli_entity_id = dli_entity_id
 
         # Set entity attributes
-        self._attr_name = f"{location_name} Last Period DLI"
+        # Use the friendly DLI display name for readability.
+        # e.g., "Daily Light Integral"
+        self._attr_name = f"{location_name} Last Period {READING_DLI_NAME}"
         location_name_safe = location_name.lower().replace(" ", "_")
         # use 'last_period' in unique id to match new naming
         self._attr_unique_id = (
-            f"{DOMAIN}_{entry_id}_{location_name_safe}_dli_last_period"
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_{READING_DLI_SLUG}_last_period"
         )
         self._attr_native_unit_of_measurement = UNIT_DLI
         self._attr_icon = ICON_DLI
@@ -2149,12 +2151,14 @@ class DliLastPeriodSensor(RestoreEntity, SensorEntity):
             self._attributes["source_entity"] = self._dli_entity_id
 
         # Generate a concise entity_id based on the new name. For example,
-        # the generated entity_id will look like sensor.green_last_period_dli.
+        # it may look like: sensor.green_last_period_daily_light_integral.
         # Use a safe, lowercased, underscored location name to create the id.
         with contextlib.suppress(Exception):
             self.entity_id = async_generate_entity_id(
                 "sensor.{}",
-                f"{location_name} Last Period DLI".lower().replace(" ", "_"),
+                f"{location_name} Last Period {READING_DLI_NAME}".lower().replace(
+                    " ", "_"
+                ),
                 current_ids={},
             )
 
