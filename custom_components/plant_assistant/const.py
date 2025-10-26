@@ -131,6 +131,10 @@ READING_DLI = "dli"
 READING_DLI_NAME = "Daily Light Integral"
 READING_DLI_SLUG = "daily_light_integral"
 
+# Weekly Average DLI sensor
+READING_WEEKLY_AVG_DLI_NAME = "Weekly Average Daily Light Integral"
+READING_WEEKLY_AVG_DLI_SLUG = "weekly_average_daily_light_integral"
+
 # Attribute keys
 MONITORING_SENSOR_MAPPINGS = {
     "temperature": {
