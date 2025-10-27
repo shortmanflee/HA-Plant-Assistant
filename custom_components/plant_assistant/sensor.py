@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from homeassistant.components import statistics  # noqa: F401
 from homeassistant.components.integration.const import METHOD_TRAPEZOIDAL
 from homeassistant.components.integration.sensor import IntegrationSensor
+from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.components.utility_meter.const import (
     DAILY,
@@ -37,7 +38,9 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import async_generate_entity_id
 from homeassistant.helpers.event import async_track_state_change
+from homeassistant.helpers.recorder import get_instance
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util import dt as dt_util
 
 from . import aggregation, dli
 from .const import (
@@ -698,7 +701,7 @@ def _create_aggregated_location_sensors(  # noqa: PLR0913
     return sensors
 
 
-async def async_setup_entry(  # noqa: PLR0915
+async def async_setup_entry(  # noqa: PLR0912, PLR0915
     hass: HomeAssistant,
     entry: ConfigEntry[Any],
     async_add_entities: AddEntitiesCallback,
@@ -916,6 +919,33 @@ async def async_setup_entry(  # noqa: PLR0915
                     _LOGGER.debug("Added DLI for %s", location_name)
                 else:
                     _LOGGER.debug("No illuminance sensor for DLI at %s", location_name)
+
+                # Create temperature below threshold hours sensor if temperature
+                # sensor and plant slots exist
+                temperature_source_entity_id = None
+                for sensor in mirrored_sensors:
+                    if (
+                        isinstance(sensor, MonitoringSensor)
+                        and hasattr(sensor, "source_entity_id")
+                        and "temperature" in sensor.source_entity_id.lower()
+                    ):
+                        # Use source entity ID (mirrored entity_id not yet created)
+                        temperature_source_entity_id = sensor.source_entity_id
+                        break
+
+                if temperature_source_entity_id and _has_plants_in_slots(subentry.data):
+                    temp_below_threshold_sensor = TemperatureBelowThresholdHoursSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        temperature_entity_id=temperature_source_entity_id,
+                    )
+                    subentry_entities.append(temp_below_threshold_sensor)
+                    _LOGGER.debug(
+                        "Added temperature below threshold hours sensor for %s",
+                        location_name,
+                    )
 
             # Add entities with proper subentry association (like openplantbook_ref)
             _LOGGER.debug(
@@ -2459,6 +2489,304 @@ class WeeklyAverageDliSensor(SensorEntity):
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.warning(
                 "Failed to set up weekly average DLI sensor: %s",
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class TemperatureBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
+    """
+    Sensor that counts hours where temperature was below minimum threshold.
+
+    This sensor queries Home Assistant's statistics database to count the number
+    of hourly readings where the temperature was below the minimum temperature
+    threshold over the past 7 days.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        temperature_entity_id: str,
+    ) -> None:
+        """
+        Initialize the temperature below threshold hours sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The subentry ID.
+            location_device_id: The device ID of the location.
+            location_name: The name of the location.
+            temperature_entity_id: The entity ID of the temperature sensor.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self._temperature_entity_id = temperature_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} Temperature Below Threshold Hours"
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_"
+            "temperature_below_threshold_hours"
+        )
+
+        # Set device class, unit, and icon
+        self._attr_device_class = None  # No standard device class for this metric
+        self._attr_native_unit_of_measurement = "hours"
+        self._attr_icon = "mdi:thermometer-alert"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_suggested_display_precision = 0
+        self._attr_entity_registry_visible_default = True
+
+        # Set device info
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+
+        self._state: Any = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+        # Generate a concise entity_id
+        with contextlib.suppress(Exception):
+            self.entity_id = async_generate_entity_id(
+                "sensor.{}",
+                f"{location_name} Temperature Below Threshold Hours".lower().replace(
+                    " ", "_"
+                ),
+                current_ids={},
+            )
+
+    async def _calculate_hours_below_threshold(self) -> int | None:
+        """
+        Calculate hours where temperature was below the minimum threshold.
+
+        This queries the statistics from Home Assistant's recorder database
+        to count hourly periods where temperature was below the threshold.
+
+        Returns:
+            The number of hours below threshold, or None if data unavailable.
+
+        """
+        try:
+            # Get threshold temperature
+            min_temp_threshold = await self._get_temperature_threshold()
+            if min_temp_threshold is None:
+                return None
+
+            # Get temperature statistics
+            stats = await self._fetch_temperature_statistics()
+            if not stats:
+                return None
+
+            # Count hours below threshold
+            hours_below = self._count_hours_below_threshold(stats, min_temp_threshold)
+
+            _LOGGER.debug(
+                "Temperature below threshold: %d hours out of %d total hours "
+                "(threshold: %.1f°C)",
+                hours_below,
+                len(stats),
+                min_temp_threshold,
+            )
+
+            return hours_below  # noqa: TRY300
+
+        except ImportError as exc:
+            _LOGGER.warning(
+                "Could not import recorder statistics: %s",
+                exc,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - Defensive
+            _LOGGER.warning(
+                "Error calculating temperature below threshold hours: %s (%s)",
+                exc,
+                type(exc).__name__,
+            )
+            return None
+
+    async def _get_temperature_threshold(self) -> float | None:
+        """Get the minimum temperature threshold from aggregated sensors."""
+        # Find the min_temperature aggregated sensor for this location
+        min_temp_entity_id = self._find_min_temperature_entity()
+        if not min_temp_entity_id:
+            _LOGGER.debug("No minimum temperature threshold entity found for location")
+            return None
+
+        # Get the threshold value
+        min_temp_state = self.hass.states.get(min_temp_entity_id)
+        if not min_temp_state or min_temp_state.state in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+            None,
+        ):
+            _LOGGER.debug(
+                "Minimum temperature threshold not available: %s",
+                min_temp_state.state if min_temp_state else "None",
+            )
+            return None
+
+        try:
+            return float(min_temp_state.state)
+        except (ValueError, TypeError):
+            _LOGGER.debug(
+                "Could not convert minimum temperature to float: %s",
+                min_temp_state.state,
+            )
+            return None
+
+    def _find_min_temperature_entity(self) -> str | None:
+        """Find the min_temperature entity ID for this location."""
+        ent_reg = er.async_get(self.hass)
+        for entity in ent_reg.entities.values():
+            if (
+                entity.platform == DOMAIN
+                and entity.domain == "sensor"
+                and entity.unique_id
+                and f"{self.entry_id}" in entity.unique_id
+                and "min_temperature" in entity.unique_id
+            ):
+                return entity.entity_id
+        return None
+
+    async def _fetch_temperature_statistics(self) -> list[Any] | None:
+        """Fetch temperature statistics from recorder."""
+        # Get statistics for the past 7 days
+        end_time = dt_util.now()
+        start_time = end_time - timedelta(days=7)
+
+        # Get recorder instance
+        recorder_instance = get_instance(self.hass)
+        if recorder_instance is None:
+            _LOGGER.debug("Recorder not available")
+            return None
+
+        # Query statistics for the temperature sensor
+        stats = await recorder_instance.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start_time,
+            end_time,
+            {self._temperature_entity_id},
+            "hour",
+            None,
+            {"mean"},
+        )
+
+        if not stats or self._temperature_entity_id not in stats:
+            _LOGGER.debug(
+                "No statistics found for temperature entity: %s",
+                self._temperature_entity_id,
+            )
+            return None
+
+        return stats[self._temperature_entity_id]
+
+    def _count_hours_below_threshold(self, stats: list[Any], threshold: float) -> int:
+        """Count hours where temperature was below threshold."""
+        hours_below = 0
+        for stat in stats:
+            mean_temp = stat.get("mean")
+            if mean_temp is not None:
+                try:
+                    if float(mean_temp) < threshold:
+                        hours_below += 1
+                except (ValueError, TypeError):
+                    continue
+        return hours_below
+
+    @callback
+    def _temperature_state_changed(
+        self, _entity_id: str, _old_state: Any, _new_state: Any
+    ) -> None:
+        """Handle temperature sensor state changes."""
+        # Trigger recalculation when temperature changes
+        self.hass.async_create_task(self._async_update_state())
+
+    async def _async_update_state(self) -> None:
+        """Update the sensor state."""
+        self._state = await self._calculate_hours_below_threshold()
+
+        # Store metadata in attributes
+        self._attributes = {
+            "source_entity": self._temperature_entity_id,
+            "period_days": 7,
+        }
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        temp_state = self.hass.states.get(self._temperature_entity_id)
+        return temp_state is not None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to temperature sensor state changes and restore state."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (
+            last_state := await self.async_get_last_state()
+        ) and last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            try:
+                self._state = int(last_state.state)
+            except (ValueError, TypeError):
+                self._state = last_state.state
+
+            # Restore attributes
+            if last_state.attributes:
+                self._attributes = dict(last_state.attributes)
+
+            _LOGGER.debug(
+                "Restored temperature below threshold sensor %s with state: %s",
+                self.entity_id,
+                self._state,
+            )
+
+        # Subscribe to temperature sensor state changes
+        # Update every hour or when temperature changes significantly
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass, self._temperature_entity_id, self._temperature_state_changed
+            )
+            _LOGGER.debug(
+                "Temperature below threshold sensor %s subscribed to %s",
+                self.entity_id,
+                self._temperature_entity_id,
+            )
+
+            # Perform initial calculation
+            await self._async_update_state()
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up temperature below threshold sensor: %s",
                 exc,
             )
 
