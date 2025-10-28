@@ -58,6 +58,7 @@ from .const import (
     READING_WEEKLY_AVG_DLI_SLUG,
     UNIT_DLI,
     UNIT_PPFD,
+    UNIT_PPFD_INTEGRAL,
 )
 
 if TYPE_CHECKING:
@@ -2043,7 +2044,7 @@ class PlantLocationTotalLightIntegral(IntegrationSensor):
             unit_time=UnitOfTime.SECONDS,
             max_sub_interval=None,
         )
-        self._unit_of_measurement = UNIT_DLI
+        self._unit_of_measurement = UNIT_PPFD_INTEGRAL
         self._attr_icon = ICON_DLI
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
         # Make visible for debugging - user can hide if desired
@@ -2057,11 +2058,10 @@ class PlantLocationTotalLightIntegral(IntegrationSensor):
             current_ids={},
         )
 
-    def _unit(self, source_unit: str) -> str:
-        """Override unit to return DLI unit."""
-        # source_unit parameter not used; keep to match IntegrationSensor API
-        _ = source_unit
-        return self._unit_of_measurement or UNIT_DLI
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        """Return the native unit of measurement as mol/m²/d for utility meter."""
+        return UNIT_PPFD_INTEGRAL
 
     @property
     def device_info(self) -> DeviceInfo | None:
