@@ -243,23 +243,31 @@ def _get_monitoring_device_sensors(
 
 def _expected_entities_for_subentry(  # noqa: PLR0912
     hass: HomeAssistant, subentry: Any
-) -> tuple[set[str], set[str], set[str]]:
+) -> tuple[set[str], set[str], set[str], set[str]]:
     """
-    Return expected monitoring, humidity, and aggregated unique_ids for a subentry.
+    Return expected monitoring, humidity, aggregated, and threshold unique_ids.
 
+    A subentry provides monitoring, humidity, aggregated, and threshold unique_ids.
     This encapsulates the logic used by the cleanup routine so the main
     cleanup function stays small and within complexity limits.
 
     Returns:
-        Tuple of (expected_monitoring, expected_humidity, expected_aggregated)
+        Tuple of (expected_monitoring, expected_humidity, expected_aggregated,
+        expected_threshold)
 
     """
     expected_monitoring: set[str] = set()
     expected_humidity: set[str] = set()
     expected_aggregated: set[str] = set()
+    expected_threshold: set[str] = set()
 
     if "device_id" not in getattr(subentry, "data", {}):
-        return expected_monitoring, expected_humidity, expected_aggregated
+        return (
+            expected_monitoring,
+            expected_humidity,
+            expected_aggregated,
+            expected_threshold,
+        )
 
     location_name = subentry.data.get("name", "Plant Location")
     location_name_safe = location_name.lower().replace(" ", "_")
@@ -304,7 +312,7 @@ def _expected_entities_for_subentry(  # noqa: PLR0912
         )
         expected_humidity.add(humidity_unique_id)
 
-    # Handle aggregated location sensors
+    # Handle aggregated location sensors and threshold sensors
     # These are created when plants are in slots and either monitoring
     # device or humidity entity exists
     plant_slots = subentry.data.get("plant_slots", {})
@@ -348,7 +356,26 @@ def _expected_entities_for_subentry(  # noqa: PLR0912
                 )
                 expected_aggregated.add(aggregated_unique_id)
 
-    return expected_monitoring, expected_humidity, expected_aggregated
+        # Add expected threshold sensors (created when monitoring device exists)
+        if monitoring_device_id:
+            # Temperature threshold sensors
+            below_threshold_unique_id = (
+                f"{DOMAIN}_{subentry.subentry_id}_{location_name_safe}_"
+                "temperature_below_threshold_hours"
+            )
+            above_threshold_unique_id = (
+                f"{DOMAIN}_{subentry.subentry_id}_{location_name_safe}_"
+                "temperature_above_threshold_hours"
+            )
+            expected_threshold.add(below_threshold_unique_id)
+            expected_threshold.add(above_threshold_unique_id)
+
+    return (
+        expected_monitoring,
+        expected_humidity,
+        expected_aggregated,
+        expected_threshold,
+    )
 
 
 def _create_location_mirrored_sensors(
@@ -519,17 +546,19 @@ async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
         expected_monitoring_entities = set()
         expected_humidity_entities = set()
         expected_aggregated_entities = set()
+        expected_threshold_entities = set()
 
-        # Collect expected monitoring, humidity, and aggregated unique_ids
+        # Collect expected monitoring, humidity, aggregated, and threshold unique_ids
         # from subentries
         if entry.subentries:
             for subentry in entry.subentries.values():
-                monitoring_set, humidity_set, aggregated_set = (
+                monitoring_set, humidity_set, aggregated_set, threshold_set = (
                     _expected_entities_for_subentry(hass, subentry)
                 )
                 expected_monitoring_entities.update(monitoring_set)
                 expected_humidity_entities.update(humidity_set)
                 expected_aggregated_entities.update(aggregated_set)
+                expected_threshold_entities.update(threshold_set)
 
         # Find and remove orphaned entities
         entities_to_remove = []
@@ -548,6 +577,14 @@ async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
             # Remove if not in expected set but is identified as aggregated
             if unique_id not in expected_aggregated_entities and _is_aggregated_sensor(
                 unique_id
+            ):
+                entities_to_remove.append(entity_id)
+                continue
+
+            # Check if this is an orphaned threshold sensor
+            if unique_id not in expected_threshold_entities and (
+                "temperature_below_threshold_hours" in unique_id
+                or "temperature_above_threshold_hours" in unique_id
             ):
                 entities_to_remove.append(entity_id)
                 continue
@@ -945,6 +982,20 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                     subentry_entities.append(temp_below_threshold_sensor)
                     _LOGGER.debug(
                         "Added temperature below threshold hours sensor for %s",
+                        location_name,
+                    )
+
+                    # Also create temperature above threshold hours sensor
+                    temp_above_threshold_sensor = TemperatureAboveThresholdHoursSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        temperature_entity_id=temperature_source_entity_id,
+                    )
+                    subentry_entities.append(temp_above_threshold_sensor)
+                    _LOGGER.debug(
+                        "Added temperature above threshold hours sensor for %s",
                         location_name,
                     )
 
@@ -2787,6 +2838,304 @@ class TemperatureBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.warning(
                 "Failed to set up temperature below threshold sensor: %s",
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class TemperatureAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
+    """
+    Sensor that counts hours where temperature was above maximum threshold.
+
+    This sensor queries Home Assistant's statistics database to count the number
+    of hourly readings where the temperature was above the maximum temperature
+    threshold over the past 7 days.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        temperature_entity_id: str,
+    ) -> None:
+        """
+        Initialize the temperature above threshold hours sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The subentry ID.
+            location_device_id: The device ID of the location.
+            location_name: The name of the location.
+            temperature_entity_id: The entity ID of the temperature sensor.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self._temperature_entity_id = temperature_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} Temperature Above Threshold Hours"
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_"
+            "temperature_above_threshold_hours"
+        )
+
+        # Set device class, unit, and icon
+        self._attr_device_class = None  # No standard device class for this metric
+        self._attr_native_unit_of_measurement = "hours"
+        self._attr_icon = "mdi:thermometer-alert"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_suggested_display_precision = 0
+        self._attr_entity_registry_visible_default = True
+
+        # Set device info
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+
+        self._state: Any = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+        # Generate a concise entity_id
+        with contextlib.suppress(Exception):
+            self.entity_id = async_generate_entity_id(
+                "sensor.{}",
+                f"{location_name} Temperature Above Threshold Hours".lower().replace(
+                    " ", "_"
+                ),
+                current_ids={},
+            )
+
+    async def _calculate_hours_above_threshold(self) -> int | None:
+        """
+        Calculate hours where temperature was above the maximum threshold.
+
+        This queries the statistics from Home Assistant's recorder database
+        to count hourly periods where temperature was above the threshold.
+
+        Returns:
+            The number of hours above threshold, or None if data unavailable.
+
+        """
+        try:
+            # Get threshold temperature
+            max_temp_threshold = await self._get_temperature_threshold()
+            if max_temp_threshold is None:
+                return None
+
+            # Get temperature statistics
+            stats = await self._fetch_temperature_statistics()
+            if not stats:
+                return None
+
+            # Count hours above threshold
+            hours_above = self._count_hours_above_threshold(stats, max_temp_threshold)
+
+            _LOGGER.debug(
+                "Temperature above threshold: %d hours out of %d total hours "
+                "(threshold: %.1f°C)",
+                hours_above,
+                len(stats),
+                max_temp_threshold,
+            )
+
+            return hours_above  # noqa: TRY300
+
+        except ImportError as exc:
+            _LOGGER.warning(
+                "Could not import recorder statistics: %s",
+                exc,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - Defensive
+            _LOGGER.warning(
+                "Error calculating temperature above threshold hours: %s (%s)",
+                exc,
+                type(exc).__name__,
+            )
+            return None
+
+    async def _get_temperature_threshold(self) -> float | None:
+        """Get the maximum temperature threshold from aggregated sensors."""
+        # Find the max_temperature aggregated sensor for this location
+        max_temp_entity_id = self._find_max_temperature_entity()
+        if not max_temp_entity_id:
+            _LOGGER.debug("No maximum temperature threshold entity found for location")
+            return None
+
+        # Get the threshold value
+        max_temp_state = self.hass.states.get(max_temp_entity_id)
+        if not max_temp_state or max_temp_state.state in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+            None,
+        ):
+            _LOGGER.debug(
+                "Maximum temperature threshold not available: %s",
+                max_temp_state.state if max_temp_state else "None",
+            )
+            return None
+
+        try:
+            return float(max_temp_state.state)
+        except (ValueError, TypeError):
+            _LOGGER.debug(
+                "Could not convert maximum temperature to float: %s",
+                max_temp_state.state,
+            )
+            return None
+
+    def _find_max_temperature_entity(self) -> str | None:
+        """Find the max_temperature entity ID for this location."""
+        ent_reg = er.async_get(self.hass)
+        for entity in ent_reg.entities.values():
+            if (
+                entity.platform == DOMAIN
+                and entity.domain == "sensor"
+                and entity.unique_id
+                and f"{self.entry_id}" in entity.unique_id
+                and "max_temperature" in entity.unique_id
+            ):
+                return entity.entity_id
+        return None
+
+    async def _fetch_temperature_statistics(self) -> list[Any] | None:
+        """Fetch temperature statistics from recorder."""
+        # Get statistics for the past 7 days
+        end_time = dt_util.now()
+        start_time = end_time - timedelta(days=7)
+
+        # Get recorder instance
+        recorder_instance = get_instance(self.hass)
+        if recorder_instance is None:
+            _LOGGER.debug("Recorder not available")
+            return None
+
+        # Query statistics for the temperature sensor
+        stats = await recorder_instance.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start_time,
+            end_time,
+            {self._temperature_entity_id},
+            "hour",
+            None,
+            {"mean"},
+        )
+
+        if not stats or self._temperature_entity_id not in stats:
+            _LOGGER.debug(
+                "No statistics found for temperature entity: %s",
+                self._temperature_entity_id,
+            )
+            return None
+
+        return stats[self._temperature_entity_id]
+
+    def _count_hours_above_threshold(self, stats: list[Any], threshold: float) -> int:
+        """Count hours where temperature was above threshold."""
+        hours_above = 0
+        for stat in stats:
+            mean_temp = stat.get("mean")
+            if mean_temp is not None:
+                try:
+                    if float(mean_temp) > threshold:
+                        hours_above += 1
+                except (ValueError, TypeError):
+                    continue
+        return hours_above
+
+    @callback
+    def _temperature_state_changed(
+        self, _entity_id: str, _old_state: Any, _new_state: Any
+    ) -> None:
+        """Handle temperature sensor state changes."""
+        # Trigger recalculation when temperature changes
+        self.hass.async_create_task(self._async_update_state())
+
+    async def _async_update_state(self) -> None:
+        """Update the sensor state."""
+        self._state = await self._calculate_hours_above_threshold()
+
+        # Store metadata in attributes
+        self._attributes = {
+            "source_entity": self._temperature_entity_id,
+            "period_days": 7,
+        }
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        temp_state = self.hass.states.get(self._temperature_entity_id)
+        return temp_state is not None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to temperature sensor state changes and restore state."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (
+            last_state := await self.async_get_last_state()
+        ) and last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            try:
+                self._state = int(last_state.state)
+            except (ValueError, TypeError):
+                self._state = last_state.state
+
+            # Restore attributes
+            if last_state.attributes:
+                self._attributes = dict(last_state.attributes)
+
+            _LOGGER.debug(
+                "Restored temperature above threshold sensor %s with state: %s",
+                self.entity_id,
+                self._state,
+            )
+
+        # Subscribe to temperature sensor state changes
+        # Update every hour or when temperature changes significantly
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass, self._temperature_entity_id, self._temperature_state_changed
+            )
+            _LOGGER.debug(
+                "Temperature above threshold sensor %s subscribed to %s",
+                self.entity_id,
+                self._temperature_entity_id,
+            )
+
+            # Perform initial calculation
+            await self._async_update_state()
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up temperature above threshold sensor: %s",
                 exc,
             )
 
