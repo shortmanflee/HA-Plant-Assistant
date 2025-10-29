@@ -805,6 +805,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
 
             # Create mirrored sensors for monitoring device if present
             monitoring_device_id = subentry.data.get("monitoring_device_id")
+            mirrored_sensors = []
             if monitoring_device_id:
                 mirrored_sensors = _create_location_mirrored_sensors(
                     hass=hass,
