@@ -781,6 +781,10 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
         await _cleanup_orphaned_monitoring_sensors(hass, entry)
 
         for subentry_id, subentry in entry.subentries.items():
+            if "device_id" not in subentry.data:
+                _LOGGER.warning("Subentry %s missing device_id", subentry_id)
+                continue
+
             _LOGGER.debug(
                 "Processing subentry %s with data: %s",
                 subentry.subentry_id,
@@ -1040,8 +1044,6 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
             # Note: config_subentry_id exists in HA 2025.8.3+ but not in type hint
             _add_entities = cast("Callable[..., Any]", async_add_entities)
             _add_entities(subentry_entities, config_subentry_id=subentry_id)
-        _LOGGER.warning("Subentry %s missing device_id", subentry_id)
-        return
 
     # Main entry aggregated sensors for locations (if no subentries)
     zones = entry.options.get("irrigation_zones", {})
