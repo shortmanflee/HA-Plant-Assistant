@@ -1001,6 +1001,37 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                         location_name,
                     )
 
+                # Create humidity below threshold weekly duration sensor
+                # Only create if a humidity entity is linked
+                humidity_entity_id = subentry.data.get("humidity_entity_id")
+                if humidity_entity_id and _has_plants_in_slots(subentry.data):
+                    humidity_below_threshold_sensor = HumidityBelowThresholdHoursSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        humidity_entity_id=humidity_entity_id,
+                    )
+                    subentry_entities.append(humidity_below_threshold_sensor)
+                    _LOGGER.debug(
+                        "Added humidity below threshold weekly duration sensor for %s",
+                        location_name,
+                    )
+
+                    # Also create humidity above threshold weekly duration sensor
+                    humidity_above_threshold_sensor = HumidityAboveThresholdHoursSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        humidity_entity_id=humidity_entity_id,
+                    )
+                    subentry_entities.append(humidity_above_threshold_sensor)
+                    _LOGGER.debug(
+                        "Added humidity above threshold weekly duration sensor for %s",
+                        location_name,
+                    )
+
             # Add entities with proper subentry association (like openplantbook_ref)
             _LOGGER.debug(
                 "Adding %d entities for subentry %s",
@@ -3144,6 +3175,612 @@ class TemperatureAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.warning(
                 "Failed to set up temperature above threshold sensor: %s",
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class HumidityBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
+    """
+    Sensor that counts hours where humidity was below minimum threshold.
+
+    This sensor queries Home Assistant's statistics database to count the number
+    of hourly readings where the humidity was below the minimum humidity
+    threshold over the past 7 days.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        humidity_entity_id: str,
+    ) -> None:
+        """
+        Initialize the humidity below threshold weekly duration sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The subentry ID.
+            location_device_id: The device ID of the location.
+            location_name: The name of the location.
+            humidity_entity_id: The entity ID of the humidity sensor.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self._humidity_entity_id = humidity_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} Humidity Below Threshold Weekly Duration"
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_"
+            "humidity_below_threshold_weekly_duration"
+        )
+
+        # Set device class, unit, and icon
+        self._attr_device_class = None  # No standard device class for this metric
+        self._attr_native_unit_of_measurement = "hours"
+        self._attr_icon = "mdi:water-alert"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_suggested_display_precision = 0
+        self._attr_entity_registry_visible_default = True
+
+        # Set device info
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+
+        self._state: Any = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+        # Generate a concise entity_id
+        with contextlib.suppress(Exception):
+            safe_name = (
+                (f"{location_name} Humidity Below Threshold Weekly Duration")
+                .lower()
+                .replace(" ", "_")
+            )
+            self.entity_id = async_generate_entity_id(
+                "sensor.{}",
+                safe_name,
+                current_ids={},
+            )
+
+    async def _calculate_hours_below_threshold(self) -> int | None:
+        """
+        Calculate hours where humidity was below the minimum threshold.
+
+        This queries the statistics from Home Assistant's recorder database
+        to count hourly periods where humidity was below the threshold.
+
+        Returns:
+            The number of hours below threshold, or None if data unavailable.
+
+        """
+        try:
+            # Get threshold humidity
+            min_humidity_threshold = await self._get_humidity_threshold()
+            if min_humidity_threshold is None:
+                return None
+
+            # Get humidity statistics
+            stats = await self._fetch_humidity_statistics()
+            if not stats:
+                return None
+
+            # Count hours below threshold
+            hours_below = self._count_hours_below_threshold(
+                stats, min_humidity_threshold
+            )
+
+            _LOGGER.debug(
+                "Humidity below threshold: %d hours out of %d total hours "
+                "(threshold: %.1f%%)",
+                hours_below,
+                len(stats),
+                min_humidity_threshold,
+            )
+
+            return hours_below  # noqa: TRY300
+
+        except ImportError as exc:
+            _LOGGER.warning(
+                "Could not import recorder statistics: %s",
+                exc,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - Defensive
+            _LOGGER.warning(
+                "Error calculating humidity below threshold weekly duration: %s (%s)",
+                exc,
+                type(exc).__name__,
+            )
+            return None
+
+    async def _get_humidity_threshold(self) -> float | None:
+        """Get the minimum humidity threshold from aggregated sensors."""
+        # Find the min_humidity aggregated sensor for this location
+        min_humidity_entity_id = self._find_min_humidity_entity()
+        if not min_humidity_entity_id:
+            _LOGGER.debug("No minimum humidity threshold entity found for location")
+            return None
+
+        # Get the threshold value
+        min_humidity_state = self.hass.states.get(min_humidity_entity_id)
+        if not min_humidity_state or min_humidity_state.state in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+            None,
+        ):
+            _LOGGER.debug(
+                "Minimum humidity threshold not available: %s",
+                min_humidity_state.state if min_humidity_state else "None",
+            )
+            return None
+
+        try:
+            return float(min_humidity_state.state)
+        except (ValueError, TypeError):
+            _LOGGER.debug(
+                "Could not convert minimum humidity to float: %s",
+                min_humidity_state.state,
+            )
+            return None
+
+    def _find_min_humidity_entity(self) -> str | None:
+        """Find the min_humidity entity ID for this location."""
+        ent_reg = er.async_get(self.hass)
+        for entity in ent_reg.entities.values():
+            if (
+                entity.platform == DOMAIN
+                and entity.domain == "sensor"
+                and entity.unique_id
+                and f"{self.entry_id}" in entity.unique_id
+                and "min_humidity" in entity.unique_id
+            ):
+                return entity.entity_id
+        return None
+
+    async def _fetch_humidity_statistics(self) -> list[Any] | None:
+        """Fetch humidity statistics from recorder."""
+        # Get statistics for the past 7 days
+        end_time = dt_util.now()
+        start_time = end_time - timedelta(days=7)
+
+        # Get recorder instance
+        recorder_instance = get_instance(self.hass)
+        if recorder_instance is None:
+            _LOGGER.debug("Recorder not available")
+            return None
+
+        # Query statistics for the humidity sensor
+        stats = await recorder_instance.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start_time,
+            end_time,
+            {self._humidity_entity_id},
+            "hour",
+            None,
+            {"mean"},
+        )
+
+        if not stats or self._humidity_entity_id not in stats:
+            _LOGGER.debug(
+                "No statistics found for humidity entity: %s",
+                self._humidity_entity_id,
+            )
+            return None
+
+        return stats[self._humidity_entity_id]
+
+    def _count_hours_below_threshold(self, stats: list[Any], threshold: float) -> int:
+        """Count hours where humidity was below threshold."""
+        hours_below = 0
+        for stat in stats:
+            mean_humidity = stat.get("mean")
+            if mean_humidity is not None:
+                try:
+                    if float(mean_humidity) < threshold:
+                        hours_below += 1
+                except (ValueError, TypeError):
+                    continue
+        return hours_below
+
+    @callback
+    def _humidity_state_changed(
+        self, _entity_id: str, _old_state: Any, _new_state: Any
+    ) -> None:
+        """Handle humidity sensor state changes."""
+        # Trigger recalculation when humidity changes
+        self.hass.async_create_task(self._async_update_state())
+
+    async def _async_update_state(self) -> None:
+        """Update the sensor state."""
+        self._state = await self._calculate_hours_below_threshold()
+
+        # Store metadata in attributes
+        self._attributes = {
+            "source_entity": self._humidity_entity_id,
+            "period_days": 7,
+        }
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        humidity_state = self.hass.states.get(self._humidity_entity_id)
+        return humidity_state is not None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to humidity sensor state changes and restore state."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (
+            last_state := await self.async_get_last_state()
+        ) and last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            try:
+                self._state = int(last_state.state)
+            except (ValueError, TypeError):
+                self._state = last_state.state
+
+            # Restore attributes
+            if last_state.attributes:
+                self._attributes = dict(last_state.attributes)
+
+            _LOGGER.debug(
+                "Restored humidity below threshold sensor %s with state: %s",
+                self.entity_id,
+                self._state,
+            )
+
+        # Subscribe to humidity sensor state changes
+        # Update every hour or when humidity changes significantly
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass, self._humidity_entity_id, self._humidity_state_changed
+            )
+            _LOGGER.debug(
+                "Humidity below threshold sensor %s subscribed to %s",
+                self.entity_id,
+                self._humidity_entity_id,
+            )
+
+            # Perform initial calculation
+            await self._async_update_state()
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up humidity below threshold sensor: %s",
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class HumidityAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
+    """
+    Sensor that counts hours where humidity was above maximum threshold.
+
+    This sensor queries Home Assistant's statistics database to count the number
+    of hourly readings where the humidity was above the maximum humidity
+    threshold over the past 7 days.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        humidity_entity_id: str,
+    ) -> None:
+        """
+        Initialize the humidity above threshold weekly duration sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The subentry ID.
+            location_device_id: The device ID of the location.
+            location_name: The name of the location.
+            humidity_entity_id: The entity ID of the humidity sensor.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self._humidity_entity_id = humidity_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} Humidity Above Threshold Weekly Duration"
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_"
+            "humidity_above_threshold_weekly_duration"
+        )
+
+        # Set device class, unit, and icon
+        self._attr_device_class = None  # No standard device class for this metric
+        self._attr_native_unit_of_measurement = "hours"
+        self._attr_icon = "mdi:water-alert"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_suggested_display_precision = 0
+        self._attr_entity_registry_visible_default = True
+
+        # Set device info
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+
+        self._state: Any = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+        # Generate a concise entity_id
+        with contextlib.suppress(Exception):
+            safe_name = (
+                (f"{location_name} Humidity Above Threshold Weekly Duration")
+                .lower()
+                .replace(" ", "_")
+            )
+            self.entity_id = async_generate_entity_id(
+                "sensor.{}",
+                safe_name,
+                current_ids={},
+            )
+
+    async def _calculate_hours_above_threshold(self) -> int | None:
+        """
+        Calculate hours where humidity was above the maximum threshold.
+
+        This queries the statistics from Home Assistant's recorder database
+        to count hourly periods where humidity was above the threshold.
+
+        Returns:
+            The number of hours above threshold, or None if data unavailable.
+
+        """
+        try:
+            # Get threshold humidity
+            max_humidity_threshold = await self._get_humidity_threshold()
+            if max_humidity_threshold is None:
+                return None
+
+            # Get humidity statistics
+            stats = await self._fetch_humidity_statistics()
+            if not stats:
+                return None
+
+            # Count hours above threshold
+            hours_above = self._count_hours_above_threshold(
+                stats, max_humidity_threshold
+            )
+
+            _LOGGER.debug(
+                "Humidity above threshold: %d hours out of %d total hours "
+                "(threshold: %.1f%%)",
+                hours_above,
+                len(stats),
+                max_humidity_threshold,
+            )
+
+            return hours_above  # noqa: TRY300
+
+        except ImportError as exc:
+            _LOGGER.warning(
+                "Could not import recorder statistics: %s",
+                exc,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - Defensive
+            _LOGGER.warning(
+                "Error calculating humidity above threshold weekly duration: %s (%s)",
+                exc,
+                type(exc).__name__,
+            )
+            return None
+
+    async def _get_humidity_threshold(self) -> float | None:
+        """Get the maximum humidity threshold from aggregated sensors."""
+        # Find the max_humidity aggregated sensor for this location
+        max_humidity_entity_id = self._find_max_humidity_entity()
+        if not max_humidity_entity_id:
+            _LOGGER.debug("No maximum humidity threshold entity found for location")
+            return None
+
+        # Get the threshold value
+        max_humidity_state = self.hass.states.get(max_humidity_entity_id)
+        if not max_humidity_state or max_humidity_state.state in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+            None,
+        ):
+            _LOGGER.debug(
+                "Maximum humidity threshold not available: %s",
+                max_humidity_state.state if max_humidity_state else "None",
+            )
+            return None
+
+        try:
+            return float(max_humidity_state.state)
+        except (ValueError, TypeError):
+            _LOGGER.debug(
+                "Could not convert maximum humidity to float: %s",
+                max_humidity_state.state,
+            )
+            return None
+
+    def _find_max_humidity_entity(self) -> str | None:
+        """Find the max_humidity entity ID for this location."""
+        ent_reg = er.async_get(self.hass)
+        for entity in ent_reg.entities.values():
+            if (
+                entity.platform == DOMAIN
+                and entity.domain == "sensor"
+                and entity.unique_id
+                and f"{self.entry_id}" in entity.unique_id
+                and "max_humidity" in entity.unique_id
+            ):
+                return entity.entity_id
+        return None
+
+    async def _fetch_humidity_statistics(self) -> list[Any] | None:
+        """Fetch humidity statistics from recorder."""
+        # Get statistics for the past 7 days
+        end_time = dt_util.now()
+        start_time = end_time - timedelta(days=7)
+
+        # Get recorder instance
+        recorder_instance = get_instance(self.hass)
+        if recorder_instance is None:
+            _LOGGER.debug("Recorder not available")
+            return None
+
+        # Query statistics for the humidity sensor
+        stats = await recorder_instance.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start_time,
+            end_time,
+            {self._humidity_entity_id},
+            "hour",
+            None,
+            {"mean"},
+        )
+
+        if not stats or self._humidity_entity_id not in stats:
+            _LOGGER.debug(
+                "No statistics found for humidity entity: %s",
+                self._humidity_entity_id,
+            )
+            return None
+
+        return stats[self._humidity_entity_id]
+
+    def _count_hours_above_threshold(self, stats: list[Any], threshold: float) -> int:
+        """Count hours where humidity was above threshold."""
+        hours_above = 0
+        for stat in stats:
+            mean_humidity = stat.get("mean")
+            if mean_humidity is not None:
+                try:
+                    if float(mean_humidity) > threshold:
+                        hours_above += 1
+                except (ValueError, TypeError):
+                    continue
+        return hours_above
+
+    @callback
+    def _humidity_state_changed(
+        self, _entity_id: str, _old_state: Any, _new_state: Any
+    ) -> None:
+        """Handle humidity sensor state changes."""
+        # Trigger recalculation when humidity changes
+        self.hass.async_create_task(self._async_update_state())
+
+    async def _async_update_state(self) -> None:
+        """Update the sensor state."""
+        self._state = await self._calculate_hours_above_threshold()
+
+        # Store metadata in attributes
+        self._attributes = {
+            "source_entity": self._humidity_entity_id,
+            "period_days": 7,
+        }
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        humidity_state = self.hass.states.get(self._humidity_entity_id)
+        return humidity_state is not None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to humidity sensor state changes and restore state."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (
+            last_state := await self.async_get_last_state()
+        ) and last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            try:
+                self._state = int(last_state.state)
+            except (ValueError, TypeError):
+                self._state = last_state.state
+
+            # Restore attributes
+            if last_state.attributes:
+                self._attributes = dict(last_state.attributes)
+
+            _LOGGER.debug(
+                "Restored humidity above threshold sensor %s with state: %s",
+                self.entity_id,
+                self._state,
+            )
+
+        # Subscribe to humidity sensor state changes
+        # Update every hour or when humidity changes significantly
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass, self._humidity_entity_id, self._humidity_state_changed
+            )
+            _LOGGER.debug(
+                "Humidity above threshold sensor %s subscribed to %s",
+                self.entity_id,
+                self._humidity_entity_id,
+            )
+
+            # Perform initial calculation
+            await self._async_update_state()
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up humidity above threshold sensor: %s",
                 exc,
             )
 
