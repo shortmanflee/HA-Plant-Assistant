@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
-from homeassistant.components import statistics  # noqa: F401
 from homeassistant.components.integration.const import METHOD_TRAPEZOIDAL
 from homeassistant.components.integration.sensor import IntegrationSensor
 from homeassistant.components.recorder.statistics import statistics_during_period
