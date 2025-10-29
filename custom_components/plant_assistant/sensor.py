@@ -54,6 +54,8 @@ from .const import (
     READING_DLI_NAME,
     READING_DLI_SLUG,
     READING_PPFD,
+    READING_PRIOR_PERIOD_DLI_NAME,
+    READING_PRIOR_PERIOD_DLI_SLUG,
     READING_WEEKLY_AVG_DLI_NAME,
     READING_WEEKLY_AVG_DLI_SLUG,
     UNIT_DLI,
@@ -931,16 +933,16 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                         DATA_TARIFF_SENSORS
                     ].append(dli_sensor)
 
-                    # Create a sensor exposing the last_period attribute.
+                    # Create a sensor exposing the prior_period attribute.
                     # This represents yesterday's DLI value.
-                    dli_last_period_sensor = DliLastPeriodSensor(
+                    dli_prior_period_sensor = DliPriorPeriodSensor(
                         hass=hass,
                         entry_id=subentry.subentry_id,
                         location_device_id=location_device_id,
                         location_name=location_name,
                         dli_entity_id=dli_sensor.entity_id,
                     )
-                    subentry_entities.append(dli_last_period_sensor)
+                    subentry_entities.append(dli_prior_period_sensor)
 
                     # Create a sensor to calculate the 7-day average of DLI values.
                     # This uses Home Assistant's statistics component to track
@@ -950,7 +952,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                         entry_id=subentry.subentry_id,
                         location_device_id=location_device_id,
                         location_name=location_name,
-                        dli_last_period_entity_id=dli_last_period_sensor.entity_id,
+                        dli_prior_period_entity_id=dli_prior_period_sensor.entity_id,
                     )
                     subentry_entities.append(weekly_avg_dli_sensor)
 
@@ -2191,11 +2193,11 @@ class PlantLocationDailyLightIntegral(UtilityMeterSensor):
         return None
 
 
-class DliLastPeriodSensor(RestoreEntity, SensorEntity):
+class DliPriorPeriodSensor(RestoreEntity, SensorEntity):
     """
     Sensor exposing the `last_period` attribute from a DLI UtilityMeterSensor.
 
-    This mirrors the utility meter's last_period attribute (e.g., yesterday's DLI)
+    This mirrors the utility meter's last_period attribute (e.g., prior day's DLI)
     as a standalone sensor entity for easy access in automations and dashboards.
     """
 
@@ -2207,7 +2209,7 @@ class DliLastPeriodSensor(RestoreEntity, SensorEntity):
         location_name: str,
         dli_entity_id: str,
     ) -> None:
-        """Initialize the DLI last period sensor."""
+        """Initialize the DLI prior period sensor."""
         self.hass = hass
         self.entry_id = entry_id
         self.location_device_id = location_device_id
@@ -2215,12 +2217,12 @@ class DliLastPeriodSensor(RestoreEntity, SensorEntity):
 
         # Set entity attributes
         # Use the friendly DLI display name for readability.
-        # e.g., "Daily Light Integral"
-        self._attr_name = f"{location_name} Last Period {READING_DLI_NAME}"
+        # e.g., "Daily Light Integral Prior Period"
+        self._attr_name = f"{location_name} {READING_PRIOR_PERIOD_DLI_NAME}"
         location_name_safe = location_name.lower().replace(" ", "_")
-        # use 'last_period' in unique id to match new naming
+        # use 'prior_period' in unique id for new naming
         self._attr_unique_id = (
-            f"{DOMAIN}_{entry_id}_{location_name_safe}_{READING_DLI_SLUG}_last_period"
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_{READING_PRIOR_PERIOD_DLI_SLUG}"
         )
         self._attr_native_unit_of_measurement = UNIT_DLI
         self._attr_icon = ICON_DLI
@@ -2247,12 +2249,12 @@ class DliLastPeriodSensor(RestoreEntity, SensorEntity):
             self._attributes["source_entity"] = self._dli_entity_id
 
         # Generate a concise entity_id based on the new name. For example,
-        # it may look like: sensor.green_last_period_daily_light_integral.
+        # it may look like: sensor.green_daily_light_integral_prior_period.
         # Use a safe, lowercased, underscored location name to create the id.
         with contextlib.suppress(Exception):
             self.entity_id = async_generate_entity_id(
                 "sensor.{}",
-                f"{location_name} Last Period {READING_DLI_NAME}".lower().replace(
+                f"{location_name} {READING_PRIOR_PERIOD_DLI_NAME}".lower().replace(
                     " ", "_"
                 ),
                 current_ids={},
@@ -2372,7 +2374,7 @@ class PlantMoistureSensor(SensorEntity):
 
 class WeeklyAverageDliSensor(SensorEntity):
     """
-    Sensor that calculates the 7-day average of the last_period DLI values.
+    Sensor that calculates the 7-day average of the prior_period DLI values.
 
     This sensor uses Home Assistant's statistics component to track historical
     DLI values and expose their mean over the past 7 days.
@@ -2384,7 +2386,7 @@ class WeeklyAverageDliSensor(SensorEntity):
         entry_id: str,
         location_device_id: str,
         location_name: str,
-        dli_last_period_entity_id: str,
+        dli_prior_period_entity_id: str,
     ) -> None:
         """
         Initialize the weekly average DLI sensor.
@@ -2394,13 +2396,13 @@ class WeeklyAverageDliSensor(SensorEntity):
             entry_id: The subentry ID.
             location_device_id: The device ID of the location.
             location_name: The name of the location.
-            dli_last_period_entity_id: The entity ID of the last_period DLI sensor.
+            dli_prior_period_entity_id: The entity ID of the prior_period DLI sensor.
 
         """
         self.hass = hass
         self.entry_id = entry_id
         self.location_device_id = location_device_id
-        self._dli_last_period_entity_id = dli_last_period_entity_id
+        self._dli_prior_period_entity_id = dli_prior_period_entity_id
 
         # Set entity attributes
         self._attr_name = f"{location_name} {READING_WEEKLY_AVG_DLI_NAME}"
@@ -2441,20 +2443,20 @@ class WeeklyAverageDliSensor(SensorEntity):
 
     def _calculate_mean_from_history(self) -> float | None:
         """
-        Calculate the mean of the last_period DLI values over the past 7 days.
+        Calculate the mean of the prior_period DLI values over the past 7 days.
 
         This queries the statistics history from Home Assistant to retrieve
-        historical data for the last_period DLI sensor.
+        historical data for the prior_period DLI sensor.
 
         Returns:
             The mean value if data is available, None otherwise.
 
         """
         try:
-            # Get the state history for the last_period DLI sensor
+            # Get the state history for the prior_period DLI sensor
             # The actual implementation would use the statistics sensor
             # which Home Assistant automatically creates for us
-            dli_state = self.hass.states.get(self._dli_last_period_entity_id)
+            dli_state = self.hass.states.get(self._dli_prior_period_entity_id)
             if dli_state:
                 try:
                     # Store the mean value from statistics if available
@@ -2473,17 +2475,17 @@ class WeeklyAverageDliSensor(SensorEntity):
         return None
 
     @callback
-    def _dli_last_period_state_changed(
+    def _dli_prior_period_state_changed(
         self, _entity_id: str, _old_state: Any, new_state: Any
     ) -> None:
-        """Handle DLI last_period sensor state changes."""
+        """Handle DLI prior_period sensor state changes."""
         if new_state is None:
             self._state = None
             self._attributes = {}
         else:
             # The actual mean will be provided by the statistics sensor
             # that Home Assistant creates automatically. For now, we mirror
-            # the last_period value and let the statistics component
+            # the prior_period value and let the statistics component
             # handle the averaging.
             try:
                 self._state = float(new_state.state)
@@ -2491,7 +2493,7 @@ class WeeklyAverageDliSensor(SensorEntity):
                 self._state = None
 
             self._attributes = dict(new_state.attributes or {})
-            self._attributes["source_entity"] = self._dli_last_period_entity_id
+            self._attributes["source_entity"] = self._dli_prior_period_entity_id
 
         self.async_write_ha_state()
 
@@ -2510,32 +2512,32 @@ class WeeklyAverageDliSensor(SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        dli_state = self.hass.states.get(self._dli_last_period_entity_id)
+        dli_state = self.hass.states.get(self._dli_prior_period_entity_id)
         return dli_state is not None
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to DLI last_period sensor state changes."""
+        """Subscribe to DLI prior_period sensor state changes."""
         try:
             # Initialize with current state
-            if dli_state := self.hass.states.get(self._dli_last_period_entity_id):
+            if dli_state := self.hass.states.get(self._dli_prior_period_entity_id):
                 try:
                     self._state = float(dli_state.state)
                 except (ValueError, TypeError):
                     self._state = None
 
                 self._attributes = dict(dli_state.attributes or {})
-                self._attributes["source_entity"] = self._dli_last_period_entity_id
+                self._attributes["source_entity"] = self._dli_prior_period_entity_id
 
             # Subscribe to state changes
             self._unsubscribe = async_track_state_change(
                 self.hass,
-                self._dli_last_period_entity_id,
-                self._dli_last_period_state_changed,
+                self._dli_prior_period_entity_id,
+                self._dli_prior_period_state_changed,
             )
             _LOGGER.debug(
                 "Weekly average DLI sensor %s subscribed to %s",
                 self.entity_id,
-                self._dli_last_period_entity_id,
+                self._dli_prior_period_entity_id,
             )
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.warning(

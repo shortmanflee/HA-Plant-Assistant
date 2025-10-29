@@ -133,8 +133,12 @@ READING_DLI_NAME = "Daily Light Integral"
 READING_DLI_SLUG = "daily_light_integral"
 
 # Weekly Average DLI sensor
-READING_WEEKLY_AVG_DLI_NAME = "Weekly Average Daily Light Integral"
-READING_WEEKLY_AVG_DLI_SLUG = "weekly_average_daily_light_integral"
+READING_WEEKLY_AVG_DLI_NAME = "Daily Light Integral Weekly Average"
+READING_WEEKLY_AVG_DLI_SLUG = "daily_light_integral_weekly_average"
+
+# Prior Period DLI sensor (yesterday's DLI)
+READING_PRIOR_PERIOD_DLI_NAME = "Daily Light Integral Prior Period"
+READING_PRIOR_PERIOD_DLI_SLUG = "daily_light_integral_prior_period"
 
 # Attribute keys
 MONITORING_SENSOR_MAPPINGS = {
