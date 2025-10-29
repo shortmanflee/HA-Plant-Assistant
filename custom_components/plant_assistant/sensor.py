@@ -8,27 +8,61 @@ keeps implementations test-friendly by only relying on `hass.data` and the
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypedDict
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
+from homeassistant.components.integration.const import METHOD_TRAPEZOIDAL
+from homeassistant.components.integration.sensor import IntegrationSensor
+from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.utility_meter.const import (
+    DAILY,
+    DATA_TARIFF_SENSORS,
+    DATA_UTILITY,
+)
+from homeassistant.components.utility_meter.sensor import UtilityMeterSensor
+from homeassistant.const import (
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+    EntityCategory,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import async_generate_entity_id
 from homeassistant.helpers.event import async_track_state_change
+from homeassistant.helpers.recorder import get_instance
+from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util import dt as dt_util
 
-from . import aggregation
+from . import aggregation, dli
 from .const import (
     AGGREGATED_SENSOR_MAPPINGS,
     ATTR_PLANT_DEVICE_IDS,
+    DEFAULT_LUX_TO_PPFD,
     DOMAIN,
+    ICON_DLI,
+    ICON_PPFD,
     MONITORING_SENSOR_MAPPINGS,
+    READING_DLI_NAME,
+    READING_DLI_SLUG,
+    READING_PPFD,
+    READING_PRIOR_PERIOD_DLI_NAME,
+    READING_PRIOR_PERIOD_DLI_SLUG,
+    READING_WEEKLY_AVG_DLI_NAME,
+    READING_WEEKLY_AVG_DLI_SLUG,
+    UNIT_DLI,
+    UNIT_PPFD,
+    UNIT_PPFD_INTEGRAL,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -209,23 +243,31 @@ def _get_monitoring_device_sensors(
 
 def _expected_entities_for_subentry(  # noqa: PLR0912
     hass: HomeAssistant, subentry: Any
-) -> tuple[set[str], set[str], set[str]]:
+) -> tuple[set[str], set[str], set[str], set[str]]:
     """
-    Return expected monitoring, humidity, and aggregated unique_ids for a subentry.
+    Return expected monitoring, humidity, aggregated, and threshold unique_ids.
 
+    A subentry provides monitoring, humidity, aggregated, and threshold unique_ids.
     This encapsulates the logic used by the cleanup routine so the main
     cleanup function stays small and within complexity limits.
 
     Returns:
-        Tuple of (expected_monitoring, expected_humidity, expected_aggregated)
+        Tuple of (expected_monitoring, expected_humidity, expected_aggregated,
+        expected_threshold)
 
     """
     expected_monitoring: set[str] = set()
     expected_humidity: set[str] = set()
     expected_aggregated: set[str] = set()
+    expected_threshold: set[str] = set()
 
     if "device_id" not in getattr(subentry, "data", {}):
-        return expected_monitoring, expected_humidity, expected_aggregated
+        return (
+            expected_monitoring,
+            expected_humidity,
+            expected_aggregated,
+            expected_threshold,
+        )
 
     location_name = subentry.data.get("name", "Plant Location")
     location_name_safe = location_name.lower().replace(" ", "_")
@@ -270,7 +312,7 @@ def _expected_entities_for_subentry(  # noqa: PLR0912
         )
         expected_humidity.add(humidity_unique_id)
 
-    # Handle aggregated location sensors
+    # Handle aggregated location sensors and threshold sensors
     # These are created when plants are in slots and either monitoring
     # device or humidity entity exists
     plant_slots = subentry.data.get("plant_slots", {})
@@ -291,6 +333,8 @@ def _expected_entities_for_subentry(  # noqa: PLR0912
                     "max_temperature",
                     "min_illuminance",
                     "max_illuminance",
+                    "min_dli",
+                    "max_dli",
                     "min_soil_moisture",
                     "max_soil_moisture",
                     "min_soil_conductivity",
@@ -312,7 +356,26 @@ def _expected_entities_for_subentry(  # noqa: PLR0912
                 )
                 expected_aggregated.add(aggregated_unique_id)
 
-    return expected_monitoring, expected_humidity, expected_aggregated
+        # Add expected threshold sensors (created when monitoring device exists)
+        if monitoring_device_id:
+            # Temperature threshold sensors
+            below_threshold_unique_id = (
+                f"{DOMAIN}_{subentry.subentry_id}_{location_name_safe}_"
+                "temperature_below_threshold_weekly_duration"
+            )
+            above_threshold_unique_id = (
+                f"{DOMAIN}_{subentry.subentry_id}_{location_name_safe}_"
+                "temperature_above_threshold_weekly_duration"
+            )
+            expected_threshold.add(below_threshold_unique_id)
+            expected_threshold.add(above_threshold_unique_id)
+
+    return (
+        expected_monitoring,
+        expected_humidity,
+        expected_aggregated,
+        expected_threshold,
+    )
 
 
 def _create_location_mirrored_sensors(
@@ -455,7 +518,7 @@ def _is_aggregated_sensor(unique_id: str) -> bool:
 
     """
     # Extract all suffixes from aggregated sensor mappings
-    aggregated_suffixes = set()
+    aggregated_suffixes: set[str] = set()
     for metric_config in AGGREGATED_SENSOR_MAPPINGS.values():
         metric_config_typed: dict[str, Any] = metric_config
         suffix = metric_config_typed.get("suffix", "")
@@ -483,17 +546,19 @@ async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
         expected_monitoring_entities = set()
         expected_humidity_entities = set()
         expected_aggregated_entities = set()
+        expected_threshold_entities = set()
 
-        # Collect expected monitoring, humidity, and aggregated unique_ids
+        # Collect expected monitoring, humidity, aggregated, and threshold unique_ids
         # from subentries
         if entry.subentries:
             for subentry in entry.subentries.values():
-                monitoring_set, humidity_set, aggregated_set = (
+                monitoring_set, humidity_set, aggregated_set, threshold_set = (
                     _expected_entities_for_subentry(hass, subentry)
                 )
                 expected_monitoring_entities.update(monitoring_set)
                 expected_humidity_entities.update(humidity_set)
                 expected_aggregated_entities.update(aggregated_set)
+                expected_threshold_entities.update(threshold_set)
 
         # Find and remove orphaned entities
         entities_to_remove = []
@@ -512,6 +577,14 @@ async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
             # Remove if not in expected set but is identified as aggregated
             if unique_id not in expected_aggregated_entities and _is_aggregated_sensor(
                 unique_id
+            ):
+                entities_to_remove.append(entity_id)
+                continue
+
+            # Check if this is an orphaned threshold sensor
+            if unique_id not in expected_threshold_entities and (
+                "temperature_below_threshold_weekly_duration" in unique_id
+                or "temperature_above_threshold_weekly_duration" in unique_id
             ):
                 entities_to_remove.append(entity_id)
                 continue
@@ -614,6 +687,8 @@ def _create_aggregated_location_sensors(  # noqa: PLR0913
             "max_temperature",
             "min_illuminance",
             "max_illuminance",
+            "min_dli",
+            "max_dli",
             "min_soil_moisture",
             "max_soil_moisture",
             "min_soil_conductivity",
@@ -664,7 +739,7 @@ def _create_aggregated_location_sensors(  # noqa: PLR0913
     return sensors
 
 
-async def async_setup_entry(
+async def async_setup_entry(  # noqa: PLR0912, PLR0915
     hass: HomeAssistant,
     entry: ConfigEntry[Any],
     async_add_entities: AddEntitiesCallback,
@@ -706,98 +781,269 @@ async def async_setup_entry(
         await _cleanup_orphaned_monitoring_sensors(hass, entry)
 
         for subentry_id, subentry in entry.subentries.items():
+            if "device_id" not in subentry.data:
+                _LOGGER.warning("Subentry %s missing device_id", subentry_id)
+                continue
+
             _LOGGER.debug(
                 "Processing subentry %s with data: %s",
                 subentry.subentry_id,
                 subentry.data,
             )
-            if "device_id" in subentry.data:
-                subentry_entities = []
 
-                location_name = subentry.data.get("name", "Plant Location")
-                location_device_id = (
-                    subentry.subentry_id
-                )  # Use subentry ID as device identifier
+            location_name = subentry.data.get("name", "Plant Location")
+            location_device_id = subentry.subentry_id
 
-                # Create plant count entity for this location
-                plant_slots = subentry.data.get("plant_slots", {})
-                plant_count_entity = PlantCountLocationSensor(
+            subentry_entities: list[SensorEntity] = []
+
+            # Create plant count entity for this location
+            plant_slots = subentry.data.get("plant_slots", {})
+            plant_count_entity = PlantCountLocationSensor(
+                hass=hass,
+                entry_id=subentry.subentry_id,
+                location_name=location_name,
+                location_device_id=location_device_id,
+                plant_slots=plant_slots,
+            )
+            subentry_entities.append(plant_count_entity)
+
+            # Create mirrored sensors for monitoring device if present
+            monitoring_device_id = subentry.data.get("monitoring_device_id")
+            mirrored_sensors = []
+            if monitoring_device_id:
+                mirrored_sensors = _create_location_mirrored_sensors(
                     hass=hass,
                     entry_id=subentry.subentry_id,
-                    location_name=location_name,
                     location_device_id=location_device_id,
+                    location_name=location_name,
+                    monitoring_device_id=monitoring_device_id,
+                )
+                subentry_entities.extend(mirrored_sensors)
+                _LOGGER.debug(
+                    "Added %d mirrored sensors for monitoring device %s at location %s",
+                    len(mirrored_sensors),
+                    monitoring_device_id,
+                    location_name,
+                )
+
+            # Create humidity linked sensor if humidity entity is configured
+            humidity_entity_id = subentry.data.get("humidity_entity_id")
+            if humidity_entity_id:
+                humidity_sensor = HumidityLinkedSensor(
+                    hass=hass,
+                    entry_id=subentry.subentry_id,
+                    location_device_id=location_device_id,
+                    location_name=location_name,
+                    humidity_entity_id=humidity_entity_id,
+                )
+                subentry_entities.append(humidity_sensor)
+                _LOGGER.debug(
+                    "Added humidity linked sensor for entity %s at location %s",
+                    humidity_entity_id,
+                    location_name,
+                )
+
+            # Create aggregated location sensors if plant slots are configured
+            if _has_plants_in_slots(subentry.data):
+                aggregated_sensors = _create_aggregated_location_sensors(
+                    hass=hass,
+                    entry_id=subentry.subentry_id,
+                    location_device_id=location_device_id,
+                    location_name=location_name,
+                    monitoring_device_id=monitoring_device_id,
+                    humidity_entity_id=humidity_entity_id,
                     plant_slots=plant_slots,
                 )
-                subentry_entities.append(plant_count_entity)
-
-                # Create mirrored sensors for monitoring device if present
-                monitoring_device_id = subentry.data.get("monitoring_device_id")
-                if monitoring_device_id:
-                    mirrored_sensors = _create_location_mirrored_sensors(
-                        hass=hass,
-                        entry_id=subentry.subentry_id,
-                        location_device_id=location_device_id,
-                        location_name=location_name,
-                        monitoring_device_id=monitoring_device_id,
-                    )
-                    subentry_entities.extend(mirrored_sensors)
-                    _LOGGER.debug(
-                        "Added %d mirrored sensors for monitoring device %s"
-                        " at location %s",
-                        len(mirrored_sensors),
-                        monitoring_device_id,
-                        location_name,
-                    )
-
-                # Create humidity linked sensor if humidity entity is configured
-                humidity_entity_id = subentry.data.get("humidity_entity_id")
-                if humidity_entity_id:
-                    humidity_sensor = HumidityLinkedSensor(
-                        hass=hass,
-                        entry_id=subentry.subentry_id,
-                        location_device_id=location_device_id,
-                        location_name=location_name,
-                        humidity_entity_id=humidity_entity_id,
-                    )
-                    subentry_entities.append(humidity_sensor)
-                    _LOGGER.debug(
-                        "Added humidity linked sensor for entity %s at location %s",
-                        humidity_entity_id,
-                        location_name,
-                    )
-
-                # Create aggregated location sensors if plant slots are configured
-                if _has_plants_in_slots(subentry.data):
-                    aggregated_sensors = _create_aggregated_location_sensors(
-                        hass=hass,
-                        entry_id=subentry.subentry_id,
-                        location_device_id=location_device_id,
-                        location_name=location_name,
-                        monitoring_device_id=monitoring_device_id,
-                        humidity_entity_id=humidity_entity_id,
-                        plant_slots=plant_slots,
-                    )
-                    subentry_entities.extend(aggregated_sensors)
-                    _LOGGER.debug(
-                        "Added %d aggregated location sensors for location %s",
-                        len(aggregated_sensors),
-                        location_name,
-                    )
-
-                # Add entities with proper subentry association (like openplantbook_ref)
+                subentry_entities.extend(aggregated_sensors)
                 _LOGGER.debug(
-                    "Adding %d entities for subentry %s",
-                    len(subentry_entities),
-                    subentry_id,
+                    "Added %d aggregated location sensors for location %s",
+                    len(aggregated_sensors),
+                    location_name,
                 )
-                # Note: config_subentry_id exists in HA 2025.8.3+ but not in type hint
-                async_add_entities(
-                    subentry_entities,
-                    config_subentry_id=subentry_id,  # type: ignore[call-arg]
-                )
-            else:
-                _LOGGER.warning("Subentry %s missing device_id", subentry_id)
-        return
+
+            # Create DLI sensors if monitoring device with illuminance is configured
+            # DLI pipeline: PPFD -> Total Integral -> DLI
+            if monitoring_device_id:
+                # Find illuminance mirrored sensor source entity for this location
+                illuminance_source_entity_id = None
+                for sensor in mirrored_sensors:
+                    if (
+                        isinstance(sensor, MonitoringSensor)
+                        and hasattr(sensor, "source_entity_id")
+                        and "illuminance" in sensor.source_entity_id.lower()
+                    ):
+                        # Use source entity ID (mirrored entity_id not yet created)
+                        illuminance_source_entity_id = sensor.source_entity_id
+                        break
+
+                if illuminance_source_entity_id:
+                    # Create PPFD sensor (converts lux to μmol/m²/s)
+                    ppfd_sensor = PlantLocationPpfdSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        illuminance_entity_id=illuminance_source_entity_id,
+                    )
+                    subentry_entities.append(ppfd_sensor)
+
+                    # Create total integral sensor (integrates PPFD over time)
+                    total_integral_sensor = PlantLocationTotalLightIntegral(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        ppfd_sensor=ppfd_sensor,
+                    )
+
+                    # Add integral sensor immediately so it gets an initial state
+                    _LOGGER.debug(
+                        "Adding Total Integral sensor %s before creating DLI",
+                        total_integral_sensor.entity_id,
+                    )
+                    # Use a cast wrapper to call async_add_entities with the
+                    # `config_subentry_id` kwarg which isn't present in the
+                    # older type stubs.
+                    _add_entities = cast("Callable[..., Any]", async_add_entities)
+                    _add_entities(
+                        [total_integral_sensor],
+                        update_before_add=True,
+                        config_subentry_id=subentry_id,
+                    )
+
+                    # Prepare data used by UtilityMeterSensor.async_reading
+                    hass.data.setdefault(DATA_UTILITY, {})
+                    hass.data[DATA_UTILITY].setdefault(subentry.subentry_id, {})
+                    hass.data[DATA_UTILITY][subentry.subentry_id].setdefault(
+                        DATA_TARIFF_SENSORS, []
+                    )
+
+                    _LOGGER.debug(
+                        "Creating DLI sensor with source %s",
+                        total_integral_sensor.entity_id,
+                    )
+                    dli_sensor = PlantLocationDailyLightIntegral(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        total_integral_sensor=total_integral_sensor,
+                    )
+                    subentry_entities.append(dli_sensor)
+
+                    # Register DLI sensor with utility meter data structure
+                    hass.data[DATA_UTILITY][subentry.subentry_id][
+                        DATA_TARIFF_SENSORS
+                    ].append(dli_sensor)
+
+                    # Create a sensor exposing the prior_period attribute.
+                    # This represents yesterday's DLI value.
+                    dli_prior_period_sensor = DliPriorPeriodSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        dli_entity_id=dli_sensor.entity_id,
+                    )
+                    subentry_entities.append(dli_prior_period_sensor)
+
+                    # Create a sensor to calculate the 7-day average of DLI values.
+                    # This uses Home Assistant's statistics component to track
+                    # historical DLI values and expose their mean over 7 days.
+                    weekly_avg_dli_sensor = WeeklyAverageDliSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        dli_prior_period_entity_id=dli_prior_period_sensor.entity_id,
+                    )
+                    subentry_entities.append(weekly_avg_dli_sensor)
+
+                    _LOGGER.debug("Added DLI for %s", location_name)
+                else:
+                    _LOGGER.debug("No illuminance sensor for DLI at %s", location_name)
+
+                # Create temperature below threshold weekly duration sensor
+                # Only create if a temperature sensor and plant slots exist
+                temperature_source_entity_id = None
+                for sensor in mirrored_sensors:
+                    if (
+                        isinstance(sensor, MonitoringSensor)
+                        and hasattr(sensor, "source_entity_id")
+                        and "temperature" in sensor.source_entity_id.lower()
+                    ):
+                        # Use source entity ID (mirrored entity_id not yet created)
+                        temperature_source_entity_id = sensor.source_entity_id
+                        break
+
+                if temperature_source_entity_id and _has_plants_in_slots(subentry.data):
+                    temp_below_threshold_sensor = TemperatureBelowThresholdHoursSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        temperature_entity_id=temperature_source_entity_id,
+                    )
+                    subentry_entities.append(temp_below_threshold_sensor)
+                    _LOGGER.debug(
+                        "Added temp below threshold weekly duration sensor for %s",
+                        location_name,
+                    )
+
+                    # Also create temperature above threshold weekly duration sensor
+                    temp_above_threshold_sensor = TemperatureAboveThresholdHoursSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        temperature_entity_id=temperature_source_entity_id,
+                    )
+                    subentry_entities.append(temp_above_threshold_sensor)
+                    _LOGGER.debug(
+                        "Added temp above threshold weekly duration for %s",
+                        location_name,
+                    )
+
+                # Create humidity below threshold weekly duration sensor
+                # Only create if a humidity entity is linked
+                humidity_entity_id = subentry.data.get("humidity_entity_id")
+                if humidity_entity_id and _has_plants_in_slots(subentry.data):
+                    humidity_below_threshold_sensor = HumidityBelowThresholdHoursSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        humidity_entity_id=humidity_entity_id,
+                    )
+                    subentry_entities.append(humidity_below_threshold_sensor)
+                    _LOGGER.debug(
+                        "Added humidity below threshold weekly duration sensor for %s",
+                        location_name,
+                    )
+
+                    # Also create humidity above threshold weekly duration sensor
+                    humidity_above_threshold_sensor = HumidityAboveThresholdHoursSensor(
+                        hass=hass,
+                        entry_id=subentry.subentry_id,
+                        location_device_id=location_device_id,
+                        location_name=location_name,
+                        humidity_entity_id=humidity_entity_id,
+                    )
+                    subentry_entities.append(humidity_above_threshold_sensor)
+                    _LOGGER.debug(
+                        "Added humidity above threshold weekly duration sensor for %s",
+                        location_name,
+                    )
+
+            # Add entities with proper subentry association (like openplantbook_ref)
+            _LOGGER.debug(
+                "Adding %d entities for subentry %s",
+                len(subentry_entities),
+                subentry_id,
+            )
+            # Note: config_subentry_id exists in HA 2025.8.3+ but not in type hint
+            _add_entities = cast("Callable[..., Any]", async_add_entities)
+            _add_entities(subentry_entities, config_subentry_id=subentry_id)
 
     # Main entry aggregated sensors for locations (if no subentries)
     zones = entry.options.get("irrigation_zones", {})
@@ -1333,10 +1579,18 @@ class AggregatedLocationSensor(SensorEntity):
         aggregation_type = self.metric_config.get("aggregation_type")
         plant_attr_min = self.metric_config.get("plant_attr_min")
         plant_attr_max = self.metric_config.get("plant_attr_max")
+        # Some aggregated metrics operate on illuminance but should be
+        # converted to DLI before aggregation. Use specialized helpers
+        # from the dli module when configured.
+        convert_to_dli = bool(self.metric_config.get("convert_illuminance_to_dli"))
 
         result = None
         if aggregation_type == "max_of_mins" and plant_attr_min:
-            result = aggregation.max_of_mins(plants, plant_attr_min)
+            if convert_to_dli:
+                # Convert plant minimum illuminance (lux) to DLI and take max
+                result = dli.max_of_mins_dli(plants, plant_attr_min)
+            else:
+                result = aggregation.max_of_mins(plants, plant_attr_min)
             _LOGGER.debug(
                 "Computed max_of_mins for %s using key '%s': %s",
                 self.metric_key,
@@ -1344,7 +1598,11 @@ class AggregatedLocationSensor(SensorEntity):
                 result,
             )
         elif aggregation_type == "min_of_maximums" and plant_attr_max:
-            result = aggregation.min_of_maxs(plants, plant_attr_max)
+            if convert_to_dli:
+                # Convert plant maximum illuminance (lux) to DLI and take min
+                result = dli.min_of_maxs_dli(plants, plant_attr_max)
+            else:
+                result = aggregation.min_of_maxs(plants, plant_attr_max)
             _LOGGER.debug(
                 "Computed min_of_maxs for %s using key '%s': %s",
                 self.metric_key,
@@ -1726,6 +1984,388 @@ def _plants_from_entity_states(
     return out
 
 
+class PlantLocationPpfdSensor(SensorEntity):
+    """
+    Entity reporting current PPFD calculated from illuminance (lux).
+
+    Converts lux to PPFD (μmol/m²/s) using the standard conversion factor.
+    Based on PlantCurrentPpfd from Olen/homeassistant-plant.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        illuminance_entity_id: str,
+    ) -> None:
+        """Initialize the PPFD sensor."""
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self._illuminance_entity_id = illuminance_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} {READING_PPFD}"
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{DOMAIN}_{entry_id}_{location_name_safe}_ppfd"
+        self._attr_native_unit_of_measurement = UNIT_PPFD
+        self._attr_icon = ICON_PPFD
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        # Make visible for debugging - user can hide if desired
+        self._attr_entity_registry_visible_default = True
+
+        self._state: float | None = None
+        self._unsubscribe = None
+
+        # Generate entity_id so it can be used by IntegrationSensor
+        self.entity_id = async_generate_entity_id(
+            "sensor.{}", self._attr_name.lower().replace(" ", "_"), current_ids={}
+        )
+
+        # Set device info
+        device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+        self._attr_device_info = device_info
+
+        # Initialize with current illuminance value
+        if illuminance_state := hass.states.get(illuminance_entity_id):
+            self._state = self._ppfd_from_lux(illuminance_state.state)
+
+    def _ppfd_from_lux(self, lux_value: Any) -> float | None:
+        """
+        Convert lux value to PPFD (mol/s⋅m²).
+
+        See https://www.apogeeinstruments.com/conversion-ppfd-to-lux/
+        Standard conversion for sunlight: 0.0185 μmol/m²/s per lux.
+        We divide by 1,000,000 to convert from μmol to mol.
+        """
+        if lux_value is None or lux_value in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+
+        try:
+            # Convert lux to PPFD: lux * 0.0185 / 1000000 = mol/s⋅m²
+            # (0.0185 converts lux to μmol/m²/s, then /1000000 converts to mol/s⋅m²)
+            return float(lux_value) * DEFAULT_LUX_TO_PPFD / 1000000
+        except (ValueError, TypeError):
+            return None
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the native value of the sensor."""
+        return self._state
+
+    @property
+    def device_class(self) -> None:
+        """Device class - None for PPFD as there's no standard device class."""
+        return None
+
+    @callback
+    def _illuminance_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle illuminance sensor state changes."""
+        if new_state is None:
+            self._state = None
+        else:
+            self._state = self._ppfd_from_lux(new_state.state)
+
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to illuminance sensor state changes."""
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass, self._illuminance_entity_id, self._illuminance_state_changed
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to illuminance entity %s: %s",
+                self._illuminance_entity_id,
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class PlantLocationTotalLightIntegral(IntegrationSensor):
+    """
+    Entity to calculate total PPFD integral over time.
+
+    Uses trapezoidal integration method to accumulate PPFD values.
+    Based on PlantTotalLightIntegral from Olen/homeassistant-plant.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        ppfd_sensor: PlantLocationPpfdSensor,
+    ) -> None:
+        """Initialize the total light integral sensor."""
+        # entry_id intentionally unused in this implementation; keep for
+        # future compatibility with caller keywords
+        _ = entry_id
+        super().__init__(
+            hass,
+            integration_method=METHOD_TRAPEZOIDAL,
+            # Use a concise display name (don't include the entry id in the unique id)
+            name=f"{location_name} {READING_PPFD} Integral",
+            round_digits=2,
+            source_entity=ppfd_sensor.entity_id,
+            # Use a short unique_id so the generated entity_id is concise
+            unique_id=f"{location_name.lower().replace(' ', '_')}_ppfd_integral",
+            unit_prefix=None,
+            unit_time=UnitOfTime.SECONDS,
+            max_sub_interval=None,
+        )
+        self._unit_of_measurement = UNIT_PPFD_INTEGRAL
+        self._attr_icon = ICON_DLI
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        # Make visible for debugging - user can hide if desired
+        self._attr_entity_registry_visible_default = True
+        self.location_device_id = location_device_id
+
+        # Generate a concise entity_id (e.g. sensor.green_ppfd_integral)
+        self.entity_id = async_generate_entity_id(
+            "sensor.{}",
+            f"{location_name} {READING_PPFD} Integral".lower().replace(" ", "_"),
+            current_ids={},
+        )
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        """Return the native unit of measurement as mol/m²/d for utility meter."""
+        return UNIT_PPFD_INTEGRAL
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+
+class PlantLocationDailyLightIntegral(UtilityMeterSensor):
+    """
+    Entity to calculate Daily Light Integral (DLI) from PPFD integral.
+
+    Resets daily to provide daily light accumulation.
+    Based on PlantDailyLightIntegral from Olen/homeassistant-plant.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        total_integral_sensor: PlantLocationTotalLightIntegral,
+    ) -> None:
+        """Initialize the DLI sensor."""
+        # UtilityMeterSensor.__init__ is untyped in upstream stubs. Call via
+        # a cast to Any so mypy doesn't complain about calling an untyped
+        # function while keeping runtime behavior identical.
+        _ums_init = cast("Any", UtilityMeterSensor).__init__
+        _ums_init(
+            self,
+            hass,
+            cron_pattern=None,
+            delta_values=None,
+            meter_offset=timedelta(seconds=0),
+            meter_type=DAILY,
+            name=f"{location_name} {READING_DLI_NAME}",
+            net_consumption=None,
+            parent_meter=entry_id,
+            source_entity=total_integral_sensor.entity_id,
+            tariff_entity=None,
+            tariff=None,
+            unique_id=f"{location_name.lower().replace(' ', '_')}_{READING_DLI_SLUG}",
+            sensor_always_available=True,
+            suggested_entity_id=None,
+            periodically_resetting=True,
+        )
+        self._unit_of_measurement = UNIT_DLI
+        self._attr_icon = ICON_DLI
+        self._attr_suggested_display_precision = 2
+        self.location_device_id = location_device_id
+
+        # Generate a concise entity_id (e.g. sensor.green_daily_light_integral)
+        self.entity_id = async_generate_entity_id(
+            "sensor.{}",
+            f"{location_name} {READING_DLI_NAME}".lower().replace(" ", "_"),
+            current_ids={},
+        )
+
+    @property
+    def device_class(self) -> SensorDeviceClass | None:
+        """Device class for DLI (no standard device class; return None)."""
+        # There is no standard SensorDeviceClass for DLI in Home Assistant.
+        return None
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+
+class DliPriorPeriodSensor(RestoreEntity, SensorEntity):
+    """
+    Sensor exposing the `last_period` attribute from a DLI UtilityMeterSensor.
+
+    This mirrors the utility meter's last_period attribute (e.g., prior day's DLI)
+    as a standalone sensor entity for easy access in automations and dashboards.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        dli_entity_id: str,
+    ) -> None:
+        """Initialize the DLI prior period sensor."""
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self._dli_entity_id = dli_entity_id
+
+        # Set entity attributes
+        # Use the friendly DLI display name for readability.
+        # e.g., "Daily Light Integral Prior Period"
+        self._attr_name = f"{location_name} {READING_PRIOR_PERIOD_DLI_NAME}"
+        location_name_safe = location_name.lower().replace(" ", "_")
+        # use 'prior_period' in unique id for new naming
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_{READING_PRIOR_PERIOD_DLI_SLUG}"
+        )
+        self._attr_native_unit_of_measurement = UNIT_DLI
+        self._attr_icon = ICON_DLI
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_suggested_display_precision = 2
+
+        # Set device info
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+
+        self._state: Any = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+        self._restored = False
+
+        # Initialize from current DLI state if available
+        if dli_state := hass.states.get(self._dli_entity_id):
+            self._state = dli_state.attributes.get("last_period")
+            self._attributes = dict(dli_state.attributes)
+            self._attributes["source_entity"] = self._dli_entity_id
+
+        # Generate a concise entity_id based on the new name. For example,
+        # it may look like: sensor.green_daily_light_integral_prior_period.
+        # Use a safe, lowercased, underscored location name to create the id.
+        with contextlib.suppress(Exception):
+            self.entity_id = async_generate_entity_id(
+                "sensor.{}",
+                f"{location_name} {READING_PRIOR_PERIOD_DLI_NAME}".lower().replace(
+                    " ", "_"
+                ),
+                current_ids={},
+            )
+
+    @callback
+    def _dli_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle DLI sensor state changes."""
+        if new_state is None:
+            self._state = None
+            self._attributes = {}
+        else:
+            self._state = new_state.attributes.get("last_period")
+            self._attributes = dict(new_state.attributes)
+            self._attributes["source_entity"] = self._dli_entity_id
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        dli_state = self.hass.states.get(self._dli_entity_id)
+        return dli_state is not None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to DLI sensor state changes and restore previous state."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (last_state := await self.async_get_last_state()) and not self._restored:
+            self._restored = True
+            if last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                try:
+                    self._state = float(last_state.state)
+                except (ValueError, TypeError):
+                    self._state = last_state.state
+
+                # Restore attributes
+                if last_state.attributes:
+                    self._attributes = dict(last_state.attributes)
+
+                _LOGGER.debug(
+                    "Restored DLI last period sensor %s with state: %s",
+                    self.entity_id,
+                    self._state,
+                )
+
+        # Subscribe to DLI sensor state changes
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass, self._dli_entity_id, self._dli_state_changed
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to DLI entity %s: %s",
+                self._dli_entity_id,
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
 class PlantMoistureSensor(SensorEntity):
     """
     A placeholder plant moisture sensor.
@@ -1762,3 +2402,1394 @@ class PlantMoistureSensor(SensorEntity):
                 return
         self._value = None
         # end of PlantMoistureSensor
+
+
+class WeeklyAverageDliSensor(SensorEntity):
+    """
+    Sensor that calculates the 7-day average of the prior_period DLI values.
+
+    This sensor uses Home Assistant's statistics component to track historical
+    DLI values and expose their mean over the past 7 days.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        dli_prior_period_entity_id: str,
+    ) -> None:
+        """
+        Initialize the weekly average DLI sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The subentry ID.
+            location_device_id: The device ID of the location.
+            location_name: The name of the location.
+            dli_prior_period_entity_id: The entity ID of the prior_period DLI sensor.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self._dli_prior_period_entity_id = dli_prior_period_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} {READING_WEEKLY_AVG_DLI_NAME}"
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_{READING_WEEKLY_AVG_DLI_SLUG}"
+        )
+
+        # Set device class, unit, and icon
+        self._attr_device_class = None  # No standard device class for DLI
+        self._attr_native_unit_of_measurement = UNIT_DLI
+        self._attr_icon = ICON_DLI
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_suggested_display_precision = 2
+        self._attr_entity_registry_visible_default = True
+
+        # Set device info
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+
+        self._state: Any = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+        # Generate a concise entity_id
+        with contextlib.suppress(Exception):
+            self.entity_id = async_generate_entity_id(
+                "sensor.{}",
+                f"{location_name} {READING_WEEKLY_AVG_DLI_NAME}".lower().replace(
+                    " ", "_"
+                ),
+                current_ids={},
+            )
+
+    def _calculate_mean_from_history(self) -> float | None:
+        """
+        Calculate the mean of the prior_period DLI values over the past 7 days.
+
+        This queries the statistics history from Home Assistant to retrieve
+        historical data for the prior_period DLI sensor.
+
+        Returns:
+            The mean value if data is available, None otherwise.
+
+        """
+        try:
+            # Get the state history for the prior_period DLI sensor
+            # The actual implementation would use the statistics sensor
+            # which Home Assistant automatically creates for us
+            dli_state = self.hass.states.get(self._dli_prior_period_entity_id)
+            if dli_state:
+                try:
+                    # Store the mean value from statistics if available
+                    mean_value = dli_state.attributes.get("mean")
+                    if mean_value is not None:
+                        return float(mean_value)
+                except (ValueError, TypeError):
+                    # mean_value could not be converted to float; ignore and return None
+                    _LOGGER.debug(
+                        "Could not convert mean_value '%s' to float for DLI stats.",
+                        mean_value,
+                    )
+
+        except Exception as exc:  # noqa: BLE001 - Defensive
+            _LOGGER.debug(
+                "Error calculating mean DLI: %s",
+                exc,
+            )
+
+        return None
+
+    @callback
+    def _dli_prior_period_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle DLI prior_period sensor state changes."""
+        if new_state is None:
+            self._state = None
+            self._attributes = {}
+        else:
+            # The actual mean will be provided by the statistics sensor
+            # that Home Assistant creates automatically. For now, we mirror
+            # the prior_period value and let the statistics component
+            # handle the averaging.
+            try:
+                self._state = float(new_state.state)
+            except (ValueError, TypeError):
+                self._state = None
+
+            self._attributes = dict(new_state.attributes or {})
+            self._attributes["source_entity"] = self._dli_prior_period_entity_id
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        dli_state = self.hass.states.get(self._dli_prior_period_entity_id)
+        return dli_state is not None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to DLI prior_period sensor state changes."""
+        try:
+            # Initialize with current state
+            if dli_state := self.hass.states.get(self._dli_prior_period_entity_id):
+                try:
+                    self._state = float(dli_state.state)
+                except (ValueError, TypeError):
+                    self._state = None
+
+                self._attributes = dict(dli_state.attributes or {})
+                self._attributes["source_entity"] = self._dli_prior_period_entity_id
+
+            # Subscribe to state changes
+            self._unsubscribe = async_track_state_change(
+                self.hass,
+                self._dli_prior_period_entity_id,
+                self._dli_prior_period_state_changed,
+            )
+            _LOGGER.debug(
+                "Weekly average DLI sensor %s subscribed to %s",
+                self.entity_id,
+                self._dli_prior_period_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up weekly average DLI sensor: %s",
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class TemperatureBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
+    """
+    Sensor that counts hours where temperature was below minimum threshold.
+
+    This sensor queries Home Assistant's statistics database to count the number
+    of hourly readings where the temperature was below the minimum temperature
+    threshold over the past 7 days.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        temperature_entity_id: str,
+    ) -> None:
+        """
+        Initialize the temperature below threshold weekly duration sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The subentry ID.
+            location_device_id: The device ID of the location.
+            location_name: The name of the location.
+            temperature_entity_id: The entity ID of the temperature sensor.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self._temperature_entity_id = temperature_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} Temperature Below Threshold Weekly Duration"
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_"
+            "temperature_below_threshold_weekly_duration"
+        )
+
+        # Set device class, unit, and icon
+        self._attr_device_class = None  # No standard device class for this metric
+        self._attr_native_unit_of_measurement = "hours"
+        self._attr_icon = "mdi:thermometer-alert"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_suggested_display_precision = 0
+        self._attr_entity_registry_visible_default = True
+
+        # Set device info
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+
+        self._state: Any = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+        # Generate a concise entity_id
+        with contextlib.suppress(Exception):
+            safe_name = (
+                (f"{location_name} Temperature Below Threshold Weekly Duration")
+                .lower()
+                .replace(" ", "_")
+            )
+            self.entity_id = async_generate_entity_id(
+                "sensor.{}",
+                safe_name,
+                current_ids={},
+            )
+
+    async def _calculate_hours_below_threshold(self) -> int | None:
+        """
+        Calculate hours where temperature was below the minimum threshold.
+
+        This queries the statistics from Home Assistant's recorder database
+        to count hourly periods where temperature was below the threshold.
+
+        Returns:
+            The number of hours below threshold, or None if data unavailable.
+
+        """
+        try:
+            # Get threshold temperature
+            min_temp_threshold = await self._get_temperature_threshold()
+            if min_temp_threshold is None:
+                return None
+
+            # Get temperature statistics
+            stats = await self._fetch_temperature_statistics()
+            if not stats:
+                return None
+
+            # Count hours below threshold
+            hours_below = self._count_hours_below_threshold(stats, min_temp_threshold)
+
+            _LOGGER.debug(
+                "Temperature below threshold: %d hours out of %d total hours "
+                "(threshold: %.1f°C)",
+                hours_below,
+                len(stats),
+                min_temp_threshold,
+            )
+
+            return hours_below  # noqa: TRY300
+
+        except ImportError as exc:
+            _LOGGER.warning(
+                "Could not import recorder statistics: %s",
+                exc,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - Defensive
+            _LOGGER.warning(
+                "Error calculating temp below threshold weekly duration: %s (%s)",
+                exc,
+                type(exc).__name__,
+            )
+            return None
+
+    async def _get_temperature_threshold(self) -> float | None:
+        """Get the minimum temperature threshold from aggregated sensors."""
+        # Find the min_temperature aggregated sensor for this location
+        min_temp_entity_id = self._find_min_temperature_entity()
+        if not min_temp_entity_id:
+            _LOGGER.debug("No minimum temperature threshold entity found for location")
+            return None
+
+        # Get the threshold value
+        min_temp_state = self.hass.states.get(min_temp_entity_id)
+        if not min_temp_state or min_temp_state.state in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+            None,
+        ):
+            _LOGGER.debug(
+                "Minimum temperature threshold not available: %s",
+                min_temp_state.state if min_temp_state else "None",
+            )
+            return None
+
+        try:
+            return float(min_temp_state.state)
+        except (ValueError, TypeError):
+            _LOGGER.debug(
+                "Could not convert minimum temperature to float: %s",
+                min_temp_state.state,
+            )
+            return None
+
+    def _find_min_temperature_entity(self) -> str | None:
+        """Find the min_temperature entity ID for this location."""
+        ent_reg = er.async_get(self.hass)
+        for entity in ent_reg.entities.values():
+            if (
+                entity.platform == DOMAIN
+                and entity.domain == "sensor"
+                and entity.unique_id
+                and f"{self.entry_id}" in entity.unique_id
+                and "min_temperature" in entity.unique_id
+            ):
+                return entity.entity_id
+        return None
+
+    async def _fetch_temperature_statistics(self) -> list[Any] | None:
+        """Fetch temperature statistics from recorder."""
+        # Get statistics for the past 7 days
+        end_time = dt_util.now()
+        start_time = end_time - timedelta(days=7)
+
+        # Get recorder instance
+        recorder_instance = get_instance(self.hass)
+        if recorder_instance is None:
+            _LOGGER.debug("Recorder not available")
+            return None
+
+        # Query statistics for the temperature sensor
+        stats = await recorder_instance.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start_time,
+            end_time,
+            {self._temperature_entity_id},
+            "hour",
+            None,
+            {"mean"},
+        )
+
+        if not stats or self._temperature_entity_id not in stats:
+            _LOGGER.debug(
+                "No statistics found for temperature entity: %s",
+                self._temperature_entity_id,
+            )
+            return None
+
+        return stats[self._temperature_entity_id]
+
+    def _count_hours_below_threshold(self, stats: list[Any], threshold: float) -> int:
+        """Count hours where temperature was below threshold."""
+        hours_below = 0
+        for stat in stats:
+            mean_temp = stat.get("mean")
+            if mean_temp is not None:
+                try:
+                    if float(mean_temp) < threshold:
+                        hours_below += 1
+                except (ValueError, TypeError):
+                    continue
+        return hours_below
+
+    @callback
+    def _temperature_state_changed(
+        self, _entity_id: str, _old_state: Any, _new_state: Any
+    ) -> None:
+        """Handle temperature sensor state changes."""
+        # Trigger recalculation when temperature changes
+        self.hass.async_create_task(self._async_update_state())
+
+    async def _async_update_state(self) -> None:
+        """Update the sensor state."""
+        self._state = await self._calculate_hours_below_threshold()
+
+        # Store metadata in attributes
+        self._attributes = {
+            "source_entity": self._temperature_entity_id,
+            "period_days": 7,
+        }
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        temp_state = self.hass.states.get(self._temperature_entity_id)
+        return temp_state is not None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to temperature sensor state changes and restore state."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (
+            last_state := await self.async_get_last_state()
+        ) and last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            try:
+                self._state = int(last_state.state)
+            except (ValueError, TypeError):
+                self._state = last_state.state
+
+            # Restore attributes
+            if last_state.attributes:
+                self._attributes = dict(last_state.attributes)
+
+            _LOGGER.debug(
+                "Restored temperature below threshold sensor %s with state: %s",
+                self.entity_id,
+                self._state,
+            )
+
+        # Subscribe to temperature sensor state changes
+        # Update every hour or when temperature changes significantly
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass, self._temperature_entity_id, self._temperature_state_changed
+            )
+            _LOGGER.debug(
+                "Temperature below threshold sensor %s subscribed to %s",
+                self.entity_id,
+                self._temperature_entity_id,
+            )
+
+            # Perform initial calculation
+            await self._async_update_state()
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up temperature below threshold sensor: %s",
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class TemperatureAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
+    """
+    Sensor that counts hours where temperature was above maximum threshold.
+
+    This sensor queries Home Assistant's statistics database to count the number
+    of hourly readings where the temperature was above the maximum temperature
+    threshold over the past 7 days.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        temperature_entity_id: str,
+    ) -> None:
+        """
+        Initialize the temperature above threshold weekly duration sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The subentry ID.
+            location_device_id: The device ID of the location.
+            location_name: The name of the location.
+            temperature_entity_id: The entity ID of the temperature sensor.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self._temperature_entity_id = temperature_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} Temperature Above Threshold Weekly Duration"
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_"
+            "temperature_above_threshold_weekly_duration"
+        )
+
+        # Set device class, unit, and icon
+        self._attr_device_class = None  # No standard device class for this metric
+        self._attr_native_unit_of_measurement = "hours"
+        self._attr_icon = "mdi:thermometer-alert"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_suggested_display_precision = 0
+        self._attr_entity_registry_visible_default = True
+
+        # Set device info
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+
+        self._state: Any = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+        # Generate a concise entity_id
+        with contextlib.suppress(Exception):
+            safe_name = (
+                (f"{location_name} Temperature Above Threshold Weekly Duration")
+                .lower()
+                .replace(" ", "_")
+            )
+            self.entity_id = async_generate_entity_id(
+                "sensor.{}",
+                safe_name,
+                current_ids={},
+            )
+
+    async def _calculate_hours_above_threshold(self) -> int | None:
+        """
+        Calculate hours where temperature was above the maximum threshold.
+
+        This queries the statistics from Home Assistant's recorder database
+        to count hourly periods where temperature was above the threshold.
+
+        Returns:
+            The number of hours above threshold, or None if data unavailable.
+
+        """
+        try:
+            # Get threshold temperature
+            max_temp_threshold = await self._get_temperature_threshold()
+            if max_temp_threshold is None:
+                return None
+
+            # Get temperature statistics
+            stats = await self._fetch_temperature_statistics()
+            if not stats:
+                return None
+
+            # Count hours above threshold
+            hours_above = self._count_hours_above_threshold(stats, max_temp_threshold)
+
+            _LOGGER.debug(
+                "Temperature above threshold: %d hours out of %d total hours "
+                "(threshold: %.1f°C)",
+                hours_above,
+                len(stats),
+                max_temp_threshold,
+            )
+
+            return hours_above  # noqa: TRY300
+
+        except ImportError as exc:
+            _LOGGER.warning(
+                "Could not import recorder statistics: %s",
+                exc,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - Defensive
+            _LOGGER.warning(
+                "Error calculating temp above threshold weekly duration: %s (%s)",
+                exc,
+                type(exc).__name__,
+            )
+            return None
+
+    async def _get_temperature_threshold(self) -> float | None:
+        """Get the maximum temperature threshold from aggregated sensors."""
+        # Find the max_temperature aggregated sensor for this location
+        max_temp_entity_id = self._find_max_temperature_entity()
+        if not max_temp_entity_id:
+            _LOGGER.debug("No maximum temperature threshold entity found for location")
+            return None
+
+        # Get the threshold value
+        max_temp_state = self.hass.states.get(max_temp_entity_id)
+        if not max_temp_state or max_temp_state.state in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+            None,
+        ):
+            _LOGGER.debug(
+                "Maximum temperature threshold not available: %s",
+                max_temp_state.state if max_temp_state else "None",
+            )
+            return None
+
+        try:
+            return float(max_temp_state.state)
+        except (ValueError, TypeError):
+            _LOGGER.debug(
+                "Could not convert maximum temperature to float: %s",
+                max_temp_state.state,
+            )
+            return None
+
+    def _find_max_temperature_entity(self) -> str | None:
+        """Find the max_temperature entity ID for this location."""
+        ent_reg = er.async_get(self.hass)
+        for entity in ent_reg.entities.values():
+            if (
+                entity.platform == DOMAIN
+                and entity.domain == "sensor"
+                and entity.unique_id
+                and f"{self.entry_id}" in entity.unique_id
+                and "max_temperature" in entity.unique_id
+            ):
+                return entity.entity_id
+        return None
+
+    async def _fetch_temperature_statistics(self) -> list[Any] | None:
+        """Fetch temperature statistics from recorder."""
+        # Get statistics for the past 7 days
+        end_time = dt_util.now()
+        start_time = end_time - timedelta(days=7)
+
+        # Get recorder instance
+        recorder_instance = get_instance(self.hass)
+        if recorder_instance is None:
+            _LOGGER.debug("Recorder not available")
+            return None
+
+        # Query statistics for the temperature sensor
+        stats = await recorder_instance.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start_time,
+            end_time,
+            {self._temperature_entity_id},
+            "hour",
+            None,
+            {"mean"},
+        )
+
+        if not stats or self._temperature_entity_id not in stats:
+            _LOGGER.debug(
+                "No statistics found for temperature entity: %s",
+                self._temperature_entity_id,
+            )
+            return None
+
+        return stats[self._temperature_entity_id]
+
+    def _count_hours_above_threshold(self, stats: list[Any], threshold: float) -> int:
+        """Count hours where temperature was above threshold."""
+        hours_above = 0
+        for stat in stats:
+            mean_temp = stat.get("mean")
+            if mean_temp is not None:
+                try:
+                    if float(mean_temp) > threshold:
+                        hours_above += 1
+                except (ValueError, TypeError):
+                    continue
+        return hours_above
+
+    @callback
+    def _temperature_state_changed(
+        self, _entity_id: str, _old_state: Any, _new_state: Any
+    ) -> None:
+        """Handle temperature sensor state changes."""
+        # Trigger recalculation when temperature changes
+        self.hass.async_create_task(self._async_update_state())
+
+    async def _async_update_state(self) -> None:
+        """Update the sensor state."""
+        self._state = await self._calculate_hours_above_threshold()
+
+        # Store metadata in attributes
+        self._attributes = {
+            "source_entity": self._temperature_entity_id,
+            "period_days": 7,
+        }
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        temp_state = self.hass.states.get(self._temperature_entity_id)
+        return temp_state is not None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to temperature sensor state changes and restore state."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (
+            last_state := await self.async_get_last_state()
+        ) and last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            try:
+                self._state = int(last_state.state)
+            except (ValueError, TypeError):
+                self._state = last_state.state
+
+            # Restore attributes
+            if last_state.attributes:
+                self._attributes = dict(last_state.attributes)
+
+            _LOGGER.debug(
+                "Restored temperature above threshold sensor %s with state: %s",
+                self.entity_id,
+                self._state,
+            )
+
+        # Subscribe to temperature sensor state changes
+        # Update every hour or when temperature changes significantly
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass, self._temperature_entity_id, self._temperature_state_changed
+            )
+            _LOGGER.debug(
+                "Temperature above threshold sensor %s subscribed to %s",
+                self.entity_id,
+                self._temperature_entity_id,
+            )
+
+            # Perform initial calculation
+            await self._async_update_state()
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up temperature above threshold sensor: %s",
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class HumidityBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
+    """
+    Sensor that counts hours where humidity was below minimum threshold.
+
+    This sensor queries Home Assistant's statistics database to count the number
+    of hourly readings where the humidity was below the minimum humidity
+    threshold over the past 7 days.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        humidity_entity_id: str,
+    ) -> None:
+        """
+        Initialize the humidity below threshold weekly duration sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The subentry ID.
+            location_device_id: The device ID of the location.
+            location_name: The name of the location.
+            humidity_entity_id: The entity ID of the humidity sensor.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self._humidity_entity_id = humidity_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} Humidity Below Threshold Weekly Duration"
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_"
+            "humidity_below_threshold_weekly_duration"
+        )
+
+        # Set device class, unit, and icon
+        self._attr_device_class = None  # No standard device class for this metric
+        self._attr_native_unit_of_measurement = "hours"
+        self._attr_icon = "mdi:water-alert"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_suggested_display_precision = 0
+        self._attr_entity_registry_visible_default = True
+
+        # Set device info
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+
+        self._state: Any = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+        # Generate a concise entity_id
+        with contextlib.suppress(Exception):
+            safe_name = (
+                (f"{location_name} Humidity Below Threshold Weekly Duration")
+                .lower()
+                .replace(" ", "_")
+            )
+            self.entity_id = async_generate_entity_id(
+                "sensor.{}",
+                safe_name,
+                current_ids={},
+            )
+
+    async def _calculate_hours_below_threshold(self) -> int | None:
+        """
+        Calculate hours where humidity was below the minimum threshold.
+
+        This queries the statistics from Home Assistant's recorder database
+        to count hourly periods where humidity was below the threshold.
+
+        Returns:
+            The number of hours below threshold, or None if data unavailable.
+
+        """
+        try:
+            # Get threshold humidity
+            min_humidity_threshold = await self._get_humidity_threshold()
+            if min_humidity_threshold is None:
+                return None
+
+            # Get humidity statistics
+            stats = await self._fetch_humidity_statistics()
+            if not stats:
+                return None
+
+            # Count hours below threshold
+            hours_below = self._count_hours_below_threshold(
+                stats, min_humidity_threshold
+            )
+
+            _LOGGER.debug(
+                "Humidity below threshold: %d hours out of %d total hours "
+                "(threshold: %.1f%%)",
+                hours_below,
+                len(stats),
+                min_humidity_threshold,
+            )
+
+            return hours_below  # noqa: TRY300
+
+        except ImportError as exc:
+            _LOGGER.warning(
+                "Could not import recorder statistics: %s",
+                exc,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - Defensive
+            _LOGGER.warning(
+                "Error calculating humidity below threshold weekly duration: %s (%s)",
+                exc,
+                type(exc).__name__,
+            )
+            return None
+
+    async def _get_humidity_threshold(self) -> float | None:
+        """Get the minimum humidity threshold from aggregated sensors."""
+        # Find the min_humidity aggregated sensor for this location
+        min_humidity_entity_id = self._find_min_humidity_entity()
+        if not min_humidity_entity_id:
+            _LOGGER.debug("No minimum humidity threshold entity found for location")
+            return None
+
+        # Get the threshold value
+        min_humidity_state = self.hass.states.get(min_humidity_entity_id)
+        if not min_humidity_state or min_humidity_state.state in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+            None,
+        ):
+            _LOGGER.debug(
+                "Minimum humidity threshold not available: %s",
+                min_humidity_state.state if min_humidity_state else "None",
+            )
+            return None
+
+        try:
+            return float(min_humidity_state.state)
+        except (ValueError, TypeError):
+            _LOGGER.debug(
+                "Could not convert minimum humidity to float: %s",
+                min_humidity_state.state,
+            )
+            return None
+
+    def _find_min_humidity_entity(self) -> str | None:
+        """Find the min_humidity entity ID for this location."""
+        ent_reg = er.async_get(self.hass)
+        for entity in ent_reg.entities.values():
+            if (
+                entity.platform == DOMAIN
+                and entity.domain == "sensor"
+                and entity.unique_id
+                and f"{self.entry_id}" in entity.unique_id
+                and "min_humidity" in entity.unique_id
+            ):
+                return entity.entity_id
+        return None
+
+    async def _fetch_humidity_statistics(self) -> list[Any] | None:
+        """Fetch humidity statistics from recorder."""
+        # Get statistics for the past 7 days
+        end_time = dt_util.now()
+        start_time = end_time - timedelta(days=7)
+
+        # Get recorder instance
+        recorder_instance = get_instance(self.hass)
+        if recorder_instance is None:
+            _LOGGER.debug("Recorder not available")
+            return None
+
+        # Query statistics for the humidity sensor
+        stats = await recorder_instance.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start_time,
+            end_time,
+            {self._humidity_entity_id},
+            "hour",
+            None,
+            {"mean"},
+        )
+
+        if not stats or self._humidity_entity_id not in stats:
+            _LOGGER.debug(
+                "No statistics found for humidity entity: %s",
+                self._humidity_entity_id,
+            )
+            return None
+
+        return stats[self._humidity_entity_id]
+
+    def _count_hours_below_threshold(self, stats: list[Any], threshold: float) -> int:
+        """Count hours where humidity was below threshold."""
+        hours_below = 0
+        for stat in stats:
+            mean_humidity = stat.get("mean")
+            if mean_humidity is not None:
+                try:
+                    if float(mean_humidity) < threshold:
+                        hours_below += 1
+                except (ValueError, TypeError):
+                    continue
+        return hours_below
+
+    @callback
+    def _humidity_state_changed(
+        self, _entity_id: str, _old_state: Any, _new_state: Any
+    ) -> None:
+        """Handle humidity sensor state changes."""
+        # Trigger recalculation when humidity changes
+        self.hass.async_create_task(self._async_update_state())
+
+    async def _async_update_state(self) -> None:
+        """Update the sensor state."""
+        self._state = await self._calculate_hours_below_threshold()
+
+        # Store metadata in attributes
+        self._attributes = {
+            "source_entity": self._humidity_entity_id,
+            "period_days": 7,
+        }
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        humidity_state = self.hass.states.get(self._humidity_entity_id)
+        return humidity_state is not None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to humidity sensor state changes and restore state."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (
+            last_state := await self.async_get_last_state()
+        ) and last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            try:
+                self._state = int(last_state.state)
+            except (ValueError, TypeError):
+                self._state = last_state.state
+
+            # Restore attributes
+            if last_state.attributes:
+                self._attributes = dict(last_state.attributes)
+
+            _LOGGER.debug(
+                "Restored humidity below threshold sensor %s with state: %s",
+                self.entity_id,
+                self._state,
+            )
+
+        # Subscribe to humidity sensor state changes
+        # Update every hour or when humidity changes significantly
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass, self._humidity_entity_id, self._humidity_state_changed
+            )
+            _LOGGER.debug(
+                "Humidity below threshold sensor %s subscribed to %s",
+                self.entity_id,
+                self._humidity_entity_id,
+            )
+
+            # Perform initial calculation
+            await self._async_update_state()
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up humidity below threshold sensor: %s",
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class HumidityAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
+    """
+    Sensor that counts hours where humidity was above maximum threshold.
+
+    This sensor queries Home Assistant's statistics database to count the number
+    of hourly readings where the humidity was above the maximum humidity
+    threshold over the past 7 days.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        humidity_entity_id: str,
+    ) -> None:
+        """
+        Initialize the humidity above threshold weekly duration sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The subentry ID.
+            location_device_id: The device ID of the location.
+            location_name: The name of the location.
+            humidity_entity_id: The entity ID of the humidity sensor.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self._humidity_entity_id = humidity_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} Humidity Above Threshold Weekly Duration"
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_"
+            "humidity_above_threshold_weekly_duration"
+        )
+
+        # Set device class, unit, and icon
+        self._attr_device_class = None  # No standard device class for this metric
+        self._attr_native_unit_of_measurement = "hours"
+        self._attr_icon = "mdi:water-alert"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_suggested_display_precision = 0
+        self._attr_entity_registry_visible_default = True
+
+        # Set device info
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location Device",
+        )
+
+        self._state: Any = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+        # Generate a concise entity_id
+        with contextlib.suppress(Exception):
+            safe_name = (
+                (f"{location_name} Humidity Above Threshold Weekly Duration")
+                .lower()
+                .replace(" ", "_")
+            )
+            self.entity_id = async_generate_entity_id(
+                "sensor.{}",
+                safe_name,
+                current_ids={},
+            )
+
+    async def _calculate_hours_above_threshold(self) -> int | None:
+        """
+        Calculate hours where humidity was above the maximum threshold.
+
+        This queries the statistics from Home Assistant's recorder database
+        to count hourly periods where humidity was above the threshold.
+
+        Returns:
+            The number of hours above threshold, or None if data unavailable.
+
+        """
+        try:
+            # Get threshold humidity
+            max_humidity_threshold = await self._get_humidity_threshold()
+            if max_humidity_threshold is None:
+                return None
+
+            # Get humidity statistics
+            stats = await self._fetch_humidity_statistics()
+            if not stats:
+                return None
+
+            # Count hours above threshold
+            hours_above = self._count_hours_above_threshold(
+                stats, max_humidity_threshold
+            )
+
+            _LOGGER.debug(
+                "Humidity above threshold: %d hours out of %d total hours "
+                "(threshold: %.1f%%)",
+                hours_above,
+                len(stats),
+                max_humidity_threshold,
+            )
+
+            return hours_above  # noqa: TRY300
+
+        except ImportError as exc:
+            _LOGGER.warning(
+                "Could not import recorder statistics: %s",
+                exc,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - Defensive
+            _LOGGER.warning(
+                "Error calculating humidity above threshold weekly duration: %s (%s)",
+                exc,
+                type(exc).__name__,
+            )
+            return None
+
+    async def _get_humidity_threshold(self) -> float | None:
+        """Get the maximum humidity threshold from aggregated sensors."""
+        # Find the max_humidity aggregated sensor for this location
+        max_humidity_entity_id = self._find_max_humidity_entity()
+        if not max_humidity_entity_id:
+            _LOGGER.debug("No maximum humidity threshold entity found for location")
+            return None
+
+        # Get the threshold value
+        max_humidity_state = self.hass.states.get(max_humidity_entity_id)
+        if not max_humidity_state or max_humidity_state.state in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+            None,
+        ):
+            _LOGGER.debug(
+                "Maximum humidity threshold not available: %s",
+                max_humidity_state.state if max_humidity_state else "None",
+            )
+            return None
+
+        try:
+            return float(max_humidity_state.state)
+        except (ValueError, TypeError):
+            _LOGGER.debug(
+                "Could not convert maximum humidity to float: %s",
+                max_humidity_state.state,
+            )
+            return None
+
+    def _find_max_humidity_entity(self) -> str | None:
+        """Find the max_humidity entity ID for this location."""
+        ent_reg = er.async_get(self.hass)
+        for entity in ent_reg.entities.values():
+            if (
+                entity.platform == DOMAIN
+                and entity.domain == "sensor"
+                and entity.unique_id
+                and f"{self.entry_id}" in entity.unique_id
+                and "max_humidity" in entity.unique_id
+            ):
+                return entity.entity_id
+        return None
+
+    async def _fetch_humidity_statistics(self) -> list[Any] | None:
+        """Fetch humidity statistics from recorder."""
+        # Get statistics for the past 7 days
+        end_time = dt_util.now()
+        start_time = end_time - timedelta(days=7)
+
+        # Get recorder instance
+        recorder_instance = get_instance(self.hass)
+        if recorder_instance is None:
+            _LOGGER.debug("Recorder not available")
+            return None
+
+        # Query statistics for the humidity sensor
+        stats = await recorder_instance.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start_time,
+            end_time,
+            {self._humidity_entity_id},
+            "hour",
+            None,
+            {"mean"},
+        )
+
+        if not stats or self._humidity_entity_id not in stats:
+            _LOGGER.debug(
+                "No statistics found for humidity entity: %s",
+                self._humidity_entity_id,
+            )
+            return None
+
+        return stats[self._humidity_entity_id]
+
+    def _count_hours_above_threshold(self, stats: list[Any], threshold: float) -> int:
+        """Count hours where humidity was above threshold."""
+        hours_above = 0
+        for stat in stats:
+            mean_humidity = stat.get("mean")
+            if mean_humidity is not None:
+                try:
+                    if float(mean_humidity) > threshold:
+                        hours_above += 1
+                except (ValueError, TypeError):
+                    continue
+        return hours_above
+
+    @callback
+    def _humidity_state_changed(
+        self, _entity_id: str, _old_state: Any, _new_state: Any
+    ) -> None:
+        """Handle humidity sensor state changes."""
+        # Trigger recalculation when humidity changes
+        self.hass.async_create_task(self._async_update_state())
+
+    async def _async_update_state(self) -> None:
+        """Update the sensor state."""
+        self._state = await self._calculate_hours_above_threshold()
+
+        # Store metadata in attributes
+        self._attributes = {
+            "source_entity": self._humidity_entity_id,
+            "period_days": 7,
+        }
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        humidity_state = self.hass.states.get(self._humidity_entity_id)
+        return humidity_state is not None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to humidity sensor state changes and restore state."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (
+            last_state := await self.async_get_last_state()
+        ) and last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            try:
+                self._state = int(last_state.state)
+            except (ValueError, TypeError):
+                self._state = last_state.state
+
+            # Restore attributes
+            if last_state.attributes:
+                self._attributes = dict(last_state.attributes)
+
+            _LOGGER.debug(
+                "Restored humidity above threshold sensor %s with state: %s",
+                self.entity_id,
+                self._state,
+            )
+
+        # Subscribe to humidity sensor state changes
+        # Update every hour or when humidity changes significantly
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass, self._humidity_entity_id, self._humidity_state_changed
+            )
+            _LOGGER.debug(
+                "Humidity above threshold sensor %s subscribed to %s",
+                self.entity_id,
+                self._humidity_entity_id,
+            )
+
+            # Perform initial calculation
+            await self._async_update_state()
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up humidity above threshold sensor: %s",
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()

@@ -109,20 +109,36 @@ OPENPLANTBOOK_DOMAIN = "openplantbook_ref"
 
 # Daily Light Integral (DLI) Constants
 # Conversion factors
-DEFAULT_LUX_TO_PPFD = 0.0185  # Standard conversion from lux to PPFD (μmol/m²/s)
-PPFD_DLI_FACTOR = (
-    0.000001  # Convert PPFD integral (μmol/m²) to DLI (mol/m²/d): 1/1,000,000 μmol/mol
-)
+# Standard conversion from lux to μmol/m²/s. To obtain mol/s⋅m² divide
+# the μmol/m²/s value by 1_000_000.
+DEFAULT_LUX_TO_PPFD = 0.0185
+PPFD_DLI_FACTOR = 0.000001  # Convert PPFD integral (μmol/m²) to DLI (mol/m²/d)
 
 # DLI Units and Icons
-UNIT_PPFD = "μmol/m²/s"  # Photosynthetic Photon Flux Density
+UNIT_PPFD = "mol/m²/s"  # Photosynthetic Photon Flux Density
+UNIT_PPFD_INTEGRAL = "mol/m²/d"  # PPFD Integral (same as DLI for utility meter)
 UNIT_DLI = "mol/m²/d"  # Daily Light Integral
 ICON_PPFD = "mdi:white-balance-sunny"
 ICON_DLI = "mdi:counter"
 
 # DLI sensor types
-READING_PPFD = "ppfd"
+# Human-friendly reading name for PPFD (capitalized for display).
+# Keep short tokens/unique ids lowercase elsewhere.
+READING_PPFD = "PPFD"
+# Keep the short token for backwards-compatibility in places that expect 'dli'
 READING_DLI = "dli"
+
+# Friendly display name for Daily Light Integral and a slug for entity ids
+READING_DLI_NAME = "Daily Light Integral"
+READING_DLI_SLUG = "daily_light_integral"
+
+# Weekly Average DLI sensor
+READING_WEEKLY_AVG_DLI_NAME = "Daily Light Integral Weekly Average"
+READING_WEEKLY_AVG_DLI_SLUG = "daily_light_integral_weekly_average"
+
+# Prior Period DLI sensor (yesterday's DLI)
+READING_PRIOR_PERIOD_DLI_NAME = "Daily Light Integral Prior Period"
+READING_PRIOR_PERIOD_DLI_SLUG = "daily_light_integral_prior_period"
 
 # Attribute keys
 MONITORING_SENSOR_MAPPINGS = {
