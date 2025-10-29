@@ -1,4 +1,4 @@
-"""Tests for temperature above threshold hours sensor."""
+"""Tests for temperature above threshold weekly duration sensor."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -46,11 +46,14 @@ async def test_temperature_above_threshold_sensor_init(mock_hass):
         temperature_entity_id="sensor.test_temperature",
     )
 
-    assert sensor._attr_name == "Test Garden Temperature Above Threshold Hours"
     assert (
-        sensor._attr_unique_id
-        == f"{DOMAIN}_test_entry_123_test_garden_temperature_above_threshold_hours"
+        sensor._attr_name == "Test Garden Temperature Above Threshold Weekly Duration"
     )
+    expected = (
+        f"{DOMAIN}_test_entry_123_test_garden_"
+        "temperature_above_threshold_weekly_duration"
+    )
+    assert sensor._attr_unique_id == expected
     assert sensor._attr_native_unit_of_measurement == "hours"
     assert sensor._attr_icon == "mdi:thermometer-alert"
     assert sensor._temperature_entity_id == "sensor.test_temperature"

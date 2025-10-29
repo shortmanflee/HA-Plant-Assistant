@@ -361,11 +361,11 @@ def _expected_entities_for_subentry(  # noqa: PLR0912
             # Temperature threshold sensors
             below_threshold_unique_id = (
                 f"{DOMAIN}_{subentry.subentry_id}_{location_name_safe}_"
-                "temperature_below_threshold_hours"
+                "temperature_below_threshold_weekly_duration"
             )
             above_threshold_unique_id = (
                 f"{DOMAIN}_{subentry.subentry_id}_{location_name_safe}_"
-                "temperature_above_threshold_hours"
+                "temperature_above_threshold_weekly_duration"
             )
             expected_threshold.add(below_threshold_unique_id)
             expected_threshold.add(above_threshold_unique_id)
@@ -583,8 +583,8 @@ async def _cleanup_orphaned_monitoring_sensors(  # noqa: PLR0912
 
             # Check if this is an orphaned threshold sensor
             if unique_id not in expected_threshold_entities and (
-                "temperature_below_threshold_hours" in unique_id
-                or "temperature_above_threshold_hours" in unique_id
+                "temperature_below_threshold_weekly_duration" in unique_id
+                or "temperature_above_threshold_weekly_duration" in unique_id
             ):
                 entities_to_remove.append(entity_id)
                 continue
@@ -958,8 +958,8 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                 else:
                     _LOGGER.debug("No illuminance sensor for DLI at %s", location_name)
 
-                # Create temperature below threshold hours sensor if temperature
-                # sensor and plant slots exist
+                # Create temperature below threshold weekly duration sensor
+                # Only create if a temperature sensor and plant slots exist
                 temperature_source_entity_id = None
                 for sensor in mirrored_sensors:
                     if (
@@ -981,11 +981,11 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                     )
                     subentry_entities.append(temp_below_threshold_sensor)
                     _LOGGER.debug(
-                        "Added temperature below threshold hours sensor for %s",
+                        "Added temp below threshold weekly duration sensor for %s",
                         location_name,
                     )
 
-                    # Also create temperature above threshold hours sensor
+                    # Also create temperature above threshold weekly duration sensor
                     temp_above_threshold_sensor = TemperatureAboveThresholdHoursSensor(
                         hass=hass,
                         entry_id=subentry.subentry_id,
@@ -995,7 +995,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                     )
                     subentry_entities.append(temp_above_threshold_sensor)
                     _LOGGER.debug(
-                        "Added temperature above threshold hours sensor for %s",
+                        "Added temp above threshold weekly duration for %s",
                         location_name,
                     )
 
@@ -2567,7 +2567,7 @@ class TemperatureBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
         temperature_entity_id: str,
     ) -> None:
         """
-        Initialize the temperature below threshold hours sensor.
+        Initialize the temperature below threshold weekly duration sensor.
 
         Args:
             hass: The Home Assistant instance.
@@ -2583,11 +2583,11 @@ class TemperatureBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
         self._temperature_entity_id = temperature_entity_id
 
         # Set entity attributes
-        self._attr_name = f"{location_name} Temperature Below Threshold Hours"
+        self._attr_name = f"{location_name} Temperature Below Threshold Weekly Duration"
         location_name_safe = location_name.lower().replace(" ", "_")
         self._attr_unique_id = (
             f"{DOMAIN}_{entry_id}_{location_name_safe}_"
-            "temperature_below_threshold_hours"
+            "temperature_below_threshold_weekly_duration"
         )
 
         # Set device class, unit, and icon
@@ -2612,11 +2612,14 @@ class TemperatureBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
 
         # Generate a concise entity_id
         with contextlib.suppress(Exception):
+            safe_name = (
+                (f"{location_name} Temperature Below Threshold Weekly Duration")
+                .lower()
+                .replace(" ", "_")
+            )
             self.entity_id = async_generate_entity_id(
                 "sensor.{}",
-                f"{location_name} Temperature Below Threshold Hours".lower().replace(
-                    " ", "_"
-                ),
+                safe_name,
                 current_ids={},
             )
 
@@ -2663,7 +2666,7 @@ class TemperatureBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
             return None
         except Exception as exc:  # noqa: BLE001 - Defensive
             _LOGGER.warning(
-                "Error calculating temperature below threshold hours: %s (%s)",
+                "Error calculating temp below threshold weekly duration: %s (%s)",
                 exc,
                 type(exc).__name__,
             )
@@ -2865,7 +2868,7 @@ class TemperatureAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         temperature_entity_id: str,
     ) -> None:
         """
-        Initialize the temperature above threshold hours sensor.
+        Initialize the temperature above threshold weekly duration sensor.
 
         Args:
             hass: The Home Assistant instance.
@@ -2881,11 +2884,11 @@ class TemperatureAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         self._temperature_entity_id = temperature_entity_id
 
         # Set entity attributes
-        self._attr_name = f"{location_name} Temperature Above Threshold Hours"
+        self._attr_name = f"{location_name} Temperature Above Threshold Weekly Duration"
         location_name_safe = location_name.lower().replace(" ", "_")
         self._attr_unique_id = (
             f"{DOMAIN}_{entry_id}_{location_name_safe}_"
-            "temperature_above_threshold_hours"
+            "temperature_above_threshold_weekly_duration"
         )
 
         # Set device class, unit, and icon
@@ -2910,11 +2913,14 @@ class TemperatureAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
 
         # Generate a concise entity_id
         with contextlib.suppress(Exception):
+            safe_name = (
+                (f"{location_name} Temperature Above Threshold Weekly Duration")
+                .lower()
+                .replace(" ", "_")
+            )
             self.entity_id = async_generate_entity_id(
                 "sensor.{}",
-                f"{location_name} Temperature Above Threshold Hours".lower().replace(
-                    " ", "_"
-                ),
+                safe_name,
                 current_ids={},
             )
 
@@ -2961,7 +2967,7 @@ class TemperatureAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
             return None
         except Exception as exc:  # noqa: BLE001 - Defensive
             _LOGGER.warning(
-                "Error calculating temperature above threshold hours: %s (%s)",
+                "Error calculating temp above threshold weekly duration: %s (%s)",
                 exc,
                 type(exc).__name__,
             )
