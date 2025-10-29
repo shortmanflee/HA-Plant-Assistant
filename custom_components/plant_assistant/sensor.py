@@ -2496,7 +2496,11 @@ class WeeklyAverageDliSensor(SensorEntity):
                     if mean_value is not None:
                         return float(mean_value)
                 except (ValueError, TypeError):
-                    pass
+                    # mean_value could not be converted to float; ignore and return None
+                    _LOGGER.debug(
+                        "Could not convert mean_value '%s' to float for DLI stats.",
+                        mean_value,
+                    )
 
         except Exception as exc:  # noqa: BLE001 - Defensive
             _LOGGER.debug(
