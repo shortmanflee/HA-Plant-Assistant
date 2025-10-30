@@ -70,6 +70,19 @@ class SoilMoistureWaterSoonMonitorConfig:
     location_device_id: str | None = None
 
 
+@dataclass
+class SoilConductivityLowMonitorConfig:
+    """Configuration for SoilConductivityLowMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    soil_conductivity_entity_id: str
+    soil_moisture_entity_id: str
+    location_device_id: str | None = None
+
+
 class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     """
     Binary sensor that monitors soil moisture levels against minimum threshold.
@@ -1085,6 +1098,414 @@ class SoilMoistureWaterSoonMonitorBinarySensor(BinarySensorEntity, RestoreEntity
             self._unsubscribe_min()
 
 
+class SoilConductivityLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that monitors soil conductivity levels against minimum threshold.
+
+    This sensor turns ON (problem detected) when soil conductivity reading falls
+    below the minimum soil conductivity threshold. Additionally, soil moisture must
+    be at least 10 percentage points above the soil moisture low threshold to raise
+    a problem, indicating insufficient nutrient levels only when soil has adequate
+    moisture.
+    """
+
+    def __init__(self, config: SoilConductivityLowMonitorConfig) -> None:
+        """
+        Initialize the Soil Conductivity Low Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.location_device_id = config.location_device_id
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+        self.soil_conductivity_entity_id = config.soil_conductivity_entity_id
+        self.soil_moisture_entity_id = config.soil_moisture_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Soil Conductivity Low Monitor"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_"
+            "soil_conductivity_low_monitor"
+        )
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+        self._state: bool | None = None
+        self._min_soil_conductivity: float | None = None
+        self._current_soil_conductivity: float | None = None
+        self._min_soil_moisture: float | None = None
+        self._current_soil_moisture: float | None = None
+        self._unsubscribe: Any = None
+        self._unsubscribe_conductivity_min: Any = None
+        self._unsubscribe_moisture: Any = None
+        self._unsubscribe_moisture_min: Any = None
+
+        # Initialize with current state of soil conductivity entity
+        if conductivity_state := self.hass.states.get(self.soil_conductivity_entity_id):
+            self._current_soil_conductivity = self._parse_float(
+                conductivity_state.state
+            )
+
+        # Initialize with current state of soil moisture entity
+        if moisture_state := self.hass.states.get(self.soil_moisture_entity_id):
+            self._current_soil_moisture = self._parse_float(moisture_state.state)
+
+    def _parse_float(self, value: Any) -> float | None:
+        """Parse a value to float, handling unavailable/unknown states."""
+        if value is None or value in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on conductivity and moisture levels."""
+        # If any required value is unavailable, set state to None (sensor unavailable)
+        if (
+            self._current_soil_conductivity is None
+            or self._min_soil_conductivity is None
+            or self._current_soil_moisture is None
+            or self._min_soil_moisture is None
+        ):
+            self._state = None
+            return
+
+        # Problem is raised when:
+        # 1. Soil conductivity is below the low threshold AND
+        # 2. Soil moisture is at least 10 percentage points above the low threshold
+        conductivity_below_threshold = (
+            self._current_soil_conductivity < self._min_soil_conductivity
+        )
+        moisture_above_threshold = (
+            self._current_soil_moisture >= self._min_soil_moisture + 10
+        )
+
+        self._state = conductivity_below_threshold and moisture_above_threshold
+
+    async def _find_min_soil_conductivity_sensor(self) -> str | None:
+        """
+        Find the min soil conductivity aggregated sensor for this location.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id
+                    and f"{location_name_safe}_min_soil_conductivity"
+                    in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found min soil conductivity sensor: %s", entity.entity_id
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding min soil conductivity sensor: %s", exc)
+
+        return None
+
+    async def _find_min_soil_moisture_sensor(self) -> str | None:
+        """
+        Find the min soil moisture aggregated sensor for this location.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id
+                    and f"{location_name_safe}_min_soil_moisture" in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found min soil moisture sensor: %s", entity.entity_id
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding min soil moisture sensor: %s", exc)
+
+        return None
+
+    @callback
+    def _soil_conductivity_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle soil conductivity sensor state changes."""
+        if new_state is None:
+            self._current_soil_conductivity = None
+        else:
+            self._current_soil_conductivity = self._parse_float(new_state.state)
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _min_soil_conductivity_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle minimum soil conductivity threshold changes."""
+        if new_state is None:
+            self._min_soil_conductivity = None
+        else:
+            self._min_soil_conductivity = self._parse_float(new_state.state)
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _soil_moisture_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle soil moisture sensor state changes."""
+        if new_state is None:
+            self._current_soil_moisture = None
+        else:
+            self._current_soil_moisture = self._parse_float(new_state.state)
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _min_soil_moisture_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle minimum soil moisture threshold changes."""
+        if new_state is None:
+            self._min_soil_moisture = None
+        else:
+            self._min_soil_moisture = self._parse_float(new_state.state)
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if soil conductivity is below threshold (problem detected)."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state."""
+        if self._state is True:
+            return "mdi:flash-off"
+        return "mdi:flash-check"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        attrs = {
+            "type": "Critical",
+            "message": "Soil Conductivity Low",
+            "task": True,
+            "tags": [
+                self.location_name.lower().replace(" ", "_"),
+                self.irrigation_zone_name.lower().replace(" ", "_"),
+            ],
+            "current_soil_conductivity": self._current_soil_conductivity,
+            "minimum_soil_conductivity_threshold": self._min_soil_conductivity,
+            "current_soil_moisture": self._current_soil_moisture,
+            "minimum_soil_moisture_threshold": self._min_soil_moisture,
+            "source_entity": self.soil_conductivity_entity_id,
+            "moisture_source_entity": self.soil_moisture_entity_id,
+        }
+
+        # Add derived attributes for monitoring conditions
+        if self._min_soil_moisture is not None:
+            attrs["soil_moisture_threshold_for_conductivity_check"] = (
+                self._min_soil_moisture + 10
+            )
+
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        conductivity_state = self.hass.states.get(self.soil_conductivity_entity_id)
+        moisture_state = self.hass.states.get(self.soil_moisture_entity_id)
+        return conductivity_state is not None and moisture_state is not None
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                _LOGGER.info(
+                    "Restored soil conductivity low monitor state for %s: %s",
+                    self.location_name,
+                    self._state,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def _setup_soil_conductivity_subscription(self) -> None:
+        """Subscribe to soil conductivity entity state changes."""
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass,
+                self.soil_conductivity_entity_id,
+                self._soil_conductivity_state_changed,
+            )
+            _LOGGER.debug(
+                "Subscribed to soil conductivity sensor: %s",
+                self.soil_conductivity_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to soil conductivity entity %s: %s",
+                self.soil_conductivity_entity_id,
+                exc,
+            )
+
+    async def _setup_soil_moisture_subscription(self) -> None:
+        """Subscribe to soil moisture entity state changes."""
+        try:
+            self._unsubscribe_moisture = async_track_state_change(
+                self.hass,
+                self.soil_moisture_entity_id,
+                self._soil_moisture_state_changed,
+            )
+            _LOGGER.debug(
+                "Subscribed to soil moisture sensor: %s",
+                self.soil_moisture_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to soil moisture entity %s: %s",
+                self.soil_moisture_entity_id,
+                exc,
+            )
+
+    async def _setup_min_soil_conductivity_subscription(self) -> None:
+        """Find and subscribe to min soil conductivity sensor."""
+        min_conductivity_entity_id = await self._find_min_soil_conductivity_sensor()
+        if min_conductivity_entity_id:
+            if min_conductivity_state := self.hass.states.get(
+                min_conductivity_entity_id
+            ):
+                self._min_soil_conductivity = self._parse_float(
+                    min_conductivity_state.state
+                )
+
+            try:
+                self._unsubscribe_conductivity_min = async_track_state_change(
+                    self.hass,
+                    min_conductivity_entity_id,
+                    self._min_soil_conductivity_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to min soil conductivity sensor: %s",
+                    min_conductivity_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to min soil conductivity sensor %s: %s",
+                    min_conductivity_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.warning(
+                "Min soil conductivity sensor not found for location %s",
+                self.location_name,
+            )
+
+    async def _setup_min_soil_moisture_subscription(self) -> None:
+        """Find and subscribe to min soil moisture sensor."""
+        min_moisture_entity_id = await self._find_min_soil_moisture_sensor()
+        if min_moisture_entity_id:
+            if min_moisture_state := self.hass.states.get(min_moisture_entity_id):
+                self._min_soil_moisture = self._parse_float(min_moisture_state.state)
+
+            try:
+                self._unsubscribe_moisture_min = async_track_state_change(
+                    self.hass,
+                    min_moisture_entity_id,
+                    self._min_soil_moisture_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to min soil moisture sensor: %s",
+                    min_moisture_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to min soil moisture sensor %s: %s",
+                    min_moisture_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.warning(
+                "Min soil moisture sensor not found for location %s",
+                self.location_name,
+            )
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass and subscribe to state changes."""
+        # Restore previous state if available
+        await super().async_added_to_hass()
+        await self._restore_previous_state()
+
+        # Set up subscriptions
+        await self._setup_soil_conductivity_subscription()
+        await self._setup_soil_moisture_subscription()
+        await self._setup_min_soil_conductivity_subscription()
+        await self._setup_min_soil_moisture_subscription()
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+        if hasattr(self, "_unsubscribe_moisture") and self._unsubscribe_moisture:
+            self._unsubscribe_moisture()
+        if (
+            hasattr(self, "_unsubscribe_conductivity_min")
+            and self._unsubscribe_conductivity_min
+        ):
+            self._unsubscribe_conductivity_min()
+        if (
+            hasattr(self, "_unsubscribe_moisture_min")
+            and self._unsubscribe_moisture_min
+        ):
+            self._unsubscribe_moisture_min()
+
+
 def _find_soil_moisture_entity(hass: HomeAssistant, location_name: str) -> str | None:
     """Find soil moisture entity from mirrored sensors."""
     ent_reg = er.async_get(hass)
@@ -1103,6 +1524,30 @@ def _find_soil_moisture_entity(hass: HomeAssistant, location_name: str) -> str |
             break
 
     return soil_moisture_entity_id
+
+
+def _find_soil_conductivity_entity(
+    hass: HomeAssistant, location_name: str
+) -> str | None:
+    """Find soil conductivity entity from mirrored sensors."""
+    ent_reg = er.async_get(hass)
+    soil_conductivity_entity_id = None
+
+    for entity in ent_reg.entities.values():
+        if (
+            entity.platform == DOMAIN
+            and entity.domain == "sensor"
+            and entity.unique_id
+            and "soil_conductivity_mirror" in entity.unique_id
+            and location_name.lower().replace(" ", "_") in entity.unique_id.lower()
+        ):
+            soil_conductivity_entity_id = entity.entity_id
+            _LOGGER.debug(
+                "Found soil conductivity sensor: %s", soil_conductivity_entity_id
+            )
+            break
+
+    return soil_conductivity_entity_id
 
 
 def _get_irrigation_zone_name(entry: ConfigEntry[Any], subentry: Any) -> str:
@@ -1209,6 +1654,31 @@ async def _create_subentry_sensors(
         "Created soil moisture water soon monitor binary sensor for %s",
         location_name,
     )
+
+    # Create soil conductivity low monitor
+    soil_conductivity_entity_id = _find_soil_conductivity_entity(hass, location_name)
+    if soil_conductivity_entity_id:
+        conductivity_low_config = SoilConductivityLowMonitorConfig(
+            hass=hass,
+            entry_id=subentry_id,
+            location_name=location_name,
+            irrigation_zone_name=irrigation_zone_name,
+            soil_conductivity_entity_id=soil_conductivity_entity_id,
+            soil_moisture_entity_id=soil_moisture_entity_id,
+            location_device_id=location_device_id,
+        )
+        soil_conductivity_low_sensor = SoilConductivityLowMonitorBinarySensor(
+            conductivity_low_config
+        )
+        subentry_binary_sensors.append(soil_conductivity_low_sensor)
+        _LOGGER.debug(
+            "Created soil conductivity low monitor binary sensor for %s",
+            location_name,
+        )
+    else:
+        _LOGGER.debug(
+            "No soil conductivity sensor found for location %s", location_name
+        )
 
     return subentry_binary_sensors
 
