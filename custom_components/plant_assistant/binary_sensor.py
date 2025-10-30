@@ -58,6 +58,18 @@ class SoilMoistureHighMonitorConfig:
     location_device_id: str | None = None
 
 
+@dataclass
+class SoilMoistureWaterSoonMonitorConfig:
+    """Configuration for SoilMoistureWaterSoonMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    soil_moisture_entity_id: str
+    location_device_id: str | None = None
+
+
 class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     """
     Binary sensor that monitors soil moisture levels against minimum threshold.
@@ -806,6 +818,273 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             self._unsubscribe_ignore_until()
 
 
+class SoilMoistureWaterSoonMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that monitors soil moisture approaching minimum threshold.
+
+    This sensor turns ON (problem detected) when soil moisture reading falls
+    within a warning zone (low threshold to low threshold + 5%), indicating
+    the plant will soon need watering but hasn't reached critical levels yet.
+    It will not show a problem if the low threshold has already been reached.
+    """
+
+    def __init__(self, config: SoilMoistureWaterSoonMonitorConfig) -> None:
+        """
+        Initialize the Soil Moisture Water Soon Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.location_device_id = config.location_device_id
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+        self.soil_moisture_entity_id = config.soil_moisture_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Soil Moisture Water Soon Monitor"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}"
+            "_soil_moisture_water_soon_monitor"
+        )
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+        self._state: bool | None = None
+        self._min_soil_moisture: float | None = None
+        self._current_soil_moisture: float | None = None
+        self._unsubscribe: Any = None
+        self._unsubscribe_min: Any = None
+
+        # Initialize with current state of soil moisture entity
+        if soil_moisture_state := self.hass.states.get(self.soil_moisture_entity_id):
+            self._current_soil_moisture = self._parse_float(soil_moisture_state.state)
+
+    def _parse_float(self, value: Any) -> float | None:
+        """Parse a value to float, handling unavailable/unknown states."""
+        if value is None or value in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on current moisture and threshold."""
+        # If either value is unavailable, set state to None (sensor unavailable)
+        if self._current_soil_moisture is None or self._min_soil_moisture is None:
+            self._state = None
+            return
+
+        # Water Soon threshold is low threshold + 5 percentage points
+        water_soon_threshold = self._min_soil_moisture + 5
+
+        # Binary sensor is ON (problem) when:
+        # current moisture <= water_soon_threshold AND current moisture >= low_threshold
+        # This means the plant doesn't have a critical problem yet, but water soon
+        self._state = (
+            self._current_soil_moisture <= water_soon_threshold
+            and self._current_soil_moisture >= self._min_soil_moisture
+        )
+
+    async def _find_min_soil_moisture_sensor(self) -> str | None:
+        """
+        Find the min soil moisture aggregated sensor for this location.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id
+                    and f"{location_name_safe}_min_soil_moisture" in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found min soil moisture sensor: %s", entity.entity_id
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding min soil moisture sensor: %s", exc)
+
+        return None
+
+    @callback
+    def _soil_moisture_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle soil moisture sensor state changes."""
+        if new_state is None:
+            self._current_soil_moisture = None
+        else:
+            self._current_soil_moisture = self._parse_float(new_state.state)
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _min_soil_moisture_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle minimum soil moisture threshold changes."""
+        if new_state is None:
+            self._min_soil_moisture = None
+        else:
+            self._min_soil_moisture = self._parse_float(new_state.state)
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if soil moisture is in water soon zone (warning detected)."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state."""
+        if self._state is True:
+            return "mdi:watering-can"
+        return "mdi:water-check"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        attrs = {
+            "type": "Warning",
+            "message": "Soil Moisture Water Soon",
+            "task": True,
+            "tags": [
+                self.location_name.lower().replace(" ", "_"),
+                self.irrigation_zone_name.lower().replace(" ", "_"),
+            ],
+            "current_soil_moisture": self._current_soil_moisture,
+            "minimum_soil_moisture_threshold": self._min_soil_moisture,
+            "source_entity": self.soil_moisture_entity_id,
+        }
+
+        # Add water soon threshold information
+        if self._min_soil_moisture is not None:
+            water_soon_threshold = self._min_soil_moisture + 5
+            attrs["water_soon_threshold"] = water_soon_threshold
+
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        soil_moisture_state = self.hass.states.get(self.soil_moisture_entity_id)
+        return soil_moisture_state is not None
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                _LOGGER.info(
+                    "Restored soil moisture water soon monitor state for %s: %s",
+                    self.location_name,
+                    self._state,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def _setup_min_soil_moisture_subscription(self) -> None:
+        """Find and subscribe to min soil moisture sensor."""
+        min_moisture_entity_id = await self._find_min_soil_moisture_sensor()
+        if min_moisture_entity_id:
+            if min_moisture_state := self.hass.states.get(min_moisture_entity_id):
+                self._min_soil_moisture = self._parse_float(min_moisture_state.state)
+
+            try:
+                self._unsubscribe_min = async_track_state_change(
+                    self.hass,
+                    min_moisture_entity_id,
+                    self._min_soil_moisture_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to min soil moisture sensor: %s",
+                    min_moisture_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to min soil moisture sensor %s: %s",
+                    min_moisture_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.warning(
+                "Min soil moisture sensor not found for location %s",
+                self.location_name,
+            )
+
+    async def _setup_soil_moisture_subscription(self) -> None:
+        """Subscribe to soil moisture entity state changes."""
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass,
+                self.soil_moisture_entity_id,
+                self._soil_moisture_state_changed,
+            )
+            _LOGGER.debug(
+                "Subscribed to soil moisture sensor: %s",
+                self.soil_moisture_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to soil moisture entity %s: %s",
+                self.soil_moisture_entity_id,
+                exc,
+            )
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass and subscribe to state changes."""
+        # Restore previous state if available
+        await super().async_added_to_hass()
+        await self._restore_previous_state()
+
+        # Set up subscriptions
+        await self._setup_min_soil_moisture_subscription()
+        await self._setup_soil_moisture_subscription()
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+        if hasattr(self, "_unsubscribe_min") and self._unsubscribe_min:
+            self._unsubscribe_min()
+
+
 def _find_soil_moisture_entity(hass: HomeAssistant, location_name: str) -> str | None:
     """Find soil moisture entity from mirrored sensors."""
     ent_reg = er.async_get(hass)
@@ -910,6 +1189,24 @@ async def _create_subentry_sensors(
     subentry_binary_sensors.append(soil_moisture_high_sensor)
     _LOGGER.debug(
         "Created soil moisture high monitor binary sensor for %s",
+        location_name,
+    )
+
+    # Create soil moisture water soon monitor
+    water_soon_config = SoilMoistureWaterSoonMonitorConfig(
+        hass=hass,
+        entry_id=subentry_id,
+        location_name=location_name,
+        irrigation_zone_name=irrigation_zone_name,
+        soil_moisture_entity_id=soil_moisture_entity_id,
+        location_device_id=location_device_id,
+    )
+    soil_moisture_water_soon_sensor = SoilMoistureWaterSoonMonitorBinarySensor(
+        water_soon_config
+    )
+    subentry_binary_sensors.append(soil_moisture_water_soon_sensor)
+    _LOGGER.debug(
+        "Created soil moisture water soon monitor binary sensor for %s",
         location_name,
     )
 
