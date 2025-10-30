@@ -16,6 +16,7 @@ package-lock.json
 .coverage
 coverage.xml
 .ruff_cache
+.mypy_cache
 
 
 # Home Assistant configuration
