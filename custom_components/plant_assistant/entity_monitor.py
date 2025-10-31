@@ -144,6 +144,7 @@ class EntityMonitor:
                         "_illuminance_mirror",
                         "_soil_moisture_mirror",
                         "_soil_conductivity_mirror",
+                        "_soil_conductivity_status",
                     ]
                 ):
                     # Get the entity state to check source_entity attribute
