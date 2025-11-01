@@ -171,6 +171,136 @@ class BatteryLevelStatusMonitorConfig:
     location_device_id: str | None = None
 
 
+@dataclass
+class PlantCountStatusMonitorConfig:
+    """Configuration for PlantCountStatusMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    plant_count: int
+    location_device_id: str | None = None
+
+
+class PlantCountStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that monitors plant count status for a location.
+
+    This sensor turns ON (problem detected) when the plant count is 0,
+    indicating that no plants are assigned to the location's slots.
+    """
+
+    def __init__(self, config: PlantCountStatusMonitorConfig) -> None:
+        """
+        Initialize the Plant Count Status Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.location_device_id = config.location_device_id
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+        self._plant_count = config.plant_count
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Plant Count Status"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_plant_count_status_monitor"
+        )
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+        self._state: bool | None = None
+        self._unsubscribe: Any = None
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on plant count."""
+        # Binary sensor is ON (problem) when plant count is 0
+        self._state = self._plant_count == 0
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if plant count is 0 (problem detected)."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state."""
+        if self._state is True:
+            return "mdi:flower-tulip-outline"
+        return "mdi:flower-tulip"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        return {
+            "type": "Warning",
+            "message": "No Plants Assigned",
+            "task": True,
+            "tags": [
+                self.location_name.lower().replace(" ", "_"),
+                self.irrigation_zone_name.lower().replace(" ", "_"),
+            ],
+            "plant_count": self._plant_count,
+        }
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return True
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                _LOGGER.info(
+                    "Restored plant count status for %s: %s",
+                    self.location_name,
+                    self._state,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass."""
+        # Restore previous state if available
+        await super().async_added_to_hass()
+        await self._restore_previous_state()
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
 class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     """
     Binary sensor that monitors soil moisture levels against minimum threshold.
@@ -4431,6 +4561,18 @@ async def _create_battery_sensor(
     return sensor
 
 
+async def _create_plant_count_sensor(
+    config: PlantCountStatusMonitorConfig,
+) -> BinarySensorEntity | None:
+    """Create plant count status monitor sensor."""
+    sensor = PlantCountStatusMonitorBinarySensor(config)
+    _LOGGER.debug(
+        "Created plant count status monitor binary sensor for %s",
+        config.location_name,
+    )
+    return sensor
+
+
 async def _create_link_monitors(
     config: LinkMonitorConfig,
 ) -> list[BinarySensorEntity]:
@@ -4474,14 +4616,34 @@ async def _create_subentry_sensors(
     monitoring_device_id = subentry.data.get("monitoring_device_id")
     plant_slots = subentry.data.get("plant_slots", {})
 
-    has_plants = any(
-        isinstance(slot, dict) and slot.get("plant_device_id")
+    # Calculate plant count
+    plant_count = sum(
+        1
         for slot in plant_slots.values()
+        if isinstance(slot, dict) and slot.get("plant_device_id")
     )
+
+    # Create plant count status sensor (always created to monitor plant assignments)
+    irrigation_zone_name = _get_irrigation_zone_name(entry, subentry)
+    plant_count_sensor_config = PlantCountStatusMonitorConfig(
+        hass=hass,
+        entry_id=subentry_id,
+        location_name=location_name,
+        irrigation_zone_name=irrigation_zone_name,
+        plant_count=plant_count,
+        location_device_id=location_device_id,
+    )
+    plant_count_sensor = await _create_plant_count_sensor(
+        plant_count_sensor_config,
+    )
+    if plant_count_sensor:
+        subentry_binary_sensors.append(plant_count_sensor)
+
+    has_plants = plant_count > 0
 
     if not (monitoring_device_id and has_plants):
         _LOGGER.debug(
-            "Skipping binary sensor creation for %s - "
+            "Skipping environmental binary sensor creation for %s - "
             "monitoring_device_id=%s, has_plants=%s",
             location_name,
             monitoring_device_id,
@@ -4493,8 +4655,6 @@ async def _create_subentry_sensors(
     if not soil_moisture_entity_id:
         _LOGGER.debug("No soil moisture sensor found for location %s", location_name)
         return subentry_binary_sensors
-
-    irrigation_zone_name = _get_irrigation_zone_name(entry, subentry)
 
     # Create all environmental sensors
     moisture_sensor = await _create_soil_moisture_sensor(
