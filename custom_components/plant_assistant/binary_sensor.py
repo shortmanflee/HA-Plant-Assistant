@@ -2902,9 +2902,13 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self._above_threshold_hours: float | None = None
         self._below_threshold_hours: float | None = None
         self._threshold_hours: float = 2.0  # 2 hours threshold
+        self._high_threshold_ignore_until_datetime: Any = None
+        self._low_threshold_ignore_until_datetime: Any = None
         self._unsubscribe: Any = None
         self._unsubscribe_above: Any = None
         self._unsubscribe_below: Any = None
+        self._unsubscribe_high_threshold_ignore_until: Any = None
+        self._unsubscribe_low_threshold_ignore_until: Any = None
 
     def _parse_float(self, value: Any) -> float | None:
         """Parse a value to float, handling unavailable/unknown states."""
@@ -2926,9 +2930,35 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         # Determine status and state based on threshold durations
         # Problem if either above or below duration exceeds 2 hours
         if self._above_threshold_hours > self._threshold_hours:
+            # Check if we're currently in the high temperature ignore period
+            if self._high_threshold_ignore_until_datetime is not None:
+                try:
+                    now = dt_util.now()
+                    if now < self._high_threshold_ignore_until_datetime:
+                        # Current time is before ignore until datetime, no problem
+                        self._state = False
+                        self._temperature_status = "normal"
+                        return
+                except (TypeError, AttributeError) as exc:
+                    _LOGGER.debug(
+                        "Error checking high temperature ignore until datetime: %s", exc
+                    )
             self._state = True
             self._temperature_status = "above"
         elif self._below_threshold_hours > self._threshold_hours:
+            # Check if we're currently in the low temperature ignore period
+            if self._low_threshold_ignore_until_datetime is not None:
+                try:
+                    now = dt_util.now()
+                    if now < self._low_threshold_ignore_until_datetime:
+                        # Current time is before ignore until datetime, no problem
+                        self._state = False
+                        self._temperature_status = "normal"
+                        return
+                except (TypeError, AttributeError) as exc:
+                    _LOGGER.debug(
+                        "Error checking low temperature ignore until datetime: %s", exc
+                    )
             self._state = True
             self._temperature_status = "below"
         else:
@@ -2995,6 +3025,66 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
         return None
 
+    async def _find_high_threshold_ignore_until_entity(self) -> str | None:
+        """
+        Find temperature high threshold ignore until datetime entity.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "datetime"
+                    and entity.unique_id
+                    and "temperature_high_threshold_ignore_until" in entity.unique_id
+                    and self.entry_id in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found temperature high threshold ignore until datetime: %s",
+                        entity.entity_id,
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug(
+                "Error finding temperature high threshold ignore until entity: %s", exc
+            )
+
+        return None
+
+    async def _find_low_threshold_ignore_until_entity(self) -> str | None:
+        """
+        Find temperature low threshold ignore until datetime entity.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "datetime"
+                    and entity.unique_id
+                    and "temperature_low_threshold_ignore_until" in entity.unique_id
+                    and self.entry_id in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found temperature low threshold ignore until datetime: %s",
+                        entity.entity_id,
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug(
+                "Error finding temperature low threshold ignore until entity: %s", exc
+            )
+
+        return None
+
     @callback
     def _above_threshold_state_changed(
         self, _entity_id: str, _old_state: Any, new_state: Any
@@ -3021,6 +3111,65 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self._update_state()
         self.async_write_ha_state()
 
+    @callback
+    def _high_threshold_ignore_until_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle temperature high threshold ignore until datetime changes."""
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._high_threshold_ignore_until_datetime = None
+        else:
+            try:
+                parsed_datetime = dt_util.parse_datetime(new_state.state)
+                if parsed_datetime is not None:
+                    # Ensure timezone info
+                    if parsed_datetime.tzinfo is None:
+                        parsed_datetime = parsed_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+                    self._high_threshold_ignore_until_datetime = parsed_datetime
+                else:
+                    self._high_threshold_ignore_until_datetime = None
+            except (ValueError, TypeError) as exc:
+                _LOGGER.debug(
+                    "Error parsing temperature high threshold ignore until "
+                    "datetime: %s",
+                    exc,
+                )
+                self._high_threshold_ignore_until_datetime = None
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _low_threshold_ignore_until_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle temperature low threshold ignore until datetime changes."""
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._low_threshold_ignore_until_datetime = None
+        else:
+            try:
+                parsed_datetime = dt_util.parse_datetime(new_state.state)
+                if parsed_datetime is not None:
+                    # Ensure timezone info
+                    if parsed_datetime.tzinfo is None:
+                        parsed_datetime = parsed_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+                    self._low_threshold_ignore_until_datetime = parsed_datetime
+                else:
+                    self._low_threshold_ignore_until_datetime = None
+            except (ValueError, TypeError) as exc:
+                _LOGGER.debug(
+                    "Error parsing temperature low threshold ignore until datetime: %s",
+                    exc,
+                )
+                self._low_threshold_ignore_until_datetime = None
+
+        self._update_state()
+        self.async_write_ha_state()
+
     @property
     def is_on(self) -> bool | None:
         """Return True if temperature is outside acceptable range (problem)."""
@@ -3043,7 +3192,7 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         alert_type = "Critical"
         status_message = f"Temperature {self._temperature_status.capitalize()}"
 
-        return {
+        attrs = {
             "type": alert_type,
             "message": status_message,
             "task": True,
@@ -3056,6 +3205,28 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             "below_threshold_hours": self._below_threshold_hours,
             "threshold_hours": self._threshold_hours,
         }
+
+        # Add high threshold ignore until information if available
+        if self._high_threshold_ignore_until_datetime:
+            now = dt_util.now()
+            attrs["high_threshold_ignore_until"] = (
+                self._high_threshold_ignore_until_datetime.isoformat()
+            )
+            attrs["currently_ignoring_high"] = (
+                now < self._high_threshold_ignore_until_datetime
+            )
+
+        # Add low threshold ignore until information if available
+        if self._low_threshold_ignore_until_datetime:
+            now = dt_util.now()
+            attrs["low_threshold_ignore_until"] = (
+                self._low_threshold_ignore_until_datetime.isoformat()
+            )
+            attrs["currently_ignoring_low"] = (
+                now < self._low_threshold_ignore_until_datetime
+            )
+
+        return attrs
 
     @property
     def available(self) -> bool:
@@ -3153,6 +3324,97 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self.location_name,
             )
 
+    async def _setup_high_threshold_ignore_until_subscription(self) -> None:
+        """Find and subscribe to temperature high threshold ignore until datetime."""
+        ignore_until_entity_id = await self._find_high_threshold_ignore_until_entity()
+        if ignore_until_entity_id:
+            if ignore_until_state := self.hass.states.get(ignore_until_entity_id):
+                try:
+                    parsed_datetime = dt_util.parse_datetime(ignore_until_state.state)
+                    if parsed_datetime is not None:
+                        if parsed_datetime.tzinfo is None:
+                            parsed_datetime = parsed_datetime.replace(
+                                tzinfo=dt_util.get_default_time_zone()
+                            )
+                        self._high_threshold_ignore_until_datetime = parsed_datetime
+                except (ValueError, TypeError) as exc:
+                    _LOGGER.debug(
+                        "Error parsing temperature high threshold ignore until "
+                        "datetime: %s",
+                        exc,
+                    )
+
+            try:
+                self._unsubscribe_high_threshold_ignore_until = (
+                    async_track_state_change(
+                        self.hass,
+                        ignore_until_entity_id,
+                        self._high_threshold_ignore_until_state_changed,
+                    )
+                )
+                _LOGGER.debug(
+                    "Subscribed to temperature high threshold ignore until "
+                    "datetime: %s",
+                    ignore_until_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to temperature high threshold ignore "
+                    "until entity %s: %s",
+                    ignore_until_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.debug(
+                "Temperature high threshold ignore until datetime not found "
+                "for location %s",
+                self.location_name,
+            )
+
+    async def _setup_low_threshold_ignore_until_subscription(self) -> None:
+        """Find and subscribe to temperature low threshold ignore until datetime."""
+        ignore_until_entity_id = await self._find_low_threshold_ignore_until_entity()
+        if ignore_until_entity_id:
+            if ignore_until_state := self.hass.states.get(ignore_until_entity_id):
+                try:
+                    parsed_datetime = dt_util.parse_datetime(ignore_until_state.state)
+                    if parsed_datetime is not None:
+                        if parsed_datetime.tzinfo is None:
+                            parsed_datetime = parsed_datetime.replace(
+                                tzinfo=dt_util.get_default_time_zone()
+                            )
+                        self._low_threshold_ignore_until_datetime = parsed_datetime
+                except (ValueError, TypeError) as exc:
+                    _LOGGER.debug(
+                        "Error parsing temperature low threshold ignore until "
+                        "datetime: %s",
+                        exc,
+                    )
+
+            try:
+                self._unsubscribe_low_threshold_ignore_until = async_track_state_change(
+                    self.hass,
+                    ignore_until_entity_id,
+                    self._low_threshold_ignore_until_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to temperature low threshold ignore until datetime: %s",
+                    ignore_until_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to temperature low threshold ignore "
+                    "until entity %s: %s",
+                    ignore_until_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.debug(
+                "Temperature low threshold ignore until datetime not found "
+                "for location %s",
+                self.location_name,
+            )
+
     async def async_added_to_hass(self) -> None:
         """Add entity to hass and subscribe to state changes."""
         # Restore previous state if available
@@ -3162,6 +3424,8 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         # Set up subscriptions
         await self._setup_above_threshold_subscription()
         await self._setup_below_threshold_subscription()
+        await self._setup_high_threshold_ignore_until_subscription()
+        await self._setup_low_threshold_ignore_until_subscription()
 
         # Update initial state
         self._update_state()
@@ -3175,6 +3439,16 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             self._unsubscribe_above()
         if hasattr(self, "_unsubscribe_below") and self._unsubscribe_below:
             self._unsubscribe_below()
+        if (
+            hasattr(self, "_unsubscribe_high_threshold_ignore_until")
+            and self._unsubscribe_high_threshold_ignore_until
+        ):
+            self._unsubscribe_high_threshold_ignore_until()
+        if (
+            hasattr(self, "_unsubscribe_low_threshold_ignore_until")
+            and self._unsubscribe_low_threshold_ignore_until
+        ):
+            self._unsubscribe_low_threshold_ignore_until()
 
 
 class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
