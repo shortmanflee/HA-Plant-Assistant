@@ -34,6 +34,9 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# Battery level threshold (percentage) for low battery alert
+BATTERY_LEVEL_THRESHOLD = 10
+
 
 @dataclass
 class SoilMoistureLowMonitorConfig:
@@ -153,6 +156,18 @@ class LinkMonitorConfig:
     location_name: str
     irrigation_zone_name: str
     monitoring_device_id: str
+    location_device_id: str | None = None
+
+
+@dataclass
+class BatteryLevelStatusMonitorConfig:
+    """Configuration for BatteryLevelStatusMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    battery_entity_id: str
     location_device_id: str | None = None
 
 
@@ -3349,6 +3364,186 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             self._unsubscribe_below()
 
 
+class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that monitors battery level as a problem state.
+
+    This sensor turns ON (problem detected) when the battery level falls
+    below 10%, indicating low battery warning.
+    """
+
+    def __init__(self, config: BatteryLevelStatusMonitorConfig) -> None:
+        """
+        Initialize the Battery Level Status Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.location_device_id = config.location_device_id
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+        self.battery_entity_id = config.battery_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Monitor Battery Level Status"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        unique_id_suffix = "monitor_battery_level_status"
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_{unique_id_suffix}"
+        )
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+        self._state: bool | None = None
+        self._current_battery_level: float | None = None
+        self._unsubscribe: Any = None
+
+    def _parse_float(self, value: Any) -> float | None:
+        """Parse a value to float, handling unavailable/unknown states."""
+        if value is None or value in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on current battery level."""
+        # If battery level is unavailable, set state to None (sensor unavailable)
+        if self._current_battery_level is None:
+            self._state = None
+            return
+
+        # Binary sensor is ON (problem) when battery level < threshold
+        self._state = self._current_battery_level < BATTERY_LEVEL_THRESHOLD
+
+    @callback
+    def _battery_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle battery level sensor state changes."""
+        if new_state is None:
+            self._current_battery_level = None
+        else:
+            self._current_battery_level = self._parse_float(new_state.state)
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if battery level is low (problem detected)."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state."""
+        if self._state is True:
+            return "mdi:battery-alert"
+        return "mdi:battery"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        alert_type = "Critical" if self._state is True else "Normal"
+        status_message = (
+            "Battery level low (< 10%)"
+            if self._state is True
+            else "Battery level normal"
+        )
+
+        return {
+            "type": alert_type,
+            "message": status_message,
+            "task": self._state is True,
+            "tags": [
+                self.location_name.lower().replace(" ", "_"),
+                self.irrigation_zone_name.lower().replace(" ", "_"),
+            ],
+            "current_battery_level": self._current_battery_level,
+            "source_entity": self.battery_entity_id,
+        }
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        battery_state = self.hass.states.get(self.battery_entity_id)
+        return battery_state is not None
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                _LOGGER.info(
+                    "Restored battery level status monitor state for %s: %s",
+                    self.location_name,
+                    self._state,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def _setup_battery_subscription(self) -> None:
+        """Subscribe to battery entity state changes."""
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass,
+                self.battery_entity_id,
+                self._battery_state_changed,
+            )
+            _LOGGER.debug(
+                "Subscribed to battery sensor: %s",
+                self.battery_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to battery entity %s: %s",
+                self.battery_entity_id,
+                exc,
+            )
+
+    async def async_added_to_hass(self) -> None:
+        """Restore and initialize battery level monitoring on addition."""
+        # Restore previous state
+        await self._restore_previous_state()
+
+        # Initialize with current state of battery entity
+        if battery_state := self.hass.states.get(self.battery_entity_id):
+            self._current_battery_level = self._parse_float(battery_state.state)
+
+        # Update state based on initial value
+        self._update_state()
+
+        # Set up subscription
+        await self._setup_battery_subscription()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
 class LinkMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     """
     Binary sensor that monitors monitoring device availability (link status).
@@ -4048,6 +4243,32 @@ def _find_humidity_entity(hass: HomeAssistant, location_name: str) -> str | None
     return humidity_entity_id
 
 
+def _find_battery_entity(hass: HomeAssistant, location_name: str) -> str | None:
+    """
+    Find battery entity from monitoring device sensors.
+
+    Searches for the MonitoringSensor that mirrors the battery level from
+    the monitoring device. The unique_id pattern is:
+    plant_assistant_<entry_id>_<location_name>_monitor_battery_level
+    """
+    ent_reg = er.async_get(hass)
+    battery_entity_id = None
+
+    for entity in ent_reg.entities.values():
+        if (
+            entity.platform == DOMAIN
+            and entity.domain == "sensor"
+            and entity.unique_id
+            and "monitor_battery_level" in entity.unique_id
+            and location_name.lower().replace(" ", "_") in entity.unique_id.lower()
+        ):
+            battery_entity_id = entity.entity_id
+            _LOGGER.debug("Found battery sensor: %s", battery_entity_id)
+            break
+
+    return battery_entity_id
+
+
 def _get_irrigation_zone_name(entry: ConfigEntry[Any], subentry: Any) -> str:
     """Get irrigation zone name from subentry's zone_id."""
     irrigation_zone_name = "Irrigation Zone"
@@ -4061,6 +4282,178 @@ def _get_irrigation_zone_name(entry: ConfigEntry[Any], subentry: Any) -> str:
         pass
 
     return irrigation_zone_name
+
+
+async def _create_soil_moisture_sensor(
+    hass: HomeAssistant,
+    subentry_id: str,
+    location_name: str,
+    irrigation_zone_name: str,
+    location_device_id: str | None,
+) -> BinarySensorEntity | None:
+    """Create soil moisture status monitor sensor."""
+    soil_moisture_entity_id = _find_soil_moisture_entity(hass, location_name)
+    if not soil_moisture_entity_id:
+        _LOGGER.debug("No soil moisture sensor found for location %s", location_name)
+        return None
+
+    moisture_status_config = SoilMoistureStatusMonitorConfig(
+        hass=hass,
+        entry_id=subentry_id,
+        location_name=location_name,
+        irrigation_zone_name=irrigation_zone_name,
+        soil_moisture_entity_id=soil_moisture_entity_id,
+        location_device_id=location_device_id,
+    )
+    sensor = SoilMoistureStatusMonitorBinarySensor(moisture_status_config)
+    _LOGGER.debug(
+        "Created soil moisture status monitor binary sensor for %s",
+        location_name,
+    )
+    return sensor
+
+
+async def _create_soil_conductivity_sensor(
+    hass: HomeAssistant,
+    subentry_id: str,
+    location_name: str,
+    irrigation_zone_name: str,
+    location_device_id: str | None,
+) -> BinarySensorEntity | None:
+    """Create soil conductivity status monitor sensor."""
+    soil_conductivity_entity_id = _find_soil_conductivity_entity(hass, location_name)
+    if not soil_conductivity_entity_id:
+        _LOGGER.debug(
+            "No soil conductivity sensor found for location %s", location_name
+        )
+        return None
+
+    conductivity_status_config = SoilConductivityStatusMonitorConfig(
+        hass=hass,
+        entry_id=subentry_id,
+        location_name=location_name,
+        irrigation_zone_name=irrigation_zone_name,
+        soil_conductivity_entity_id=soil_conductivity_entity_id,
+        location_device_id=location_device_id,
+    )
+    sensor = SoilConductivityStatusMonitorBinarySensor(conductivity_status_config)
+    _LOGGER.debug(
+        "Created soil conductivity status monitor binary sensor for %s",
+        location_name,
+    )
+    return sensor
+
+
+async def _create_temperature_sensor(
+    hass: HomeAssistant,
+    subentry_id: str,
+    location_name: str,
+    irrigation_zone_name: str,
+    location_device_id: str | None,
+) -> BinarySensorEntity | None:
+    """Create temperature status monitor sensor."""
+    temperature_entity_id = _find_temperature_entity(hass, location_name)
+    if not temperature_entity_id:
+        _LOGGER.debug("No temperature sensor found for location %s", location_name)
+        return None
+
+    temperature_status_config = TemperatureStatusMonitorConfig(
+        hass=hass,
+        entry_id=subentry_id,
+        location_name=location_name,
+        irrigation_zone_name=irrigation_zone_name,
+        temperature_entity_id=temperature_entity_id,
+        location_device_id=location_device_id,
+    )
+    sensor = TemperatureStatusMonitorBinarySensor(temperature_status_config)
+    _LOGGER.debug(
+        "Created temperature status monitor binary sensor for %s",
+        location_name,
+    )
+    return sensor
+
+
+async def _create_humidity_sensor(
+    hass: HomeAssistant,
+    subentry_id: str,
+    location_name: str,
+    irrigation_zone_name: str,
+    location_device_id: str | None,
+) -> BinarySensorEntity | None:
+    """Create humidity status monitor sensor."""
+    humidity_entity_id = _find_humidity_entity(hass, location_name)
+    if not humidity_entity_id:
+        _LOGGER.debug("No humidity sensor found for location %s", location_name)
+        return None
+
+    humidity_status_config = HumidityStatusMonitorConfig(
+        hass=hass,
+        entry_id=subentry_id,
+        location_name=location_name,
+        irrigation_zone_name=irrigation_zone_name,
+        humidity_entity_id=humidity_entity_id,
+        location_device_id=location_device_id,
+    )
+    sensor = HumidityStatusMonitorBinarySensor(humidity_status_config)
+    _LOGGER.debug(
+        "Created humidity status monitor binary sensor for %s",
+        location_name,
+    )
+    return sensor
+
+
+async def _create_battery_sensor(
+    hass: HomeAssistant,
+    subentry_id: str,
+    location_name: str,
+    irrigation_zone_name: str,
+    location_device_id: str | None,
+) -> BinarySensorEntity | None:
+    """Create battery level status monitor sensor."""
+    battery_entity_id = _find_battery_entity(hass, location_name)
+    if not battery_entity_id:
+        _LOGGER.debug("No battery sensor found for location %s", location_name)
+        return None
+
+    battery_status_config = BatteryLevelStatusMonitorConfig(
+        hass=hass,
+        entry_id=subentry_id,
+        location_name=location_name,
+        irrigation_zone_name=irrigation_zone_name,
+        battery_entity_id=battery_entity_id,
+        location_device_id=location_device_id,
+    )
+    sensor = BatteryLevelStatusMonitorBinarySensor(battery_status_config)
+    _LOGGER.debug(
+        "Created battery level status monitor binary sensor for %s",
+        location_name,
+    )
+    return sensor
+
+
+async def _create_link_monitors(
+    config: LinkMonitorConfig,
+) -> list[BinarySensorEntity]:
+    """Create link (device availability) monitor sensors."""
+    sensors: list[BinarySensorEntity] = []
+
+    # Create link monitor sensor
+    link_monitor_sensor = LinkMonitorBinarySensor(config)
+    sensors.append(link_monitor_sensor)
+    _LOGGER.debug(
+        "Created link monitor binary sensor for %s",
+        config.location_name,
+    )
+
+    # Create link status sensor
+    link_status_sensor = LinkStatusBinarySensor(config)
+    sensors.append(link_status_sensor)
+    _LOGGER.debug(
+        "Created link status monitor binary sensor for %s",
+        config.location_name,
+    )
+
+    return sensors
 
 
 async def _create_subentry_sensors(
@@ -4103,93 +4496,38 @@ async def _create_subentry_sensors(
 
     irrigation_zone_name = _get_irrigation_zone_name(entry, subentry)
 
-    # Create soil moisture status monitor
-    moisture_status_config = SoilMoistureStatusMonitorConfig(
-        hass=hass,
-        entry_id=subentry_id,
-        location_name=location_name,
-        irrigation_zone_name=irrigation_zone_name,
-        soil_moisture_entity_id=soil_moisture_entity_id,
-        location_device_id=location_device_id,
+    # Create all environmental sensors
+    moisture_sensor = await _create_soil_moisture_sensor(
+        hass, subentry_id, location_name, irrigation_zone_name, location_device_id
     )
-    soil_moisture_status_sensor = SoilMoistureStatusMonitorBinarySensor(
-        moisture_status_config
+    if moisture_sensor:
+        subentry_binary_sensors.append(moisture_sensor)
+
+    conductivity_sensor = await _create_soil_conductivity_sensor(
+        hass, subentry_id, location_name, irrigation_zone_name, location_device_id
     )
-    subentry_binary_sensors.append(soil_moisture_status_sensor)
-    _LOGGER.debug(
-        "Created soil moisture status monitor binary sensor for %s",
-        location_name,
+    if conductivity_sensor:
+        subentry_binary_sensors.append(conductivity_sensor)
+
+    temperature_sensor = await _create_temperature_sensor(
+        hass, subentry_id, location_name, irrigation_zone_name, location_device_id
     )
+    if temperature_sensor:
+        subentry_binary_sensors.append(temperature_sensor)
 
-    # Create soil conductivity status monitor
-    soil_conductivity_entity_id = _find_soil_conductivity_entity(hass, location_name)
-    if soil_conductivity_entity_id:
-        conductivity_status_config = SoilConductivityStatusMonitorConfig(
-            hass=hass,
-            entry_id=subentry_id,
-            location_name=location_name,
-            irrigation_zone_name=irrigation_zone_name,
-            soil_conductivity_entity_id=soil_conductivity_entity_id,
-            location_device_id=location_device_id,
-        )
-        soil_conductivity_status_sensor = SoilConductivityStatusMonitorBinarySensor(
-            conductivity_status_config
-        )
-        subentry_binary_sensors.append(soil_conductivity_status_sensor)
-        _LOGGER.debug(
-            "Created soil conductivity status monitor binary sensor for %s",
-            location_name,
-        )
-    else:
-        _LOGGER.debug(
-            "No soil conductivity sensor found for location %s", location_name
-        )
+    humidity_sensor = await _create_humidity_sensor(
+        hass, subentry_id, location_name, irrigation_zone_name, location_device_id
+    )
+    if humidity_sensor:
+        subentry_binary_sensors.append(humidity_sensor)
 
-    # Create temperature status monitor
-    temperature_entity_id = _find_temperature_entity(hass, location_name)
-    if temperature_entity_id:
-        temperature_status_config = TemperatureStatusMonitorConfig(
-            hass=hass,
-            entry_id=subentry_id,
-            location_name=location_name,
-            irrigation_zone_name=irrigation_zone_name,
-            temperature_entity_id=temperature_entity_id,
-            location_device_id=location_device_id,
-        )
-        temperature_status_sensor = TemperatureStatusMonitorBinarySensor(
-            temperature_status_config
-        )
-        subentry_binary_sensors.append(temperature_status_sensor)
-        _LOGGER.debug(
-            "Created temperature status monitor binary sensor for %s",
-            location_name,
-        )
-    else:
-        _LOGGER.debug("No temperature sensor found for location %s", location_name)
+    battery_sensor = await _create_battery_sensor(
+        hass, subentry_id, location_name, irrigation_zone_name, location_device_id
+    )
+    if battery_sensor:
+        subentry_binary_sensors.append(battery_sensor)
 
-    # Create humidity status monitor
-    humidity_entity_id = _find_humidity_entity(hass, location_name)
-    if humidity_entity_id:
-        humidity_status_config = HumidityStatusMonitorConfig(
-            hass=hass,
-            entry_id=subentry_id,
-            location_name=location_name,
-            irrigation_zone_name=irrigation_zone_name,
-            humidity_entity_id=humidity_entity_id,
-            location_device_id=location_device_id,
-        )
-        humidity_status_sensor = HumidityStatusMonitorBinarySensor(
-            humidity_status_config
-        )
-        subentry_binary_sensors.append(humidity_status_sensor)
-        _LOGGER.debug(
-            "Created humidity status monitor binary sensor for %s",
-            location_name,
-        )
-    else:
-        _LOGGER.debug("No humidity sensor found for location %s", location_name)
-
-    # Create link (device availability) monitor
+    # Create link monitors
     link_monitor_config = LinkMonitorConfig(
         hass=hass,
         entry_id=subentry_id,
@@ -4198,20 +4536,8 @@ async def _create_subentry_sensors(
         monitoring_device_id=monitoring_device_id,
         location_device_id=location_device_id,
     )
-    link_monitor_sensor = LinkMonitorBinarySensor(link_monitor_config)
-    subentry_binary_sensors.append(link_monitor_sensor)
-    _LOGGER.debug(
-        "Created link monitor binary sensor for %s",
-        location_name,
-    )
-
-    # Create link status (device availability problem) monitor
-    link_status_sensor = LinkStatusBinarySensor(link_monitor_config)
-    subentry_binary_sensors.append(link_status_sensor)
-    _LOGGER.debug(
-        "Created link status monitor binary sensor for %s",
-        location_name,
-    )
+    link_monitors = await _create_link_monitors(link_monitor_config)
+    subentry_binary_sensors.extend(link_monitors)
 
     return subentry_binary_sensors
 
