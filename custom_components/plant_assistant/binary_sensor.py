@@ -107,6 +107,18 @@ class SoilConductivityStatusMonitorConfig:
     location_device_id: str | None = None
 
 
+@dataclass
+class SoilMoistureStatusMonitorConfig:
+    """Configuration for SoilMoistureStatusMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    soil_moisture_entity_id: str
+    location_device_id: str | None = None
+
+
 class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     """
     Binary sensor that monitors soil moisture levels against minimum threshold.
@@ -2160,6 +2172,512 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
             self._unsubscribe_conductivity_max()
 
 
+class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that monitors soil moisture status against thresholds.
+
+    This sensor combines moisture monitoring into a single entity with a status
+    field. The sensor turns ON (problem detected) when moisture is outside the
+    acceptable range (below minimum, above maximum, or in water soon zone).
+    The status attribute indicates whether the issue is 'low', 'high', 'water_soon',
+    or 'normal'.
+    """
+
+    def __init__(self, config: SoilMoistureStatusMonitorConfig) -> None:
+        """
+        Initialize the Soil Moisture Status Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.location_device_id = config.location_device_id
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+        self.soil_moisture_entity_id = config.soil_moisture_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Soil Moisture Status"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_soil_moisture_status"
+        )
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+        self._state: bool | None = None
+        self._moisture_status: str = (
+            "normal"  # 'low', 'high', 'water_soon', or 'normal'
+        )
+        self._min_soil_moisture: float | None = None
+        self._max_soil_moisture: float | None = None
+        self._current_soil_moisture: float | None = None
+        self._ignore_until_datetime: Any = None
+        self._unsubscribe: Any = None
+        self._unsubscribe_moisture_min: Any = None
+        self._unsubscribe_moisture_max: Any = None
+        self._unsubscribe_ignore_until: Any = None
+
+        # Initialize with current state of soil moisture entity
+        if soil_moisture_state := self.hass.states.get(self.soil_moisture_entity_id):
+            self._current_soil_moisture = self._parse_float(soil_moisture_state.state)
+
+    def _parse_float(self, value: Any) -> float | None:
+        """Parse a value to float, handling unavailable/unknown states."""
+        if value is None or value in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on moisture and thresholds."""
+        # If any required value is unavailable, set state to None (sensor unavailable)
+        if (
+            self._current_soil_moisture is None
+            or self._min_soil_moisture is None
+            or self._max_soil_moisture is None
+        ):
+            self._state = None
+            self._moisture_status = "normal"
+            return
+
+        # Check if we're currently in the ignore period
+        if self._ignore_until_datetime is not None:
+            try:
+                now = dt_util.now()
+                if now < self._ignore_until_datetime:
+                    # Current time is before ignore until datetime, no problem
+                    self._state = False
+                    self._moisture_status = "normal"
+                    return
+            except (TypeError, AttributeError) as exc:
+                _LOGGER.debug("Error checking ignore until datetime: %s", exc)
+
+        # Determine status and state based on thresholds
+        # Water Soon threshold is low threshold + 5 percentage points
+        water_soon_threshold = self._min_soil_moisture + 5
+
+        if self._current_soil_moisture < self._min_soil_moisture:
+            self._state = True
+            self._moisture_status = "low"
+        elif self._current_soil_moisture > self._max_soil_moisture:
+            self._state = True
+            self._moisture_status = "high"
+        elif (
+            self._current_soil_moisture <= water_soon_threshold
+            and self._current_soil_moisture >= self._min_soil_moisture
+        ):
+            # In water soon zone
+            self._state = True
+            self._moisture_status = "water_soon"
+        else:
+            self._state = False
+            self._moisture_status = "normal"
+
+    async def _find_min_soil_moisture_sensor(self) -> str | None:
+        """
+        Find the min soil moisture aggregated sensor for this location.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id
+                    and f"{location_name_safe}_min_soil_moisture" in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found min soil moisture sensor: %s", entity.entity_id
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding min soil moisture sensor: %s", exc)
+
+        return None
+
+    async def _find_max_soil_moisture_sensor(self) -> str | None:
+        """
+        Find the max soil moisture aggregated sensor for this location.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id
+                    and f"{location_name_safe}_max_soil_moisture" in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found max soil moisture sensor: %s", entity.entity_id
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding max soil moisture sensor: %s", exc)
+
+        return None
+
+    async def _find_soil_moisture_ignore_until_entity(self) -> str | None:
+        """
+        Find soil moisture low threshold ignore until datetime entity.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "datetime"
+                    and entity.unique_id
+                    and "soil_moisture_ignore_until" in entity.unique_id
+                    and self.entry_id in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found soil moisture ignore until datetime: %s",
+                        entity.entity_id,
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding soil moisture ignore until entity: %s", exc)
+
+        return None
+
+    @callback
+    def _soil_moisture_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle soil moisture sensor state changes."""
+        if new_state is None:
+            self._current_soil_moisture = None
+        else:
+            self._current_soil_moisture = self._parse_float(new_state.state)
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _min_soil_moisture_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle minimum soil moisture threshold changes."""
+        if new_state is None:
+            self._min_soil_moisture = None
+        else:
+            self._min_soil_moisture = self._parse_float(new_state.state)
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _max_soil_moisture_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle maximum soil moisture threshold changes."""
+        if new_state is None:
+            self._max_soil_moisture = None
+        else:
+            self._max_soil_moisture = self._parse_float(new_state.state)
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _soil_moisture_ignore_until_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle soil moisture ignore until datetime changes."""
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._ignore_until_datetime = None
+        else:
+            try:
+                parsed_datetime = dt_util.parse_datetime(new_state.state)
+                if parsed_datetime is not None:
+                    # Ensure timezone info
+                    if parsed_datetime.tzinfo is None:
+                        parsed_datetime = parsed_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+                    self._ignore_until_datetime = parsed_datetime
+                else:
+                    self._ignore_until_datetime = None
+            except (ValueError, TypeError) as exc:
+                _LOGGER.debug(
+                    "Error parsing soil moisture ignore until datetime: %s", exc
+                )
+                self._ignore_until_datetime = None
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if moisture is outside acceptable range (problem)."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state and status."""
+        if self._state is True:
+            if self._moisture_status == "low":
+                return "mdi:water-minus"
+            if self._moisture_status == "high":
+                return "mdi:water-plus"
+            if self._moisture_status == "water_soon":
+                return "mdi:watering-can"
+        return "mdi:water-check"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        # Determine type based on moisture status
+        # water_soon -> Warning, high/low -> Critical, normal -> Critical (default)
+        alert_type = "Critical"
+        if self._moisture_status == "water_soon":
+            alert_type = "Warning"
+        elif self._moisture_status in ("high", "low"):
+            alert_type = "Critical"
+
+        attrs = {
+            "type": alert_type,
+            "message": f"Soil Moisture {self._moisture_status.capitalize()}",
+            "task": True,
+            "tags": [
+                self.location_name.lower().replace(" ", "_"),
+                self.irrigation_zone_name.lower().replace(" ", "_"),
+            ],
+            "current_soil_moisture": self._current_soil_moisture,
+            "minimum_soil_moisture_threshold": self._min_soil_moisture,
+            "maximum_soil_moisture_threshold": self._max_soil_moisture,
+            "source_entity": self.soil_moisture_entity_id,
+            "moisture_status": self._moisture_status,
+        }
+
+        # Add water soon threshold information
+        if self._min_soil_moisture is not None:
+            water_soon_threshold = self._min_soil_moisture + 5
+            attrs["water_soon_threshold"] = water_soon_threshold
+
+        # Add ignore until information if available
+        if self._ignore_until_datetime:
+            now = dt_util.now()
+            attrs["ignore_until"] = self._ignore_until_datetime.isoformat()
+            attrs["currently_ignoring"] = now < self._ignore_until_datetime
+
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        soil_moisture_state = self.hass.states.get(self.soil_moisture_entity_id)
+        return soil_moisture_state is not None
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                self._moisture_status = last_state.attributes.get(
+                    "moisture_status", "normal"
+                )
+                _LOGGER.info(
+                    "Restored soil moisture status for %s: %s (%s)",
+                    self.location_name,
+                    self._state,
+                    self._moisture_status,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def _setup_soil_moisture_subscription(self) -> None:
+        """Subscribe to soil moisture entity state changes."""
+        try:
+            self._unsubscribe = async_track_state_change(
+                self.hass,
+                self.soil_moisture_entity_id,
+                self._soil_moisture_state_changed,
+            )
+            _LOGGER.debug(
+                "Subscribed to soil moisture sensor: %s",
+                self.soil_moisture_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to soil moisture entity %s: %s",
+                self.soil_moisture_entity_id,
+                exc,
+            )
+
+    async def _setup_min_soil_moisture_subscription(self) -> None:
+        """Find and subscribe to min soil moisture sensor."""
+        min_moisture_entity_id = await self._find_min_soil_moisture_sensor()
+        if min_moisture_entity_id:
+            if min_moisture_state := self.hass.states.get(min_moisture_entity_id):
+                self._min_soil_moisture = self._parse_float(min_moisture_state.state)
+
+            try:
+                self._unsubscribe_moisture_min = async_track_state_change(
+                    self.hass,
+                    min_moisture_entity_id,
+                    self._min_soil_moisture_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to min soil moisture sensor: %s",
+                    min_moisture_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to min soil moisture sensor %s: %s",
+                    min_moisture_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.warning(
+                "Min soil moisture sensor not found for location %s",
+                self.location_name,
+            )
+
+    async def _setup_max_soil_moisture_subscription(self) -> None:
+        """Find and subscribe to max soil moisture sensor."""
+        max_moisture_entity_id = await self._find_max_soil_moisture_sensor()
+        if max_moisture_entity_id:
+            if max_moisture_state := self.hass.states.get(max_moisture_entity_id):
+                self._max_soil_moisture = self._parse_float(max_moisture_state.state)
+
+            try:
+                self._unsubscribe_moisture_max = async_track_state_change(
+                    self.hass,
+                    max_moisture_entity_id,
+                    self._max_soil_moisture_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to max soil moisture sensor: %s",
+                    max_moisture_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to max soil moisture sensor %s: %s",
+                    max_moisture_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.warning(
+                "Max soil moisture sensor not found for location %s",
+                self.location_name,
+            )
+
+    async def _setup_ignore_until_subscription(self) -> None:
+        """Find and subscribe to soil moisture ignore until datetime entity."""
+        ignore_until_entity_id = await self._find_soil_moisture_ignore_until_entity()
+        if ignore_until_entity_id:
+            if ignore_until_state := self.hass.states.get(ignore_until_entity_id):
+                try:
+                    parsed_datetime = dt_util.parse_datetime(ignore_until_state.state)
+                    if parsed_datetime is not None:
+                        if parsed_datetime.tzinfo is None:
+                            parsed_datetime = parsed_datetime.replace(
+                                tzinfo=dt_util.get_default_time_zone()
+                            )
+                        self._ignore_until_datetime = parsed_datetime
+                except (ValueError, TypeError) as exc:
+                    _LOGGER.debug(
+                        "Error parsing soil moisture ignore until datetime: %s", exc
+                    )
+
+            try:
+                self._unsubscribe_ignore_until = async_track_state_change(
+                    self.hass,
+                    ignore_until_entity_id,
+                    self._soil_moisture_ignore_until_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to soil moisture ignore until datetime: %s",
+                    ignore_until_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to soil moisture ignore until entity %s: %s",
+                    ignore_until_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.debug(
+                "Soil moisture ignore until datetime not found for location %s",
+                self.location_name,
+            )
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass and subscribe to state changes."""
+        # Restore previous state if available
+        await super().async_added_to_hass()
+        await self._restore_previous_state()
+
+        # Set up subscriptions
+        await self._setup_soil_moisture_subscription()
+        await self._setup_min_soil_moisture_subscription()
+        await self._setup_max_soil_moisture_subscription()
+        await self._setup_ignore_until_subscription()
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+        if (
+            hasattr(self, "_unsubscribe_moisture_min")
+            and self._unsubscribe_moisture_min
+        ):
+            self._unsubscribe_moisture_min()
+        if (
+            hasattr(self, "_unsubscribe_moisture_max")
+            and self._unsubscribe_moisture_max
+        ):
+            self._unsubscribe_moisture_max()
+        if (
+            hasattr(self, "_unsubscribe_ignore_until")
+            and self._unsubscribe_ignore_until
+        ):
+            self._unsubscribe_ignore_until()
+
+
 def _find_soil_moisture_entity(hass: HomeAssistant, location_name: str) -> str | None:
     """Find soil moisture entity from mirrored sensors."""
     ent_reg = er.async_get(hass)
@@ -2259,8 +2777,8 @@ async def _create_subentry_sensors(
 
     irrigation_zone_name = _get_irrigation_zone_name(entry, subentry)
 
-    # Create soil moisture low monitor
-    low_config = SoilMoistureLowMonitorConfig(
+    # Create soil moisture status monitor
+    moisture_status_config = SoilMoistureStatusMonitorConfig(
         hass=hass,
         entry_id=subentry_id,
         location_name=location_name,
@@ -2268,44 +2786,12 @@ async def _create_subentry_sensors(
         soil_moisture_entity_id=soil_moisture_entity_id,
         location_device_id=location_device_id,
     )
-    soil_moisture_low_sensor = SoilMoistureLowMonitorBinarySensor(low_config)
-    subentry_binary_sensors.append(soil_moisture_low_sensor)
+    soil_moisture_status_sensor = SoilMoistureStatusMonitorBinarySensor(
+        moisture_status_config
+    )
+    subentry_binary_sensors.append(soil_moisture_status_sensor)
     _LOGGER.debug(
-        "Created soil moisture low monitor binary sensor for %s",
-        location_name,
-    )
-
-    # Create soil moisture high monitor
-    high_config = SoilMoistureHighMonitorConfig(
-        hass=hass,
-        entry_id=subentry_id,
-        location_name=location_name,
-        irrigation_zone_name=irrigation_zone_name,
-        soil_moisture_entity_id=soil_moisture_entity_id,
-        location_device_id=location_device_id,
-    )
-    soil_moisture_high_sensor = SoilMoistureHighMonitorBinarySensor(high_config)
-    subentry_binary_sensors.append(soil_moisture_high_sensor)
-    _LOGGER.debug(
-        "Created soil moisture high monitor binary sensor for %s",
-        location_name,
-    )
-
-    # Create soil moisture water soon monitor
-    water_soon_config = SoilMoistureWaterSoonMonitorConfig(
-        hass=hass,
-        entry_id=subentry_id,
-        location_name=location_name,
-        irrigation_zone_name=irrigation_zone_name,
-        soil_moisture_entity_id=soil_moisture_entity_id,
-        location_device_id=location_device_id,
-    )
-    soil_moisture_water_soon_sensor = SoilMoistureWaterSoonMonitorBinarySensor(
-        water_soon_config
-    )
-    subentry_binary_sensors.append(soil_moisture_water_soon_sensor)
-    _LOGGER.debug(
-        "Created soil moisture water soon monitor binary sensor for %s",
+        "Created soil moisture status monitor binary sensor for %s",
         location_name,
     )
 
