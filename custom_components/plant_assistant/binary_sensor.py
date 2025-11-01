@@ -17,6 +17,7 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_track_state_change
@@ -140,6 +141,18 @@ class HumidityStatusMonitorConfig:
     location_name: str
     irrigation_zone_name: str
     humidity_entity_id: str
+    location_device_id: str | None = None
+
+
+@dataclass
+class LinkMonitorConfig:
+    """Configuration for LinkMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    monitoring_device_id: str
     location_device_id: str | None = None
 
 
@@ -3336,6 +3349,621 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             self._unsubscribe_below()
 
 
+class LinkMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that monitors monitoring device availability (link status).
+
+    This sensor turns ON when the associated monitoring device
+    is available, indicating a normal connection with the device.
+    """
+
+    def __init__(self, config: LinkMonitorConfig) -> None:
+        """
+        Initialize the Link Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.location_device_id = config.location_device_id
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+        self.monitoring_device_id = config.monitoring_device_id
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Link"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_link_monitor"
+        )
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+
+        self._state: bool | None = None
+        self._device_available: bool | None = None
+        self._unsubscribe: Any = None
+        self._unsubscribe_entities: Any = None
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on device availability."""
+        # If device availability is unknown, set state to None (sensor unavailable)
+        if self._device_available is None:
+            self._state = None
+            return
+
+        # Binary sensor is ON (connected) when device is available
+        self._state = self._device_available
+
+    @callback
+    def _device_availability_changed(self, device_id: str, available: bool) -> None:  # noqa: FBT001
+        """Handle device availability changes."""
+        if device_id == self.monitoring_device_id:
+            self._device_available = available
+            self._update_state()
+            self.async_write_ha_state()
+
+    def _check_device_availability(self) -> bool | None:
+        """Check the current availability of the monitoring device."""
+        try:
+            device_registry = dr.async_get(self.hass)
+            device = device_registry.async_get(self.monitoring_device_id)
+
+            if device is None:
+                _LOGGER.warning(
+                    "Monitoring device %s not found in device registry",
+                    self.monitoring_device_id,
+                )
+                return None
+
+            # Device is unavailable if:
+            # 1. It's explicitly disabled
+            # 2. It's marked as "gone" (not recoverable)
+            if device.disabled_by is not None:
+                _LOGGER.debug(
+                    "Device %s is disabled: %s",
+                    self.monitoring_device_id,
+                    device.disabled_by,
+                )
+                return False
+
+            # Check if device has any entities that we can use to determine connectivity
+            # A device is considered unavailable if all its entities are unavailable
+            return self._check_device_entity_availability()
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error checking device availability: %s", exc)
+            return None
+
+    def _check_device_entity_availability(self) -> bool | None:
+        """
+        Check device availability by examining its entities' states.
+
+        A device is considered available if at least one of its entities
+        is in an available state (not UNAVAILABLE or UNKNOWN).
+
+        Returns True if device is available, False if unavailable, None if unknown.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            # Find all entities associated with this device
+            device_entities = [
+                entity
+                for entity in ent_reg.entities.values()
+                if entity.device_id == self.monitoring_device_id
+            ]
+
+            if not device_entities:
+                _LOGGER.debug(
+                    "No entities found for device %s", self.monitoring_device_id
+                )
+                return None
+
+            # Check state of each entity
+            available_count = 0
+            unavailable_count = 0
+
+            for entity in device_entities:
+                entity_state = self.hass.states.get(entity.entity_id)
+
+                if entity_state is None:
+                    continue
+
+                if entity_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                    unavailable_count += 1
+                else:
+                    available_count += 1
+
+            # If all entities are unavailable, device is unavailable
+            if available_count == 0 and unavailable_count > 0:
+                _LOGGER.debug(
+                    "Device %s is unavailable - all entities are unavailable",
+                    self.monitoring_device_id,
+                )
+                return False
+
+            # If at least one entity is available, device is available
+            if available_count > 0:
+                _LOGGER.debug(
+                    "Device %s is available - %d available entities",
+                    self.monitoring_device_id,
+                    available_count,
+                )
+                return True
+
+            # If we have no state information, return None
+            _LOGGER.debug(
+                "Device %s availability unknown - no state information",
+                self.monitoring_device_id,
+            )
+            return None  # noqa: TRY300
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error checking device entity availability: %s", exc)
+            return None
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if device is available (connected)."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state."""
+        if self._state is True:
+            return "mdi:link"
+        return "mdi:link-off"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        return {
+            "monitoring_device_id": self.monitoring_device_id,
+        }
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Entity is always available, it reports on device availability
+        return True
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                _LOGGER.info(
+                    "Restored link status for %s: %s",
+                    self.location_name,
+                    self._state,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass and set up device availability monitoring."""
+        # Restore previous state if available
+        await super().async_added_to_hass()
+        await self._restore_previous_state()
+
+        # Check initial device availability
+        self._device_available = self._check_device_availability()
+
+        # Subscribe to both device registry updates and entity state changes
+        try:
+
+            @callback
+            def _device_registry_updated(_event: Any) -> None:
+                """Handle device registry updates."""
+                self._device_available = self._check_device_availability()
+                self._update_state()
+                self.async_write_ha_state()
+
+            @callback
+            def _entity_state_changed(
+                _entity_id: str, _old_state: Any, _new_state: Any
+            ) -> None:
+                """Handle entity state changes for device's entities."""
+                # Re-check device availability when any of its entities change state
+                self._device_available = self._check_device_availability()
+                self._update_state()
+                self.async_write_ha_state()
+
+            self._unsubscribe = self.hass.bus.async_listen(
+                "device_registry_updated", _device_registry_updated
+            )
+            _LOGGER.debug(
+                "Subscribed to device registry updates for link monitor %s",
+                self.location_name,
+            )
+
+            # Subscribe to state changes of all entities belonging to this device
+            try:
+                ent_reg = er.async_get(self.hass)
+                device_entity_ids = [
+                    entity.entity_id
+                    for entity in ent_reg.entities.values()
+                    if entity.device_id == self.monitoring_device_id
+                ]
+
+                if device_entity_ids:
+                    self._unsubscribe_entities = async_track_state_change(
+                        self.hass,
+                        device_entity_ids,
+                        _entity_state_changed,
+                    )
+                    _LOGGER.debug(
+                        "Subscribed to %d entities for device %s",
+                        len(device_entity_ids),
+                        self.monitoring_device_id,
+                    )
+                else:
+                    _LOGGER.debug(
+                        "No entities found for device %s to monitor",
+                        self.monitoring_device_id,
+                    )
+
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.debug(
+                    "Failed to subscribe to device entity state changes: %s", exc
+                )
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to device registry updates for link monitor"
+                " %s: %s",
+                self.location_name,
+                exc,
+            )
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+        if hasattr(self, "_unsubscribe_entities") and self._unsubscribe_entities:
+            self._unsubscribe_entities()
+
+
+class LinkStatusBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that monitors monitoring device availability as a problem state.
+
+    This sensor turns ON (problem detected) when the associated monitoring device
+    is unavailable, indicating a communication or connectivity issue with the device.
+    This is a complementary sensor to LinkMonitorBinarySensor that uses a PROBLEM
+    device class for alerting purposes.
+    """
+
+    def __init__(self, config: LinkMonitorConfig) -> None:
+        """
+        Initialize the Link Status binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.location_device_id = config.location_device_id
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+        self.monitoring_device_id = config.monitoring_device_id
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Link Status"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_link_status_monitor"
+        )
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+        self._state: bool | None = None
+        self._device_available: bool | None = None
+        self._unsubscribe: Any = None
+        self._unsubscribe_entities: Any = None
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on device availability."""
+        # If device availability is unknown, set state to None (sensor unavailable)
+        if self._device_available is None:
+            self._state = None
+            return
+
+        # Binary sensor is ON (problem) when device is unavailable
+        self._state = not self._device_available
+
+    @callback
+    def _device_availability_changed(self, device_id: str, available: bool) -> None:  # noqa: FBT001
+        """Handle device availability changes."""
+        if device_id == self.monitoring_device_id:
+            self._device_available = available
+            self._update_state()
+            self.async_write_ha_state()
+
+    def _check_device_availability(self) -> bool | None:
+        """Check the current availability of the monitoring device."""
+        try:
+            device_registry = dr.async_get(self.hass)
+            device = device_registry.async_get(self.monitoring_device_id)
+
+            if device is None:
+                _LOGGER.warning(
+                    "Monitoring device %s not found in device registry",
+                    self.monitoring_device_id,
+                )
+                return None
+
+            # Device is unavailable if:
+            # 1. It's explicitly disabled
+            # 2. It's marked as "gone" (not recoverable)
+            if device.disabled_by is not None:
+                _LOGGER.debug(
+                    "Device %s is disabled: %s",
+                    self.monitoring_device_id,
+                    device.disabled_by,
+                )
+                return False
+
+            # Check if device has any entities that we can use to determine connectivity
+            # A device is considered unavailable if all its entities are unavailable
+            return self._check_device_entity_availability()
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error checking device availability: %s", exc)
+            return None
+
+    def _check_device_entity_availability(self) -> bool | None:
+        """
+        Check device availability by examining its entities' states.
+
+        A device is considered available if at least one of its entities
+        is in an available state (not UNAVAILABLE or UNKNOWN).
+
+        Returns True if device is available, False if unavailable, None if unknown.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            # Find all entities associated with this device
+            device_entities = [
+                entity
+                for entity in ent_reg.entities.values()
+                if entity.device_id == self.monitoring_device_id
+            ]
+
+            if not device_entities:
+                _LOGGER.debug(
+                    "No entities found for device %s", self.monitoring_device_id
+                )
+                return None
+
+            # Check state of each entity
+            available_count = 0
+            unavailable_count = 0
+
+            for entity in device_entities:
+                entity_state = self.hass.states.get(entity.entity_id)
+
+                if entity_state is None:
+                    continue
+
+                if entity_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                    unavailable_count += 1
+                else:
+                    available_count += 1
+
+            # If all entities are unavailable, device is unavailable
+            if available_count == 0 and unavailable_count > 0:
+                _LOGGER.debug(
+                    "Device %s is unavailable - all entities are unavailable",
+                    self.monitoring_device_id,
+                )
+                return False
+
+            # If at least one entity is available, device is available
+            if available_count > 0:
+                _LOGGER.debug(
+                    "Device %s is available - %d available entities",
+                    self.monitoring_device_id,
+                    available_count,
+                )
+                return True
+
+            # If we have no state information, return None
+            _LOGGER.debug(
+                "Device %s availability unknown - no state information",
+                self.monitoring_device_id,
+            )
+            return None  # noqa: TRY300
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error checking device entity availability: %s", exc)
+            return None
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if device is unavailable (problem detected)."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state."""
+        if self._state is True:
+            return "mdi:link-off"
+        return "mdi:link"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        alert_type = "Critical" if self._state is True else "Normal"
+        status_message = (
+            "Monitoring device unavailable"
+            if self._state is True
+            else "Monitoring device available"
+        )
+
+        return {
+            "type": alert_type,
+            "message": status_message,
+            "task": self._state is True,
+            "tags": [
+                self.location_name.lower().replace(" ", "_"),
+                self.irrigation_zone_name.lower().replace(" ", "_"),
+            ],
+            "device_available": self._device_available,
+            "monitoring_device_id": self.monitoring_device_id,
+        }
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Entity is always available, it reports on device availability
+        return True
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                _LOGGER.info(
+                    "Restored link status for %s: %s",
+                    self.location_name,
+                    self._state,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass and set up device availability monitoring."""
+        # Restore previous state if available
+        await super().async_added_to_hass()
+        await self._restore_previous_state()
+
+        # Check initial device availability
+        self._device_available = self._check_device_availability()
+
+        # Subscribe to both device registry updates and entity state changes
+        try:
+
+            @callback
+            def _device_registry_updated(_event: Any) -> None:
+                """Handle device registry updates."""
+                self._device_available = self._check_device_availability()
+                self._update_state()
+                self.async_write_ha_state()
+
+            @callback
+            def _entity_state_changed(
+                _entity_id: str, _old_state: Any, _new_state: Any
+            ) -> None:
+                """Handle entity state changes for device's entities."""
+                # Re-check device availability when any of its entities change state
+                self._device_available = self._check_device_availability()
+                self._update_state()
+                self.async_write_ha_state()
+
+            self._unsubscribe = self.hass.bus.async_listen(
+                "device_registry_updated", _device_registry_updated
+            )
+            _LOGGER.debug(
+                "Subscribed to device registry updates for link status monitor %s",
+                self.location_name,
+            )
+
+            # Subscribe to state changes of all entities belonging to this device
+            try:
+                ent_reg = er.async_get(self.hass)
+                device_entity_ids = [
+                    entity.entity_id
+                    for entity in ent_reg.entities.values()
+                    if entity.device_id == self.monitoring_device_id
+                ]
+
+                if device_entity_ids:
+                    self._unsubscribe_entities = async_track_state_change(
+                        self.hass,
+                        device_entity_ids,
+                        _entity_state_changed,
+                    )
+                    _LOGGER.debug(
+                        "Subscribed to %d entities for device %s",
+                        len(device_entity_ids),
+                        self.monitoring_device_id,
+                    )
+                else:
+                    _LOGGER.debug(
+                        "No entities found for device %s to monitor",
+                        self.monitoring_device_id,
+                    )
+
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.debug(
+                    "Failed to subscribe to device entity state changes: %s", exc
+                )
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to device registry updates for link status"
+                " monitor %s: %s",
+                self.location_name,
+                exc,
+            )
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+        if hasattr(self, "_unsubscribe_entities") and self._unsubscribe_entities:
+            self._unsubscribe_entities()
+
+
 def _find_soil_moisture_entity(hass: HomeAssistant, location_name: str) -> str | None:
     """Find soil moisture entity from mirrored sensors."""
     ent_reg = er.async_get(hass)
@@ -3560,6 +4188,30 @@ async def _create_subentry_sensors(
         )
     else:
         _LOGGER.debug("No humidity sensor found for location %s", location_name)
+
+    # Create link (device availability) monitor
+    link_monitor_config = LinkMonitorConfig(
+        hass=hass,
+        entry_id=subentry_id,
+        location_name=location_name,
+        irrigation_zone_name=irrigation_zone_name,
+        monitoring_device_id=monitoring_device_id,
+        location_device_id=location_device_id,
+    )
+    link_monitor_sensor = LinkMonitorBinarySensor(link_monitor_config)
+    subentry_binary_sensors.append(link_monitor_sensor)
+    _LOGGER.debug(
+        "Created link monitor binary sensor for %s",
+        location_name,
+    )
+
+    # Create link status (device availability problem) monitor
+    link_status_sensor = LinkStatusBinarySensor(link_monitor_config)
+    subentry_binary_sensors.append(link_status_sensor)
+    _LOGGER.debug(
+        "Created link status monitor binary sensor for %s",
+        location_name,
+    )
 
     return subentry_binary_sensors
 
