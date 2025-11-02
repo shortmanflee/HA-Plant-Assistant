@@ -205,6 +205,17 @@ class IgnoredStatusesMonitorConfig:
     location_device_id: str | None = None
 
 
+@dataclass
+class StatusMonitorConfig:
+    """Configuration for StatusMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    location_device_id: str | None = None
+
+
 class PlantCountStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     """
     Binary sensor that monitors plant count status for a location.
@@ -550,6 +561,256 @@ class IgnoredStatusesMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self.hass,
                 entity_id,
                 self._ignore_until_state_changed,
+            )
+            self._unsubscribe_handlers.append(unsubscribe)
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        for unsubscribe in self._unsubscribe_handlers:
+            if unsubscribe:
+                unsubscribe()
+        self._unsubscribe_handlers.clear()
+
+
+class StatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that monitors overall status of all other status sensors.
+
+    This sensor turns ON (problem detected) when any of the other status
+    binary sensors (Plant Count, Soil Moisture, Soil Conductivity, Temperature,
+    Humidity, Battery Level, or Daily Light Integral) are ON. The Ignored
+    Statuses sensor is not considered. The message attribute shows the count
+    of monitored sensors that currently have a problem (e.g., "2 Issues").
+    """
+
+    def __init__(self, config: StatusMonitorConfig) -> None:
+        """
+        Initialize the Status Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.location_device_id = config.location_device_id
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Status"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{DOMAIN}_{self.entry_id}_{location_name_safe}_status"
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+        self._state: bool | None = None
+        self._status_sensors: dict[str, bool | None] = {}
+        self._status_entity_ids: dict[str, str] = {}
+        self._unsubscribe_handlers: list[Any] = []
+
+    async def _find_status_sensors(self) -> dict[str, str]:
+        """
+        Find all status sensor entities for this location.
+
+        Returns a dictionary mapping sensor display name to entity_id.
+        Status sensors that are found:
+        - Plant Count Status
+        - Soil Moisture Status
+        - Soil Conductivity Status
+        - Temperature Status
+        - Humidity Status
+        - Battery Level Status
+        - Daily Light Integral Status
+        """
+        status_sensors: dict[str, str] = {}
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "binary_sensor"
+                    and entity.unique_id
+                    and self.entry_id in entity.unique_id
+                    and location_name_safe in entity.unique_id
+                ):
+                    # Check if this is a status monitor entity
+                    # (but NOT ignored statuses)
+                    unique_id = entity.unique_id
+                    is_status_sensor = False
+                    sensor_name = ""
+
+                    if "plant_count_status" in unique_id:
+                        is_status_sensor = True
+                        sensor_name = "Plant Count Status"
+                    elif "soil_moisture_status" in unique_id:
+                        is_status_sensor = True
+                        sensor_name = "Soil Moisture Status"
+                    elif "soil_conductivity_status" in unique_id:
+                        is_status_sensor = True
+                        sensor_name = "Soil Conductivity Status"
+                    elif "temperature_status" in unique_id:
+                        is_status_sensor = True
+                        sensor_name = "Temperature Status"
+                    elif "humidity_status" in unique_id:
+                        is_status_sensor = True
+                        sensor_name = "Humidity Status"
+                    elif (
+                        "battery_level_status" in unique_id
+                        or "monitor_battery_level" in unique_id
+                    ):
+                        is_status_sensor = True
+                        sensor_name = "Battery Level Status"
+                    elif "dli_status" in unique_id:
+                        is_status_sensor = True
+                        sensor_name = "Daily Light Integral Status"
+
+                    # Exclude ignored statuses sensor
+                    if is_status_sensor and "ignored_statuses" not in unique_id:
+                        status_sensors[sensor_name] = entity.entity_id
+                        _LOGGER.debug(
+                            "Found status sensor for %s: %s -> %s",
+                            self.location_name,
+                            sensor_name,
+                            entity.entity_id,
+                        )
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding status sensors: %s", exc)
+
+        return status_sensors
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on all status sensors."""
+        # Check if any status sensor is ON (problem detected)
+        any_problem = False
+        problem_sensors = []
+
+        for sensor_name, is_on in self._status_sensors.items():
+            if is_on is True:
+                any_problem = True
+                problem_sensors.append(sensor_name)
+
+        self._state = any_problem
+
+    @callback
+    def _status_sensor_state_changed(
+        self, entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle status sensor state changes."""
+        # Find which sensor this is
+        for sensor_name, sensor_entity_id in self._status_entity_ids.items():
+            if sensor_entity_id == entity_id:
+                if new_state is None:
+                    self._status_sensors[sensor_name] = None
+                else:
+                    self._status_sensors[sensor_name] = new_state.state == "on"
+                break
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if any status sensor has a problem."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state."""
+        if self._state is True:
+            return "mdi:alert-circle-outline"
+        return "mdi:check-circle-outline"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        # Build list of active problems
+        problem_sensors = [
+            name for name, is_on in self._status_sensors.items() if is_on is True
+        ]
+
+        # Create message with issue count
+        issue_count = len(problem_sensors)
+        message = (
+            f"{issue_count} Issue" if issue_count == 1 else f"{issue_count} Issues"
+        )
+
+        attrs: dict[str, Any] = {
+            "message": message,
+            "problem_sensors": problem_sensors,
+            "total_sensors_monitored": len(self._status_sensors),
+            "master_tag": self.irrigation_zone_name,
+        }
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Available if we have found at least one status sensor
+        return len(self._status_sensors) > 0
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                _LOGGER.info(
+                    "Restored status monitor for %s: %s",
+                    self.location_name,
+                    self._state,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass."""
+        # Restore previous state if available
+        await super().async_added_to_hass()
+        await self._restore_previous_state()
+
+        # Find all status sensor entities
+        self._status_entity_ids = await self._find_status_sensors()
+
+        # Initialize status tracking dictionary
+        for sensor_name in self._status_entity_ids:
+            self._status_sensors[sensor_name] = None
+
+        # Subscribe to state changes for all status sensors
+        for sensor_name, entity_id in self._status_entity_ids.items():
+            # Get initial state
+            if state := self.hass.states.get(entity_id):
+                self._status_sensors[sensor_name] = state.state == "on"
+
+            # Subscribe to changes
+            unsubscribe = async_track_state_change(
+                self.hass,
+                entity_id,
+                self._status_sensor_state_changed,
             )
             self._unsubscribe_handlers.append(unsubscribe)
 
@@ -6288,6 +6549,18 @@ async def _create_ignored_statuses_sensor(
     return sensor
 
 
+async def _create_status_sensor(
+    config: StatusMonitorConfig,
+) -> BinarySensorEntity | None:
+    """Create overall status monitor sensor."""
+    sensor = StatusMonitorBinarySensor(config)
+    _LOGGER.debug(
+        "Created overall status monitor binary sensor for %s",
+        config.location_name,
+    )
+    return sensor
+
+
 async def _create_link_monitors(
     config: LinkMonitorConfig,
 ) -> list[BinarySensorEntity]:
@@ -6367,6 +6640,19 @@ async def _create_subentry_sensors(
     )
     if ignored_statuses_sensor:
         subentry_binary_sensors.append(ignored_statuses_sensor)
+
+    # Create overall status monitor sensor
+    # (always created to monitor all status sensors)
+    status_config = StatusMonitorConfig(
+        hass=hass,
+        entry_id=subentry_id,
+        location_name=location_name,
+        irrigation_zone_name=irrigation_zone_name,
+        location_device_id=location_device_id,
+    )
+    status_sensor = await _create_status_sensor(status_config)
+    if status_sensor:
+        subentry_binary_sensors.append(status_sensor)
 
     has_plants = plant_count > 0
 
