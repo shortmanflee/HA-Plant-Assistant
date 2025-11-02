@@ -4120,7 +4120,9 @@ class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
         self._state: bool | None = None
         self._current_battery_level: float | None = None
+        self._ignore_until_datetime: Any = None
         self._unsubscribe: Any = None
+        self._unsubscribe_ignore_until: Any = None
 
     def _parse_float(self, value: Any) -> float | None:
         """Parse a value to float, handling unavailable/unknown states."""
@@ -4131,12 +4133,82 @@ class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         except (ValueError, TypeError):
             return None
 
+    async def _find_battery_low_ignore_until_entity(self) -> str | None:
+        """
+        Find battery low threshold ignore until datetime entity.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "datetime"
+                    and entity.unique_id
+                    and "battery_low_threshold_ignore_until" in entity.unique_id
+                    and self.entry_id in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found battery low threshold ignore until datetime: %s",
+                        entity.entity_id,
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug(
+                "Error finding battery low threshold ignore until entity: %s", exc
+            )
+
+        return None
+
+    @callback
+    def _battery_low_ignore_until_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle battery low threshold ignore until datetime changes."""
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._ignore_until_datetime = None
+        else:
+            try:
+                parsed_datetime = dt_util.parse_datetime(new_state.state)
+                if parsed_datetime is not None:
+                    # Ensure timezone info
+                    if parsed_datetime.tzinfo is None:
+                        parsed_datetime = parsed_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+                    self._ignore_until_datetime = parsed_datetime
+                else:
+                    self._ignore_until_datetime = None
+            except (ValueError, TypeError) as exc:
+                _LOGGER.debug(
+                    "Error parsing battery low threshold ignore until datetime: %s",
+                    exc,
+                )
+                self._ignore_until_datetime = None
+
+        self._update_state()
+        self.async_write_ha_state()
+
     def _update_state(self) -> None:
         """Update binary sensor state based on current battery level."""
         # If battery level is unavailable, set state to None (sensor unavailable)
         if self._current_battery_level is None:
             self._state = None
             return
+
+        # Check if we're currently in the ignore period
+        if self._ignore_until_datetime is not None:
+            try:
+                now = dt_util.now()
+                if now < self._ignore_until_datetime:
+                    # Current time is before ignore until datetime, no problem
+                    self._state = False
+                    return
+            except (TypeError, AttributeError) as exc:
+                _LOGGER.debug("Error checking battery ignore until datetime: %s", exc)
 
         # Binary sensor is ON (problem) when battery level < threshold
         self._state = self._current_battery_level < BATTERY_LEVEL_THRESHOLD
@@ -4176,7 +4248,7 @@ class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             else "Battery level normal"
         )
 
-        return {
+        attrs = {
             "type": alert_type,
             "message": status_message,
             "task": self._state is True,
@@ -4187,6 +4259,14 @@ class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             "current_battery_level": self._current_battery_level,
             "source_entity": self.battery_entity_id,
         }
+
+        # Add ignore until information if available
+        if self._ignore_until_datetime:
+            now = dt_util.now()
+            attrs["ignore_until"] = self._ignore_until_datetime.isoformat()
+            attrs["currently_ignoring"] = now < self._ignore_until_datetime
+
+        return attrs
 
     @property
     def available(self) -> bool:
@@ -4241,6 +4321,39 @@ class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 exc,
             )
 
+    async def _setup_battery_ignore_until_subscription(self) -> None:
+        """Subscribe to battery low threshold ignore until datetime changes."""
+        ignore_until_entity_id = await self._find_battery_low_ignore_until_entity()
+        if ignore_until_entity_id:
+            try:
+                self._unsubscribe_ignore_until = async_track_state_change(
+                    self.hass,
+                    ignore_until_entity_id,
+                    self._battery_low_ignore_until_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to battery low threshold ignore until entity: %s",
+                    ignore_until_entity_id,
+                )
+
+                # Initialize with current state of ignore until entity
+                if ignore_until_state := self.hass.states.get(ignore_until_entity_id):
+                    self._battery_low_ignore_until_state_changed(
+                        ignore_until_entity_id, None, ignore_until_state
+                    )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to battery low threshold ignore until "
+                    "entity %s: %s",
+                    ignore_until_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.debug(
+                "Battery low threshold ignore until entity not found for %s",
+                self.location_name,
+            )
+
     async def async_added_to_hass(self) -> None:
         """Restore and initialize battery level monitoring on addition."""
         # Restore previous state
@@ -4253,13 +4366,16 @@ class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         # Update state based on initial value
         self._update_state()
 
-        # Set up subscription
+        # Set up subscriptions
         await self._setup_battery_subscription()
+        await self._setup_battery_ignore_until_subscription()
 
     async def async_will_remove_from_hass(self) -> None:
         """Clean up when entity is removed."""
         if self._unsubscribe:
             self._unsubscribe()
+        if self._unsubscribe_ignore_until:
+            self._unsubscribe_ignore_until()
 
 
 class LinkMonitorBinarySensor(BinarySensorEntity, RestoreEntity):

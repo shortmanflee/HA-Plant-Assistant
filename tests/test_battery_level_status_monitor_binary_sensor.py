@@ -532,3 +532,202 @@ class TestBatteryLevelStatusMonitorBinarySensorEdgeCases:
         sensor._current_battery_level = 0.01
         sensor._update_state()
         assert sensor._state is True
+
+
+class TestBatteryLevelStatusMonitorBinarySensorIgnoreUntil:
+    """Test ignore until datetime functionality."""
+
+    def test_update_state_with_active_ignore_until(self, sensor_config):
+        """Test that state is False when ignore_until is in the future."""
+        from datetime import timedelta
+
+        from homeassistant.util import dt as dt_util
+
+        sensor = BatteryLevelStatusMonitorBinarySensor(sensor_config)
+        sensor._current_battery_level = 5.0  # Low battery
+
+        # Set ignore_until to future
+        future_time = dt_util.now() + timedelta(hours=1)
+        sensor._ignore_until_datetime = future_time
+
+        sensor._update_state()
+
+        # Even though battery is low, state should be False due to ignore
+        assert sensor._state is False
+
+    def test_update_state_with_expired_ignore_until(self, sensor_config):
+        """Test that state respects battery when ignore_until is in the past."""
+        from datetime import timedelta
+
+        from homeassistant.util import dt as dt_util
+
+        sensor = BatteryLevelStatusMonitorBinarySensor(sensor_config)
+        sensor._current_battery_level = 5.0  # Low battery
+
+        # Set ignore_until to past
+        past_time = dt_util.now() - timedelta(hours=1)
+        sensor._ignore_until_datetime = past_time
+
+        sensor._update_state()
+
+        # ignore_until has expired, so state should be True (low battery)
+        assert sensor._state is True
+
+    def test_battery_low_ignore_until_state_changed_with_valid_datetime(
+        self, sensor_config
+    ):
+        """Test handling ignore until state change with valid datetime."""
+        from datetime import timedelta
+
+        from homeassistant.util import dt as dt_util
+
+        sensor = BatteryLevelStatusMonitorBinarySensor(sensor_config)
+        sensor.async_write_ha_state = MagicMock()
+        sensor._current_battery_level = 5.0  # Low battery
+
+        new_state = MagicMock()
+        future_time = dt_util.now() + timedelta(hours=2)
+        new_state.state = future_time.isoformat()
+
+        sensor._battery_low_ignore_until_state_changed(
+            "datetime.battery_low_threshold_ignore_until", None, new_state
+        )
+
+        assert sensor._ignore_until_datetime is not None
+        # State should be False due to active ignore
+        assert sensor._state is False
+        sensor.async_write_ha_state.assert_called_once()
+
+    def test_battery_low_ignore_until_state_changed_with_unavailable(
+        self, sensor_config
+    ):
+        """Test handling ignore until state change to unavailable."""
+        sensor = BatteryLevelStatusMonitorBinarySensor(sensor_config)
+        sensor.async_write_ha_state = MagicMock()
+        sensor._current_battery_level = 5.0  # Low battery
+
+        new_state = MagicMock()
+        new_state.state = STATE_UNAVAILABLE
+
+        sensor._battery_low_ignore_until_state_changed(
+            "datetime.battery_low_threshold_ignore_until", None, new_state
+        )
+
+        assert sensor._ignore_until_datetime is None
+        # Without ignore_until, low battery should trigger
+        assert sensor._state is True
+        sensor.async_write_ha_state.assert_called_once()
+
+    def test_battery_low_ignore_until_state_changed_with_unknown(self, sensor_config):
+        """Test handling ignore until state change to unknown."""
+        sensor = BatteryLevelStatusMonitorBinarySensor(sensor_config)
+        sensor.async_write_ha_state = MagicMock()
+        sensor._current_battery_level = 5.0  # Low battery
+
+        new_state = MagicMock()
+        new_state.state = STATE_UNKNOWN
+
+        sensor._battery_low_ignore_until_state_changed(
+            "datetime.battery_low_threshold_ignore_until", None, new_state
+        )
+
+        assert sensor._ignore_until_datetime is None
+        # Without ignore_until, low battery should trigger
+        assert sensor._state is True
+        sensor.async_write_ha_state.assert_called_once()
+
+    def test_battery_low_ignore_until_state_changed_with_none(self, sensor_config):
+        """Test handling ignore until state change to None."""
+        sensor = BatteryLevelStatusMonitorBinarySensor(sensor_config)
+        sensor.async_write_ha_state = MagicMock()
+        sensor._current_battery_level = 5.0  # Low battery
+
+        sensor._battery_low_ignore_until_state_changed(
+            "datetime.battery_low_threshold_ignore_until", None, None
+        )
+
+        assert sensor._ignore_until_datetime is None
+        # Without ignore_until, low battery should trigger
+        assert sensor._state is True
+        sensor.async_write_ha_state.assert_called_once()
+
+    def test_extra_state_attributes_with_active_ignore_until(self, sensor_config):
+        """Test extra state attributes when ignore_until is active."""
+        from datetime import timedelta
+
+        from homeassistant.util import dt as dt_util
+
+        sensor = BatteryLevelStatusMonitorBinarySensor(sensor_config)
+        sensor._state = False
+        sensor._current_battery_level = 5.0
+
+        future_time = dt_util.now() + timedelta(hours=1)
+        sensor._ignore_until_datetime = future_time
+
+        attributes = sensor.extra_state_attributes
+
+        assert "ignore_until" in attributes
+        assert attributes["currently_ignoring"] is True
+        assert "ignore_expires_in_seconds" not in attributes  # Not added to attributes
+        assert attributes["ignore_until"] == future_time.isoformat()
+
+    def test_extra_state_attributes_with_expired_ignore_until(self, sensor_config):
+        """Test extra state attributes when ignore_until has expired."""
+        from datetime import timedelta
+
+        from homeassistant.util import dt as dt_util
+
+        sensor = BatteryLevelStatusMonitorBinarySensor(sensor_config)
+        sensor._state = True
+        sensor._current_battery_level = 5.0
+
+        past_time = dt_util.now() - timedelta(hours=1)
+        sensor._ignore_until_datetime = past_time
+
+        attributes = sensor.extra_state_attributes
+
+        assert "ignore_until" in attributes
+        assert attributes["currently_ignoring"] is False
+        assert attributes["ignore_until"] == past_time.isoformat()
+
+    def test_extra_state_attributes_without_ignore_until(self, sensor_config):
+        """Test extra state attributes when no ignore_until is set."""
+        sensor = BatteryLevelStatusMonitorBinarySensor(sensor_config)
+        sensor._state = True
+        sensor._current_battery_level = 5.0
+        sensor._ignore_until_datetime = None
+
+        attributes = sensor.extra_state_attributes
+
+        assert "ignore_until" not in attributes
+        assert "currently_ignoring" not in attributes
+
+    @pytest.mark.asyncio
+    async def test_async_will_remove_from_hass_with_both_subscriptions(
+        self, sensor_config
+    ):
+        """Test async_will_remove_from_hass with both subscriptions active."""
+        sensor = BatteryLevelStatusMonitorBinarySensor(sensor_config)
+        mock_unsubscribe_battery = MagicMock()
+        mock_unsubscribe_ignore_until = MagicMock()
+        sensor._unsubscribe = mock_unsubscribe_battery
+        sensor._unsubscribe_ignore_until = mock_unsubscribe_ignore_until
+
+        await sensor.async_will_remove_from_hass()
+
+        mock_unsubscribe_battery.assert_called_once()
+        mock_unsubscribe_ignore_until.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_async_will_remove_from_hass_with_only_battery_subscription(
+        self, sensor_config
+    ):
+        """Test async_will_remove_from_hass with only battery subscription."""
+        sensor = BatteryLevelStatusMonitorBinarySensor(sensor_config)
+        mock_unsubscribe_battery = MagicMock()
+        sensor._unsubscribe = mock_unsubscribe_battery
+        sensor._unsubscribe_ignore_until = None
+
+        await sensor.async_will_remove_from_hass()
+
+        mock_unsubscribe_battery.assert_called_once()
