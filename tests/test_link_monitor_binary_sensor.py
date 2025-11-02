@@ -485,3 +485,128 @@ class TestLinkStatusBinarySensorProperty:
         assert attributes["message"] == "Monitoring device available"
         assert attributes["task"] is False
         assert attributes["device_available"] is True
+
+
+class TestLinkStatusBinarySensorIgnoreUntil:
+    """Test ignore until functionality for LinkStatusBinarySensor."""
+
+    def test_update_state_with_ignore_until_in_future(self, sensor_config):
+        """Test state update when ignore until is set to future time."""
+        from datetime import timedelta
+
+        from homeassistant.util import dt as dt_util
+
+        sensor = LinkStatusBinarySensor(sensor_config)
+        sensor._device_available = False  # Device is unavailable
+
+        # Set ignore until to future (2 hours from now)
+        future_time = dt_util.now() + timedelta(hours=2)
+        sensor._ignore_until_datetime = future_time
+
+        sensor._update_state()
+
+        # Should suppress problem alert even though device is unavailable
+        assert sensor._state is False
+
+    def test_update_state_with_ignore_until_in_past(self, sensor_config):
+        """Test state update when ignore until is set to past time."""
+        from datetime import timedelta
+
+        from homeassistant.util import dt as dt_util
+
+        sensor = LinkStatusBinarySensor(sensor_config)
+        sensor._device_available = False  # Device is unavailable
+
+        # Set ignore until to past (2 hours ago)
+        past_time = dt_util.now() - timedelta(hours=2)
+        sensor._ignore_until_datetime = past_time
+
+        sensor._update_state()
+
+        # Should report problem as ignore period has expired
+        assert sensor._state is True
+
+    def test_update_state_with_ignore_until_none(self, sensor_config):
+        """Test state update when ignore until is None."""
+        sensor = LinkStatusBinarySensor(sensor_config)
+        sensor._device_available = False  # Device is unavailable
+        sensor._ignore_until_datetime = None
+
+        sensor._update_state()
+
+        # Should report problem normally
+        assert sensor._state is True
+
+    def test_extra_state_attributes_with_ignore_until(self, sensor_config):
+        """Test extra state attributes include ignore until information."""
+        from datetime import timedelta
+
+        from homeassistant.util import dt as dt_util
+
+        sensor = LinkStatusBinarySensor(sensor_config)
+        sensor._state = True
+        sensor._device_available = False
+
+        # Set ignore until to future
+        future_time = dt_util.now() + timedelta(hours=1)
+        sensor._ignore_until_datetime = future_time
+
+        attributes = sensor.extra_state_attributes
+
+        assert "ignore_until" in attributes
+        assert attributes["ignore_until"] == future_time.isoformat()
+        assert attributes["currently_ignoring"] is True
+
+    def test_extra_state_attributes_without_ignore_until(self, sensor_config):
+        """Test extra state attributes without ignore until information."""
+        sensor = LinkStatusBinarySensor(sensor_config)
+        sensor._state = True
+        sensor._device_available = False
+        sensor._ignore_until_datetime = None
+
+        attributes = sensor.extra_state_attributes
+
+        assert "ignore_until" not in attributes
+        assert "currently_ignoring" not in attributes
+
+    def test_monitor_link_ignore_until_state_changed(self, sensor_config):
+        """Test handling of ignore until state changes."""
+        from datetime import timedelta
+
+        from homeassistant.util import dt as dt_util
+
+        sensor = LinkStatusBinarySensor(sensor_config)
+        sensor._device_available = False
+        sensor.async_write_ha_state = MagicMock()
+
+        # Mock new state
+        new_state = MagicMock()
+        new_state.state = (dt_util.now() + timedelta(hours=1)).isoformat()
+
+        # Call the state changed callback
+        sensor._monitor_link_ignore_until_state_changed(
+            "datetime.monitor_link_ignore_until", None, new_state
+        )
+
+        # Should parse datetime and update state
+        assert sensor._ignore_until_datetime is not None
+        sensor.async_write_ha_state.assert_called_once()
+
+    def test_monitor_link_ignore_until_state_changed_unavailable(self, sensor_config):
+        """Test handling when ignore until entity becomes unavailable."""
+        sensor = LinkStatusBinarySensor(sensor_config)
+        sensor._device_available = False
+        sensor.async_write_ha_state = MagicMock()
+
+        # Mock unavailable state
+        new_state = MagicMock()
+        new_state.state = "unavailable"
+
+        # Call the state changed callback
+        sensor._monitor_link_ignore_until_state_changed(
+            "datetime.monitor_link_ignore_until", None, new_state
+        )
+
+        # Should clear ignore until
+        assert sensor._ignore_until_datetime is None
+        sensor.async_write_ha_state.assert_called_once()

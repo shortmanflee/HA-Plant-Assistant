@@ -4716,8 +4716,10 @@ class LinkStatusBinarySensor(BinarySensorEntity, RestoreEntity):
 
         self._state: bool | None = None
         self._device_available: bool | None = None
+        self._ignore_until_datetime: Any = None
         self._unsubscribe: Any = None
         self._unsubscribe_entities: Any = None
+        self._unsubscribe_ignore_until: Any = None
 
     def _update_state(self) -> None:
         """Update binary sensor state based on device availability."""
@@ -4726,8 +4728,77 @@ class LinkStatusBinarySensor(BinarySensorEntity, RestoreEntity):
             self._state = None
             return
 
+        # Check if we're currently in the ignore period
+        if self._ignore_until_datetime is not None:
+            try:
+                now = dt_util.now()
+                if now < self._ignore_until_datetime:
+                    # Current time is before ignore until datetime, suppress problem
+                    self._state = False
+                    return
+            except (TypeError, AttributeError) as exc:
+                _LOGGER.debug(
+                    "Error checking monitor link ignore until datetime: %s", exc
+                )
+
         # Binary sensor is ON (problem) when device is unavailable
         self._state = not self._device_available
+
+    async def _find_monitor_link_ignore_until_entity(self) -> str | None:
+        """
+        Find monitor link ignore until datetime entity.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "datetime"
+                    and entity.unique_id
+                    and "monitor_link_ignore_until" in entity.unique_id
+                    and self.entry_id in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found monitor link ignore until datetime: %s",
+                        entity.entity_id,
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding monitor link ignore until entity: %s", exc)
+
+        return None
+
+    @callback
+    def _monitor_link_ignore_until_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle monitor link ignore until datetime changes."""
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._ignore_until_datetime = None
+        else:
+            try:
+                parsed_datetime = dt_util.parse_datetime(new_state.state)
+                if parsed_datetime is not None:
+                    # Ensure timezone info
+                    if parsed_datetime.tzinfo is None:
+                        parsed_datetime = parsed_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+                    self._ignore_until_datetime = parsed_datetime
+                else:
+                    self._ignore_until_datetime = None
+            except (ValueError, TypeError) as exc:
+                _LOGGER.debug(
+                    "Error parsing monitor link ignore until datetime: %s", exc
+                )
+                self._ignore_until_datetime = None
+
+        self._update_state()
+        self.async_write_ha_state()
 
     @callback
     def _device_availability_changed(self, device_id: str, available: bool) -> None:  # noqa: FBT001
@@ -4859,7 +4930,7 @@ class LinkStatusBinarySensor(BinarySensorEntity, RestoreEntity):
             else "Monitoring device available"
         )
 
-        return {
+        attrs = {
             "type": alert_type,
             "message": status_message,
             "task": self._state is True,
@@ -4870,6 +4941,14 @@ class LinkStatusBinarySensor(BinarySensorEntity, RestoreEntity):
             "device_available": self._device_available,
             "monitoring_device_id": self.monitoring_device_id,
         }
+
+        # Add ignore until information if available
+        if self._ignore_until_datetime:
+            now = dt_util.now()
+            attrs["ignore_until"] = self._ignore_until_datetime.isoformat()
+            attrs["currently_ignoring"] = now < self._ignore_until_datetime
+
+        return attrs
 
     @property
     def available(self) -> bool:
@@ -4981,6 +5060,29 @@ class LinkStatusBinarySensor(BinarySensorEntity, RestoreEntity):
                 exc,
             )
 
+        # Subscribe to monitor link ignore until datetime entity
+        try:
+            ignore_until_entity_id = await self._find_monitor_link_ignore_until_entity()
+            if ignore_until_entity_id:
+                self._unsubscribe_ignore_until = async_track_state_change(
+                    self.hass,
+                    ignore_until_entity_id,
+                    self._monitor_link_ignore_until_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to monitor link ignore until entity %s",
+                    ignore_until_entity_id,
+                )
+            else:
+                _LOGGER.debug(
+                    "Monitor link ignore until datetime entity not found for %s",
+                    self.location_name,
+                )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug(
+                "Failed to subscribe to monitor link ignore until entity: %s", exc
+            )
+
         # Update initial state
         self._update_state()
         self.async_write_ha_state()
@@ -4991,6 +5093,11 @@ class LinkStatusBinarySensor(BinarySensorEntity, RestoreEntity):
             self._unsubscribe()
         if hasattr(self, "_unsubscribe_entities") and self._unsubscribe_entities:
             self._unsubscribe_entities()
+        if (
+            hasattr(self, "_unsubscribe_ignore_until")
+            and self._unsubscribe_ignore_until
+        ):
+            self._unsubscribe_ignore_until()
 
 
 class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):

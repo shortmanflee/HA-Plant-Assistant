@@ -75,6 +75,10 @@ def _collect_expected_datetime_entities(
     # Battery low threshold ignore until entity
     expected.add(f"{DOMAIN}_{subentry.subentry_id}_battery_low_threshold_ignore_until")
 
+    # Monitor link ignore until entity
+    if has_monitoring_device:
+        expected.add(f"{DOMAIN}_{subentry.subentry_id}_monitor_link_ignore_until")
+
     return expected
 
 
@@ -166,6 +170,7 @@ async def _cleanup_orphaned_datetime_entities(  # noqa: PLR0912
                 "_daily_light_integral_low_threshold_ignore_until",
                 "_battery_low_threshold_ignore_until",
                 "_plant_count_ignore_until",
+                "_monitor_link_ignore_until",
             ]
 
             if any(kw in unique_id for kw in datetime_keywords) and (
@@ -543,6 +548,22 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
                     subentry_data=subentry.data,
                 )
                 subentry_datetime_entities.append(battery_low_ignore_entity)
+
+                # Create monitor link ignore until entity if monitoring device exists
+                if has_monitoring_device:
+                    _LOGGER.debug(
+                        "Creating monitor link ignore until datetime entity "
+                        "for subentry %s with monitoring device %s",
+                        subentry_id,
+                        monitoring_device_id,
+                    )
+
+                    monitor_link_ignore_entity = MonitorLinkIgnoreUntilEntity(
+                        subentry_id=subentry.subentry_id,
+                        location_name=location_name,
+                        subentry_data=subentry.data,
+                    )
+                    subentry_datetime_entities.append(monitor_link_ignore_entity)
 
             # Add entities for this subentry with proper subentry association
             if subentry_datetime_entities:
@@ -2279,4 +2300,154 @@ class BatteryLevelLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     def available(self) -> bool:
         """Return True if entity is available."""
         # Battery entity should always be available as long as the location exists
+        return True
+
+
+class MonitorLinkIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
+    """
+    Datetime entity for managing monitor link connectivity issue ignoring.
+
+    This entity allows users to temporarily suppress "monitor link unavailable"
+    alerts until a specified datetime. Useful when performing maintenance on the
+    monitoring device.
+    """
+
+    def __init__(
+        self,
+        subentry_id: str,
+        location_name: str,
+        subentry_data: dict[str, Any],
+    ) -> None:
+        """
+        Initialize the Monitor Link Ignore Until datetime entity.
+
+        Args:
+            subentry_id: The subentry identifier.
+            location_name: The name of the plant location.
+            subentry_data: The subentry configuration data.
+
+        """
+        self._subentry_id = subentry_id
+        self._location_name = location_name
+        self._subentry_data = subentry_data
+        self._attr_native_value: py_datetime.datetime | None = None
+
+        # Set up entity attributes
+        self._attr_name = f"{location_name} Monitor Link Ignore Until"
+        self._attr_unique_id = f"{DOMAIN}_{subentry_id}_monitor_link_ignore_until"
+        self._attr_has_entity_name = False
+        self._attr_icon = "mdi:link-off"
+        # Device created by device registry with config_subentry_id
+        # Following OpenAI integration pattern
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, subentry_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location",
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Restore state when entity is added to hass."""
+        # Restore previous state if available
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                # Parse the datetime string from the last state
+                restored_datetime = dt_util.parse_datetime(last_state.state)
+                if restored_datetime is not None:
+                    # Ensure timezone info
+                    if restored_datetime.tzinfo is None:
+                        restored_datetime = restored_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+
+                    self._attr_native_value = restored_datetime
+                    _LOGGER.info(
+                        "🔄 Monitor link ignore until entity %s: restored state %s",
+                        self._location_name,
+                        restored_datetime.isoformat(),
+                    )
+                else:
+                    _LOGGER.warning(
+                        "⚠️ Monitor link ignore until entity %s: "
+                        "could not parse datetime from %s",
+                        self._location_name,
+                        last_state.state,
+                    )
+            except (ValueError, TypeError) as e:
+                _LOGGER.warning(
+                    "⚠️ Monitor link ignore until entity %s: "
+                    "could not restore state from %s: %s",
+                    self._location_name,
+                    last_state.state,
+                    e,
+                )
+        else:
+            # Initialize to current date at midnight
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
+            _LOGGER.info(
+                "🆕 Monitor link ignore until entity %s: "
+                "initialized to current date at midnight (%s)",
+                self._location_name,
+                midnight.isoformat(),
+            )
+
+    @property
+    def native_value(self) -> py_datetime.datetime | None:
+        """Return the current datetime value."""
+        return self._attr_native_value
+
+    async def async_set_value(self, value: py_datetime.datetime) -> None:
+        """Set the datetime value."""
+        # Ensure the datetime has timezone info
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt_util.get_default_time_zone())
+
+        self._attr_native_value = value
+        self.async_write_ha_state()
+
+        _LOGGER.debug(
+            "Set monitor link ignore until datetime for %s to %s",
+            self._location_name,
+            value.isoformat(),
+        )
+
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        attrs = {
+            "location_name": self._location_name,
+            "subentry_id": self._subentry_id,
+            "monitoring_device_id": self._subentry_data.get("monitoring_device_id"),
+        }
+
+        # Add information about whether we're currently in ignore period
+        if self._attr_native_value:
+            now = dt_util.now()
+            is_ignoring = now < self._attr_native_value
+            attrs["currently_ignoring"] = is_ignoring
+            attrs["ignore_expires_in_seconds"] = (
+                int((self._attr_native_value - now).total_seconds())
+                if is_ignoring
+                else 0
+            )
+
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        # Monitor link entity should always be available as long as the location exists
         return True
