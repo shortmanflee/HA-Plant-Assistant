@@ -68,6 +68,10 @@ def _collect_expected_datetime_entities(
             f"{DOMAIN}_{subentry.subentry_id}_soil_moisture_high_threshold_ignore_until"
         )
 
+    # Plant count ignore until entity
+    if has_plant_slots:
+        expected.add(f"{DOMAIN}_{subentry.subentry_id}_plant_count_ignore_until")
+
     return expected
 
 
@@ -494,6 +498,29 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
                         subentry_id,
                         bool(illuminance_entity_id),
                         has_plant_slots,
+                    )
+
+                # Create plant count ignore until entity if slots exist
+                if has_plant_slots:
+                    _LOGGER.debug(
+                        "Creating plant count ignore until datetime entity "
+                        "for subentry %s with configured plant slots",
+                        subentry_id,
+                    )
+
+                    plant_count_ignore_entity = PlantCountIgnoreUntilEntity(
+                        hass=hass,
+                        entry_id=entry.entry_id,
+                        subentry_id=subentry.subentry_id,
+                        location_name=location_name,
+                        subentry_data=subentry.data,
+                    )
+                    subentry_datetime_entities.append(plant_count_ignore_entity)
+                else:
+                    _LOGGER.debug(
+                        "Skipping plant count ignore until entity "
+                        "for subentry %s: no plant slots configured",
+                        subentry_id,
                     )
 
             # Add entities for this subentry with proper subentry association
@@ -1923,7 +1950,7 @@ class DailyLightIntegralLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEnt
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
-        attrs = {
+        attrs: dict[str, Any] = {
             "location_name": self._location_name,
             "subentry_id": self._subentry_id,
             "illuminance_entity_id": self._illuminance_entity_id,
@@ -1949,3 +1976,142 @@ class DailyLightIntegralLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEnt
         has_illuminance_sensor = bool(self._illuminance_entity_id)
         has_plant_slots = _has_plants_in_slots(self._subentry_data)
         return has_illuminance_sensor and has_plant_slots
+
+
+class PlantCountIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
+    """Datetime entity for plant count ignore until."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        subentry_id: str,
+        location_name: str,
+        subentry_data: Mapping[str, Any],
+    ) -> None:
+        """Initialize the plant count ignore until datetime entity."""
+        self._hass = hass
+        self._entry_id = entry_id
+        self._subentry_id = subentry_id
+        self._location_name = location_name
+        self._subentry_data = subentry_data
+        self._attr_native_value: py_datetime.datetime | None = None
+
+        # Set up entity attributes
+        self._attr_name = f"{location_name} Plant Count Ignore Until"
+        self._attr_unique_id = f"{DOMAIN}_{subentry_id}_plant_count_ignore_until"
+        self._attr_has_entity_name = False
+        self._attr_icon = "mdi:flower-tulip"
+        # Device created by device registry with config_subentry_id
+        # Following OpenAI integration pattern
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, subentry_id)},
+            name=location_name,
+            manufacturer="Plant Assistant",
+            model="Plant Location",
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Restore state when entity is added to hass."""
+        # Restore previous state if available
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                # Parse the datetime string from the last state
+                restored_datetime = dt_util.parse_datetime(last_state.state)
+                if restored_datetime is not None:
+                    # Ensure timezone info
+                    if restored_datetime.tzinfo is None:
+                        restored_datetime = restored_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+
+                    self._attr_native_value = restored_datetime
+                    _LOGGER.info(
+                        "🔄 Plant count ignore until entity %s: restored state %s",
+                        self._location_name,
+                        restored_datetime.isoformat(),
+                    )
+                else:
+                    _LOGGER.warning(
+                        "⚠️ Plant count ignore until entity %s: "
+                        "could not parse datetime from %s",
+                        self._location_name,
+                        last_state.state,
+                    )
+            except (ValueError, TypeError) as e:
+                _LOGGER.warning(
+                    "⚠️ Plant count ignore until entity %s: "
+                    "could not restore state from %s: %s",
+                    self._location_name,
+                    last_state.state,
+                    e,
+                )
+        else:
+            # Initialize to current date at midnight
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
+            _LOGGER.info(
+                "🆕 Plant count ignore until entity %s: "
+                "initialized to current date at midnight (%s)",
+                self._location_name,
+                midnight.isoformat(),
+            )
+
+    @property
+    def native_value(self) -> py_datetime.datetime | None:
+        """Return the current datetime value."""
+        return self._attr_native_value
+
+    async def async_set_value(self, value: py_datetime.datetime) -> None:
+        """Set the datetime value."""
+        # Ensure the datetime has timezone info
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt_util.get_default_time_zone())
+
+        self._attr_native_value = value
+        self.async_write_ha_state()
+
+        _LOGGER.debug(
+            "Set plant count ignore until datetime for %s to %s",
+            self._location_name,
+            value.isoformat(),
+        )
+
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        attrs: dict[str, Any] = {
+            "location_name": self._location_name,
+            "subentry_id": self._subentry_id,
+        }
+
+        # Add information about whether we're currently in ignore period
+        if self._attr_native_value:
+            now = dt_util.now()
+            is_ignoring = now < self._attr_native_value
+            attrs["currently_ignoring"] = is_ignoring
+            attrs["ignore_expires_in_seconds"] = (
+                int((self._attr_native_value - now).total_seconds())
+                if is_ignoring
+                else 0
+            )
+
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        # Available if plant slots are configured
+        return _has_plants_in_slots(self._subentry_data)

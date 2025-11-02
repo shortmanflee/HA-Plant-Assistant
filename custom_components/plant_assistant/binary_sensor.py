@@ -234,8 +234,39 @@ class PlantCountStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     def _update_state(self) -> None:
         """Update binary sensor state based on plant count."""
-        # Binary sensor is ON (problem) when plant count is 0
-        self._state = self._plant_count == 0
+        # Check if we're in an ignore period
+        is_ignoring = self._is_currently_ignoring()
+
+        # Binary sensor is ON (problem) when plant count is 0 and NOT ignoring
+        self._state = self._plant_count == 0 and not is_ignoring
+
+    def _is_currently_ignoring(self) -> bool:
+        """
+        Check if plant count status is currently being ignored.
+
+        Check if plant count status is currently being ignored until a
+        certain datetime.
+        """
+        # Try to get the plant count ignore until entity state
+        ignore_until_entity_id = (
+            f"datetime.{self.location_name.lower().replace(' ', '_')}"
+            f"_plant_count_ignore_until"
+        )
+
+        state = self.hass.states.get(ignore_until_entity_id)
+        if state and state.state not in ("unknown", "unavailable", None):
+            try:
+                # Parse the ignore until datetime
+                ignore_until = dt_util.parse_datetime(state.state)
+                if ignore_until:
+                    now = dt_util.now()
+                    # Check if current time is before the ignore until time
+                    return now < ignore_until
+            except (ValueError, TypeError):
+                # If we can't parse the datetime, don't ignore
+                pass
+
+        return False
 
     @property
     def is_on(self) -> bool | None:
@@ -252,7 +283,7 @@ class PlantCountStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return entity specific state attributes."""
-        return {
+        attrs: dict[str, Any] = {
             "type": "Warning",
             "message": "No Plants Assigned",
             "task": True,
@@ -261,7 +292,9 @@ class PlantCountStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self.irrigation_zone_name.lower().replace(" ", "_"),
             ],
             "plant_count": self._plant_count,
+            "currently_ignoring": self._is_currently_ignoring(),
         }
+        return attrs
 
     @property
     def available(self) -> bool:
