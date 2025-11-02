@@ -52,8 +52,8 @@ class TestLinkMonitorBinarySensorInit:
         """Test initialization with valid parameters."""
         sensor = LinkMonitorBinarySensor(sensor_config)
 
-        assert sensor._attr_name == "Test Garden Link"
-        expected_unique_id = f"{DOMAIN}_test_entry_123_test_garden_link_monitor"
+        assert sensor._attr_name == "Test Garden Monitor Link"
+        expected_unique_id = f"{DOMAIN}_test_entry_123_test_garden_monitor_link"
         assert sensor._attr_unique_id == expected_unique_id
         assert sensor.monitoring_device_id == "device_monitor_456"
         assert sensor.location_name == "Test Garden"
@@ -331,8 +331,8 @@ class TestLinkStatusBinarySensorInit:
         """Test initialization with valid parameters."""
         sensor = LinkStatusBinarySensor(sensor_config)
 
-        assert sensor._attr_name == "Test Garden Link Status"
-        expected_unique_id = f"{DOMAIN}_test_entry_123_test_garden_link_status_monitor"
+        assert sensor._attr_name == "Test Garden Monitor Link Status"
+        expected_unique_id = f"{DOMAIN}_test_entry_123_test_garden_monitor_link_status"
         assert sensor._attr_unique_id == expected_unique_id
         assert sensor.monitoring_device_id == "device_monitor_456"
         assert sensor.location_name == "Test Garden"
