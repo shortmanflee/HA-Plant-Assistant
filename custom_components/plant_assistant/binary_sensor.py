@@ -172,6 +172,17 @@ class BatteryLevelStatusMonitorConfig:
 
 
 @dataclass
+class DailyLightIntegralStatusMonitorConfig:
+    """Configuration for DailyLightIntegralStatusMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    location_device_id: str | None = None
+
+
+@dataclass
 class PlantCountStatusMonitorConfig:
     """Configuration for PlantCountStatusMonitorBinarySensor."""
 
@@ -4833,6 +4844,655 @@ class LinkStatusBinarySensor(BinarySensorEntity, RestoreEntity):
             self._unsubscribe_entities()
 
 
+class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that monitors Daily Light Integral (DLI) status against thresholds.
+
+    This sensor turns ON (problem detected) when the DLI Weekly Average is outside
+    the acceptable range (above maximum or below minimum). The status attribute
+    indicates whether the issue is 'above', 'below', or 'normal'.
+
+    The sensor respects DLI High/Low Threshold Ignore Until datetime entities,
+    temporarily suppressing problem alerts when the ignore period is active.
+    """
+
+    def __init__(self, config: DailyLightIntegralStatusMonitorConfig) -> None:
+        """
+        Initialize the Daily Light Integral Status Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.location_device_id = config.location_device_id
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Daily Light Integral Status"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_dli_status"
+        )
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+        self._state: bool | None = None
+        self._dli_status: str = "normal"  # 'above', 'below', or 'normal'
+        self._weekly_average_dli: float | None = None
+        self._min_dli: float | None = None
+        self._max_dli: float | None = None
+        self._high_threshold_ignore_until_datetime: Any = None
+        self._low_threshold_ignore_until_datetime: Any = None
+        self._unsubscribe: Any = None
+        self._unsubscribe_weekly_avg: Any = None
+        self._unsubscribe_min_dli: Any = None
+        self._unsubscribe_max_dli: Any = None
+        self._unsubscribe_high_threshold_ignore_until: Any = None
+        self._unsubscribe_low_threshold_ignore_until: Any = None
+
+    def _parse_float(self, value: Any) -> float | None:
+        """Parse a value to float, handling unavailable/unknown states."""
+        if value is None or value in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on DLI and thresholds."""
+        # If any required value is unavailable, set state to None (sensor unavailable)
+        if (
+            self._weekly_average_dli is None
+            or self._min_dli is None
+            or self._max_dli is None
+        ):
+            self._state = None
+            self._dli_status = "normal"
+            return
+
+        # Check if we're in an ignore period
+        if self._weekly_average_dli > self._max_dli:
+            # High DLI condition
+            if self._high_threshold_ignore_until_datetime is not None:
+                try:
+                    now = dt_util.now()
+                    if now < self._high_threshold_ignore_until_datetime:
+                        # Currently ignoring high DLI threshold
+                        self._state = False
+                        self._dli_status = "normal"
+                        return
+                except (TypeError, AttributeError) as exc:
+                    _LOGGER.debug(
+                        "Error checking DLI high threshold ignore until datetime: %s",
+                        exc,
+                    )
+            self._state = True
+            self._dli_status = "above"
+        elif self._weekly_average_dli < self._min_dli:
+            # Low DLI condition
+            if self._low_threshold_ignore_until_datetime is not None:
+                try:
+                    now = dt_util.now()
+                    if now < self._low_threshold_ignore_until_datetime:
+                        # Currently ignoring low DLI threshold
+                        self._state = False
+                        self._dli_status = "normal"
+                        return
+                except (TypeError, AttributeError) as exc:
+                    _LOGGER.debug(
+                        "Error checking DLI low threshold ignore until datetime: %s",
+                        exc,
+                    )
+            self._state = True
+            self._dli_status = "below"
+        else:
+            # Within acceptable range
+            self._state = False
+            self._dli_status = "normal"
+
+    async def _find_weekly_average_dli_sensor(self) -> str | None:
+        """
+        Find the weekly average DLI sensor for this location.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id
+                    and f"{location_name_safe}_daily_light_integral_weekly_average"
+                    in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found weekly average DLI sensor: %s", entity.entity_id
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding weekly average DLI sensor: %s", exc)
+
+        return None
+
+    async def _find_min_dli_sensor(self) -> str | None:
+        """
+        Find the minimum DLI aggregated sensor for this location.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id
+                    and f"{location_name_safe}_min_dli" in entity.unique_id
+                ):
+                    _LOGGER.debug("Found minimum DLI sensor: %s", entity.entity_id)
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding minimum DLI sensor: %s", exc)
+
+        return None
+
+    async def _find_max_dli_sensor(self) -> str | None:
+        """
+        Find the maximum DLI aggregated sensor for this location.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id
+                    and f"{location_name_safe}_max_dli" in entity.unique_id
+                ):
+                    _LOGGER.debug("Found maximum DLI sensor: %s", entity.entity_id)
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding maximum DLI sensor: %s", exc)
+
+        return None
+
+    async def _find_high_threshold_ignore_until_entity(self) -> str | None:
+        """
+        Find DLI high threshold ignore until datetime entity.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "datetime"
+                    and entity.unique_id
+                    and "dli_high_threshold_ignore_until" in entity.unique_id
+                    and self.entry_id in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found DLI high threshold ignore until datetime: %s",
+                        entity.entity_id,
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug(
+                "Error finding DLI high threshold ignore until entity: %s", exc
+            )
+
+        return None
+
+    async def _find_low_threshold_ignore_until_entity(self) -> str | None:
+        """
+        Find DLI low threshold ignore until datetime entity.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "datetime"
+                    and entity.unique_id
+                    and "dli_low_threshold_ignore_until" in entity.unique_id
+                    and self.entry_id in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found DLI low threshold ignore until datetime: %s",
+                        entity.entity_id,
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug(
+                "Error finding DLI low threshold ignore until entity: %s", exc
+            )
+
+        return None
+
+    @callback
+    def _weekly_average_dli_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle weekly average DLI sensor state changes."""
+        if new_state is None:
+            self._weekly_average_dli = None
+        else:
+            self._weekly_average_dli = self._parse_float(new_state.state)
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _min_dli_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle minimum DLI threshold changes."""
+        if new_state is None:
+            self._min_dli = None
+        else:
+            self._min_dli = self._parse_float(new_state.state)
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _max_dli_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle maximum DLI threshold changes."""
+        if new_state is None:
+            self._max_dli = None
+        else:
+            self._max_dli = self._parse_float(new_state.state)
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _high_threshold_ignore_until_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle DLI high threshold ignore until datetime changes."""
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._high_threshold_ignore_until_datetime = None
+        else:
+            try:
+                parsed_datetime = dt_util.parse_datetime(new_state.state)
+                if parsed_datetime is not None:
+                    # Ensure timezone info
+                    if parsed_datetime.tzinfo is None:
+                        parsed_datetime = parsed_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+                    self._high_threshold_ignore_until_datetime = parsed_datetime
+                else:
+                    self._high_threshold_ignore_until_datetime = None
+            except (ValueError, TypeError) as exc:
+                _LOGGER.debug(
+                    "Error parsing DLI high threshold ignore until datetime: %s", exc
+                )
+                self._high_threshold_ignore_until_datetime = None
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _low_threshold_ignore_until_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle DLI low threshold ignore until datetime changes."""
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._low_threshold_ignore_until_datetime = None
+        else:
+            try:
+                parsed_datetime = dt_util.parse_datetime(new_state.state)
+                if parsed_datetime is not None:
+                    # Ensure timezone info
+                    if parsed_datetime.tzinfo is None:
+                        parsed_datetime = parsed_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+                    self._low_threshold_ignore_until_datetime = parsed_datetime
+                else:
+                    self._low_threshold_ignore_until_datetime = None
+            except (ValueError, TypeError) as exc:
+                _LOGGER.debug(
+                    "Error parsing DLI low threshold ignore until datetime: %s", exc
+                )
+                self._low_threshold_ignore_until_datetime = None
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if DLI is outside acceptable range (problem)."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state and status."""
+        if self._state is True:
+            if self._dli_status == "above":
+                return "mdi:white-balance-sunny"
+            if self._dli_status == "below":
+                return "mdi:sun-compass"
+        return "mdi:counter"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        # Alert type based on DLI status
+        alert_type = "Critical"
+        status_message = f"Daily Light Integral {self._dli_status.capitalize()}"
+
+        attrs = {
+            "type": alert_type,
+            "message": status_message,
+            "task": True,
+            "tags": [
+                self.location_name.lower().replace(" ", "_"),
+                self.irrigation_zone_name.lower().replace(" ", "_"),
+            ],
+            "dli_status": self._dli_status,
+            "weekly_average_dli": self._weekly_average_dli,
+            "minimum_dli_threshold": self._min_dli,
+            "maximum_dli_threshold": self._max_dli,
+        }
+
+        # Add high threshold ignore until information if available
+        if self._high_threshold_ignore_until_datetime:
+            now = dt_util.now()
+            attrs["high_threshold_ignore_until"] = (
+                self._high_threshold_ignore_until_datetime.isoformat()
+            )
+            attrs["currently_ignoring_high"] = (
+                now < self._high_threshold_ignore_until_datetime
+            )
+
+        # Add low threshold ignore until information if available
+        if self._low_threshold_ignore_until_datetime:
+            now = dt_util.now()
+            attrs["low_threshold_ignore_until"] = (
+                self._low_threshold_ignore_until_datetime.isoformat()
+            )
+            attrs["currently_ignoring_low"] = (
+                now < self._low_threshold_ignore_until_datetime
+            )
+
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Entity is available if we can access the sensor registry
+        return True
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                self._dli_status = last_state.attributes.get("dli_status", "normal")
+                _LOGGER.info(
+                    "Restored DLI status for %s: %s (%s)",
+                    self.location_name,
+                    self._state,
+                    self._dli_status,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def _setup_weekly_average_dli_subscription(self) -> None:
+        """Find and subscribe to weekly average DLI sensor."""
+        weekly_avg_dli_entity_id = await self._find_weekly_average_dli_sensor()
+        if weekly_avg_dli_entity_id:
+            if weekly_avg_state := self.hass.states.get(weekly_avg_dli_entity_id):
+                self._weekly_average_dli = self._parse_float(weekly_avg_state.state)
+
+            try:
+                self._unsubscribe_weekly_avg = async_track_state_change(
+                    self.hass,
+                    weekly_avg_dli_entity_id,
+                    self._weekly_average_dli_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to weekly average DLI sensor: %s",
+                    weekly_avg_dli_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to weekly average DLI sensor %s: %s",
+                    weekly_avg_dli_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.warning(
+                "Weekly average DLI sensor not found for location %s",
+                self.location_name,
+            )
+
+    async def _setup_min_dli_subscription(self) -> None:
+        """Find and subscribe to minimum DLI sensor."""
+        min_dli_entity_id = await self._find_min_dli_sensor()
+        if min_dli_entity_id:
+            if min_dli_state := self.hass.states.get(min_dli_entity_id):
+                self._min_dli = self._parse_float(min_dli_state.state)
+
+            try:
+                self._unsubscribe_min_dli = async_track_state_change(
+                    self.hass,
+                    min_dli_entity_id,
+                    self._min_dli_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to minimum DLI sensor: %s",
+                    min_dli_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to minimum DLI sensor %s: %s",
+                    min_dli_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.warning(
+                "Minimum DLI sensor not found for location %s",
+                self.location_name,
+            )
+
+    async def _setup_max_dli_subscription(self) -> None:
+        """Find and subscribe to maximum DLI sensor."""
+        max_dli_entity_id = await self._find_max_dli_sensor()
+        if max_dli_entity_id:
+            if max_dli_state := self.hass.states.get(max_dli_entity_id):
+                self._max_dli = self._parse_float(max_dli_state.state)
+
+            try:
+                self._unsubscribe_max_dli = async_track_state_change(
+                    self.hass,
+                    max_dli_entity_id,
+                    self._max_dli_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to maximum DLI sensor: %s",
+                    max_dli_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to maximum DLI sensor %s: %s",
+                    max_dli_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.warning(
+                "Maximum DLI sensor not found for location %s",
+                self.location_name,
+            )
+
+    async def _setup_high_threshold_ignore_until_subscription(self) -> None:
+        """Find and subscribe to DLI high threshold ignore until datetime."""
+        ignore_until_entity_id = await self._find_high_threshold_ignore_until_entity()
+        if ignore_until_entity_id:
+            if ignore_until_state := self.hass.states.get(ignore_until_entity_id):
+                try:
+                    parsed_datetime = dt_util.parse_datetime(ignore_until_state.state)
+                    if parsed_datetime is not None:
+                        if parsed_datetime.tzinfo is None:
+                            parsed_datetime = parsed_datetime.replace(
+                                tzinfo=dt_util.get_default_time_zone()
+                            )
+                        self._high_threshold_ignore_until_datetime = parsed_datetime
+                except (ValueError, TypeError) as exc:
+                    _LOGGER.debug(
+                        "Error parsing DLI high threshold ignore until datetime: %s",
+                        exc,
+                    )
+
+            try:
+                self._unsubscribe_high_threshold_ignore_until = (
+                    async_track_state_change(
+                        self.hass,
+                        ignore_until_entity_id,
+                        self._high_threshold_ignore_until_state_changed,
+                    )
+                )
+                _LOGGER.debug(
+                    "Subscribed to DLI high threshold ignore until datetime: %s",
+                    ignore_until_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to DLI high threshold ignore until "
+                    "entity %s: %s",
+                    ignore_until_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.debug(
+                "DLI high threshold ignore until datetime not found for location %s",
+                self.location_name,
+            )
+
+    async def _setup_low_threshold_ignore_until_subscription(self) -> None:
+        """Find and subscribe to DLI low threshold ignore until datetime."""
+        ignore_until_entity_id = await self._find_low_threshold_ignore_until_entity()
+        if ignore_until_entity_id:
+            if ignore_until_state := self.hass.states.get(ignore_until_entity_id):
+                try:
+                    parsed_datetime = dt_util.parse_datetime(ignore_until_state.state)
+                    if parsed_datetime is not None:
+                        if parsed_datetime.tzinfo is None:
+                            parsed_datetime = parsed_datetime.replace(
+                                tzinfo=dt_util.get_default_time_zone()
+                            )
+                        self._low_threshold_ignore_until_datetime = parsed_datetime
+                except (ValueError, TypeError) as exc:
+                    _LOGGER.debug(
+                        "Error parsing DLI low threshold ignore until datetime: %s", exc
+                    )
+
+            try:
+                self._unsubscribe_low_threshold_ignore_until = async_track_state_change(
+                    self.hass,
+                    ignore_until_entity_id,
+                    self._low_threshold_ignore_until_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to DLI low threshold ignore until datetime: %s",
+                    ignore_until_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to DLI low threshold ignore until "
+                    "entity %s: %s",
+                    ignore_until_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.debug(
+                "DLI low threshold ignore until datetime not found for location %s",
+                self.location_name,
+            )
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass and subscribe to state changes."""
+        # Restore previous state if available
+        await super().async_added_to_hass()
+        await self._restore_previous_state()
+
+        # Set up subscriptions
+        await self._setup_weekly_average_dli_subscription()
+        await self._setup_min_dli_subscription()
+        await self._setup_max_dli_subscription()
+        await self._setup_high_threshold_ignore_until_subscription()
+        await self._setup_low_threshold_ignore_until_subscription()
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe_weekly_avg:
+            self._unsubscribe_weekly_avg()
+        if self._unsubscribe_min_dli:
+            self._unsubscribe_min_dli()
+        if self._unsubscribe_max_dli:
+            self._unsubscribe_max_dli()
+        if (
+            hasattr(self, "_unsubscribe_high_threshold_ignore_until")
+            and self._unsubscribe_high_threshold_ignore_until
+        ):
+            self._unsubscribe_high_threshold_ignore_until()
+        if (
+            hasattr(self, "_unsubscribe_low_threshold_ignore_until")
+            and self._unsubscribe_low_threshold_ignore_until
+        ):
+            self._unsubscribe_low_threshold_ignore_until()
+
+
 def _find_soil_moisture_entity(hass: HomeAssistant, location_name: str) -> str | None:
     """Find soil moisture entity from mirrored sensors."""
     ent_reg = er.async_get(hass)
@@ -5105,6 +5765,29 @@ async def _create_battery_sensor(
     return sensor
 
 
+async def _create_dli_sensor(
+    hass: HomeAssistant,
+    subentry_id: str,
+    location_name: str,
+    irrigation_zone_name: str,
+    location_device_id: str | None,
+) -> BinarySensorEntity | None:
+    """Create Daily Light Integral status monitor sensor."""
+    dli_config = DailyLightIntegralStatusMonitorConfig(
+        hass=hass,
+        entry_id=subentry_id,
+        location_name=location_name,
+        irrigation_zone_name=irrigation_zone_name,
+        location_device_id=location_device_id,
+    )
+    sensor = DailyLightIntegralStatusMonitorBinarySensor(dli_config)
+    _LOGGER.debug(
+        "Created Daily Light Integral status monitor binary sensor for %s",
+        location_name,
+    )
+    return sensor
+
+
 async def _create_plant_count_sensor(
     config: PlantCountStatusMonitorConfig,
 ) -> BinarySensorEntity | None:
@@ -5230,6 +5913,12 @@ async def _create_subentry_sensors(
     )
     if battery_sensor:
         subentry_binary_sensors.append(battery_sensor)
+
+    dli_sensor = await _create_dli_sensor(
+        hass, subentry_id, location_name, irrigation_zone_name, location_device_id
+    )
+    if dli_sensor:
+        subentry_binary_sensors.append(dli_sensor)
 
     # Create link monitors
     link_monitor_config = LinkMonitorConfig(
