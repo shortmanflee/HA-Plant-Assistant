@@ -1,5 +1,6 @@
 """Tests for Humidity Status Monitor binary sensor."""
 
+from datetime import UTC
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -560,3 +561,338 @@ class TestHumidityStatusMonitorBinarySensorStateCallbacks:
 
         assert sensor._above_threshold_hours is None
         assert sensor._state is None
+
+
+class TestHumidityStatusMonitorBinarySensorIgnoreUntil:
+    """Test ignore until datetime functionality."""
+
+    def test_sensor_not_on_when_high_ignore_until_in_future(self, mock_hass):
+        """Test that sensor is OFF when high ignore until datetime is in the future."""
+        from datetime import datetime, timedelta
+
+        config = HumidityStatusMonitorConfig(
+            hass=mock_hass,
+            entry_id="test_entry",
+            location_name="Test Garden",
+            irrigation_zone_name="Zone A",
+            humidity_entity_id="sensor.test_humidity",
+            location_device_id="test_location",
+        )
+        sensor = HumidityStatusMonitorBinarySensor(config)
+        sensor.async_write_ha_state = MagicMock()
+
+        # Set above threshold hours to exceed threshold
+        sensor._above_threshold_hours = 3.0
+        sensor._below_threshold_hours = 0.5
+
+        # Set ignore until to future time
+        future_time = datetime.now(UTC) + timedelta(hours=1)
+        sensor._high_threshold_ignore_until_datetime = future_time
+
+        sensor._update_state()
+
+        # Should be False (no problem) even though humidity is above threshold
+        assert sensor._state is False
+        assert sensor._humidity_status == "normal"
+
+    def test_sensor_not_on_when_low_ignore_until_in_future(self, mock_hass):
+        """Test that sensor is OFF when low ignore until datetime is in the future."""
+        from datetime import datetime, timedelta
+
+        config = HumidityStatusMonitorConfig(
+            hass=mock_hass,
+            entry_id="test_entry",
+            location_name="Test Garden",
+            irrigation_zone_name="Zone A",
+            humidity_entity_id="sensor.test_humidity",
+            location_device_id="test_location",
+        )
+        sensor = HumidityStatusMonitorBinarySensor(config)
+        sensor.async_write_ha_state = MagicMock()
+
+        # Set below threshold hours to exceed threshold
+        sensor._above_threshold_hours = 0.5
+        sensor._below_threshold_hours = 3.0
+
+        # Set ignore until to future time
+        future_time = datetime.now(UTC) + timedelta(hours=1)
+        sensor._low_threshold_ignore_until_datetime = future_time
+
+        sensor._update_state()
+
+        # Should be False (no problem) even though humidity is below threshold
+        assert sensor._state is False
+        assert sensor._humidity_status == "normal"
+
+    def test_sensor_on_when_high_ignore_until_in_past(self, mock_hass):
+        """Test that sensor is ON when high ignore until datetime is in the past."""
+        from datetime import datetime, timedelta
+
+        config = HumidityStatusMonitorConfig(
+            hass=mock_hass,
+            entry_id="test_entry",
+            location_name="Test Garden",
+            irrigation_zone_name="Zone A",
+            humidity_entity_id="sensor.test_humidity",
+            location_device_id="test_location",
+        )
+        sensor = HumidityStatusMonitorBinarySensor(config)
+        sensor.async_write_ha_state = MagicMock()
+
+        # Set above threshold hours to exceed threshold
+        sensor._above_threshold_hours = 3.0
+        sensor._below_threshold_hours = 0.5
+
+        # Set ignore until to past time
+        past_time = datetime.now(UTC) - timedelta(hours=1)
+        sensor._high_threshold_ignore_until_datetime = past_time
+
+        sensor._update_state()
+
+        # Should be True (problem) since ignore period has expired
+        assert sensor._state is True
+        assert sensor._humidity_status == "above"
+
+    def test_sensor_on_when_low_ignore_until_in_past(self, mock_hass):
+        """Test that sensor is ON when low ignore until datetime is in the past."""
+        from datetime import datetime, timedelta
+
+        config = HumidityStatusMonitorConfig(
+            hass=mock_hass,
+            entry_id="test_entry",
+            location_name="Test Garden",
+            irrigation_zone_name="Zone A",
+            humidity_entity_id="sensor.test_humidity",
+            location_device_id="test_location",
+        )
+        sensor = HumidityStatusMonitorBinarySensor(config)
+        sensor.async_write_ha_state = MagicMock()
+
+        # Set below threshold hours to exceed threshold
+        sensor._above_threshold_hours = 0.5
+        sensor._below_threshold_hours = 3.0
+
+        # Set ignore until to past time
+        past_time = datetime.now(UTC) - timedelta(hours=1)
+        sensor._low_threshold_ignore_until_datetime = past_time
+
+        sensor._update_state()
+
+        # Should be True (problem) since ignore period has expired
+        assert sensor._state is True
+        assert sensor._humidity_status == "below"
+
+    def test_high_ignore_until_datetime_state_changed_callback(self, mock_hass):
+        """Test high ignore until datetime state change callback."""
+        from datetime import datetime, timedelta
+
+        config = HumidityStatusMonitorConfig(
+            hass=mock_hass,
+            entry_id="test_entry",
+            location_name="Test Garden",
+            irrigation_zone_name="Zone A",
+            humidity_entity_id="sensor.test_humidity",
+            location_device_id="test_location",
+        )
+        sensor = HumidityStatusMonitorBinarySensor(config)
+        sensor._above_threshold_hours = 3.0
+        sensor._below_threshold_hours = 0.5
+        sensor.async_write_ha_state = MagicMock()
+
+        # Simulate datetime entity state change to future time
+        future_time_str = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        new_state = MagicMock()
+        new_state.state = future_time_str
+
+        sensor._high_threshold_ignore_until_state_changed(
+            "datetime.ignore_until",
+            None,
+            new_state,
+        )
+
+        # State should now be False (no problem)
+        assert sensor._state is False
+        assert sensor._humidity_status == "normal"
+        sensor.async_write_ha_state.assert_called_once()
+
+    def test_low_ignore_until_datetime_state_changed_callback(self, mock_hass):
+        """Test low ignore until datetime state change callback."""
+        from datetime import datetime, timedelta
+
+        config = HumidityStatusMonitorConfig(
+            hass=mock_hass,
+            entry_id="test_entry",
+            location_name="Test Garden",
+            irrigation_zone_name="Zone A",
+            humidity_entity_id="sensor.test_humidity",
+            location_device_id="test_location",
+        )
+        sensor = HumidityStatusMonitorBinarySensor(config)
+        sensor._above_threshold_hours = 0.5
+        sensor._below_threshold_hours = 3.0
+        sensor.async_write_ha_state = MagicMock()
+
+        # Simulate datetime entity state change to future time
+        future_time_str = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        new_state = MagicMock()
+        new_state.state = future_time_str
+
+        sensor._low_threshold_ignore_until_state_changed(
+            "datetime.ignore_until",
+            None,
+            new_state,
+        )
+
+        # State should now be False (no problem)
+        assert sensor._state is False
+        assert sensor._humidity_status == "normal"
+        sensor.async_write_ha_state.assert_called_once()
+
+    def test_high_ignore_until_datetime_cleared_when_unavailable(self, mock_hass):
+        """Test high ignore until datetime cleared when state unavailable."""
+        from datetime import datetime, timedelta
+
+        config = HumidityStatusMonitorConfig(
+            hass=mock_hass,
+            entry_id="test_entry",
+            location_name="Test Garden",
+            irrigation_zone_name="Zone A",
+            humidity_entity_id="sensor.test_humidity",
+            location_device_id="test_location",
+        )
+        sensor = HumidityStatusMonitorBinarySensor(config)
+        sensor._above_threshold_hours = 3.0
+        sensor._below_threshold_hours = 0.5
+        sensor.async_write_ha_state = MagicMock()
+
+        # Set ignore until to future time
+        future_time = datetime.now(UTC) + timedelta(hours=1)
+        sensor._high_threshold_ignore_until_datetime = future_time
+
+        # State should be False (no problem) due to ignore until
+        sensor._update_state()
+        assert sensor._state is False
+
+        # Simulate datetime entity becoming unavailable
+        new_state = MagicMock()
+        new_state.state = STATE_UNAVAILABLE
+
+        sensor._high_threshold_ignore_until_state_changed(
+            "datetime.ignore_until",
+            None,
+            new_state,
+        )
+
+        # Ignore until should be cleared
+        assert sensor._high_threshold_ignore_until_datetime is None
+
+        # State should now be True (problem) since ignore was cleared
+        assert sensor._state is True
+        assert sensor._humidity_status == "above"
+
+    def test_low_ignore_until_datetime_cleared_when_unavailable(self, mock_hass):
+        """Test low ignore until datetime cleared when state unavailable."""
+        from datetime import datetime, timedelta
+
+        config = HumidityStatusMonitorConfig(
+            hass=mock_hass,
+            entry_id="test_entry",
+            location_name="Test Garden",
+            irrigation_zone_name="Zone A",
+            humidity_entity_id="sensor.test_humidity",
+            location_device_id="test_location",
+        )
+        sensor = HumidityStatusMonitorBinarySensor(config)
+        sensor._above_threshold_hours = 0.5
+        sensor._below_threshold_hours = 3.0
+        sensor.async_write_ha_state = MagicMock()
+
+        # Set ignore until to future time
+        future_time = datetime.now(UTC) + timedelta(hours=1)
+        sensor._low_threshold_ignore_until_datetime = future_time
+
+        # State should be False (no problem) due to ignore until
+        sensor._update_state()
+        assert sensor._state is False
+
+        # Simulate datetime entity becoming unavailable
+        new_state = MagicMock()
+        new_state.state = STATE_UNAVAILABLE
+
+        sensor._low_threshold_ignore_until_state_changed(
+            "datetime.ignore_until",
+            None,
+            new_state,
+        )
+
+        # Ignore until should be cleared
+        assert sensor._low_threshold_ignore_until_datetime is None
+
+        # State should now be True (problem) since ignore was cleared
+        assert sensor._state is True
+        assert sensor._humidity_status == "below"
+
+    def test_extra_state_attributes_includes_high_ignore_until(self, mock_hass):
+        """Test that extra state attributes include high ignore until information."""
+        from datetime import datetime, timedelta
+
+        config = HumidityStatusMonitorConfig(
+            hass=mock_hass,
+            entry_id="test_entry",
+            location_name="Test Garden",
+            irrigation_zone_name="Zone A",
+            humidity_entity_id="sensor.test_humidity",
+            location_device_id="test_location",
+        )
+        sensor = HumidityStatusMonitorBinarySensor(config)
+
+        future_time = datetime.now(UTC) + timedelta(hours=1)
+        sensor._high_threshold_ignore_until_datetime = future_time
+
+        attrs = sensor.extra_state_attributes
+
+        assert "high_threshold_ignore_until" in attrs
+        assert "currently_ignoring_high" in attrs
+        assert attrs["currently_ignoring_high"] is True
+
+    def test_extra_state_attributes_includes_low_ignore_until(self, mock_hass):
+        """Test that extra state attributes include low ignore until information."""
+        from datetime import datetime, timedelta
+
+        config = HumidityStatusMonitorConfig(
+            hass=mock_hass,
+            entry_id="test_entry",
+            location_name="Test Garden",
+            irrigation_zone_name="Zone A",
+            humidity_entity_id="sensor.test_humidity",
+            location_device_id="test_location",
+        )
+        sensor = HumidityStatusMonitorBinarySensor(config)
+
+        future_time = datetime.now(UTC) + timedelta(hours=1)
+        sensor._low_threshold_ignore_until_datetime = future_time
+
+        attrs = sensor.extra_state_attributes
+
+        assert "low_threshold_ignore_until" in attrs
+        assert "currently_ignoring_low" in attrs
+        assert attrs["currently_ignoring_low"] is True
+
+    def test_extra_state_attributes_without_ignore_until(self, mock_hass):
+        """Test that extra state attributes don't include ignore until when not set."""
+        config = HumidityStatusMonitorConfig(
+            hass=mock_hass,
+            entry_id="test_entry",
+            location_name="Test Garden",
+            irrigation_zone_name="Zone A",
+            humidity_entity_id="sensor.test_humidity",
+            location_device_id="test_location",
+        )
+        sensor = HumidityStatusMonitorBinarySensor(config)
+
+        attrs = sensor.extra_state_attributes
+
+        assert "high_threshold_ignore_until" not in attrs
+        assert "currently_ignoring_high" not in attrs
+        assert "low_threshold_ignore_until" not in attrs
+        assert "currently_ignoring_low" not in attrs
