@@ -589,10 +589,15 @@ class TemperatureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
                     e,
                 )
         else:
+            # Initialize to current date at midnight
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
             _LOGGER.info(
                 "🆕 Temp low threshold ignore until entity %s: "
-                "no previous state to restore",
+                "initialized to current date at midnight (%s)",
                 self._location_name,
+                midnight.isoformat(),
             )
 
     @property
@@ -729,9 +734,15 @@ class TemperatureHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
                     e,
                 )
         else:
+            # Initialize to current date at midnight
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
             _LOGGER.info(
-                "🆕 Temp high threshold ignore %s: no previous state",
+                "🆕 Temp high threshold ignore %s: "
+                "initialized to current date at midnight (%s)",
                 self._location_name,
+                midnight.isoformat(),
             )
 
     @property
@@ -867,9 +878,14 @@ class HumidityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
                     e,
                 )
         else:
+            # Initialize to current date at midnight
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
             _LOGGER.info(
-                "🆕 Humidity low %s: no previous state to restore",
+                "🆕 Humidity low %s: initialized to current date at midnight (%s)",
                 self._location_name,
+                midnight.isoformat(),
             )
 
     @property
@@ -1004,9 +1020,14 @@ class HumidityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
                     e,
                 )
         else:
+            # Initialize to current date at midnight
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
             _LOGGER.info(
-                "🆕 Humidity high %s: no previous state to restore",
+                "🆕 Humidity high %s: initialized to current date at midnight (%s)",
                 self._location_name,
+                midnight.isoformat(),
             )
 
     @property
@@ -1140,9 +1161,14 @@ class SoilMoistureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
                     e,
                 )
         else:
+            # Initialize to current date at midnight
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
             _LOGGER.info(
-                "🆕 Soil moist low %s: no previous state to restore",
+                "🆕 Soil moist low %s: initialized to current date at midnight (%s)",
                 self._location_name,
+                midnight.isoformat(),
             )
 
     @property
@@ -1279,9 +1305,14 @@ class SoilMoistureHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
                     e,
                 )
         else:
+            # Initialize to current date at midnight
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
             _LOGGER.info(
-                "🆕 Soil moist high %s: no previous state to restore",
+                "🆕 Soil moist high %s: initialized to current date at midnight (%s)",
                 self._location_name,
+                midnight.isoformat(),
             )
 
     @property
@@ -1416,9 +1447,14 @@ class SoilConductivityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntit
                     e,
                 )
         else:
+            # Initialize to current date at midnight
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
             _LOGGER.info(
-                "🆕 Soil EC low %s: no previous state to restore",
+                "🆕 Soil EC low %s: initialized to current date at midnight (%s)",
                 self._location_name,
+                midnight.isoformat(),
             )
 
     @property
@@ -1553,9 +1589,14 @@ class SoilConductivityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEnti
                     e,
                 )
         else:
+            # Initialize to current date at midnight
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
             _LOGGER.info(
-                "🆕 Soil EC high %s: no previous state to restore",
+                "🆕 Soil EC high %s: initialized to current date at midnight (%s)",
                 self._location_name,
+                midnight.isoformat(),
             )
 
     @property
@@ -1691,9 +1732,14 @@ class DLIHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
                     e,
                 )
         else:
+            # Initialize to current date at midnight
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
             _LOGGER.info(
-                "🆕 DLI high %s: no previous state to restore",
+                "🆕 DLI high %s: initialized to current date at midnight (%s)",
                 self._location_name,
+                midnight.isoformat(),
             )
 
     @property
@@ -1828,9 +1874,14 @@ class DLILowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
                     e,
                 )
         else:
+            # Initialize to current date at midnight
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
             _LOGGER.info(
-                "🆕 DLI low %s: no previous state to restore",
+                "🆕 DLI low %s: initialized to current date at midnight (%s)",
                 self._location_name,
+                midnight.isoformat(),
             )
 
     @property
