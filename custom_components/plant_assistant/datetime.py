@@ -115,11 +115,11 @@ async def _cleanup_orphaned_datetime_entities(  # noqa: PLR0912
                             if illuminance_entity_id:
                                 expected_datetime_entities.add(
                                     f"{DOMAIN}_{subentry.subentry_id}_"
-                                    "dli_high_threshold_ignore_until"
+                                    "daily_light_integral_high_threshold_ignore_until"
                                 )
                                 expected_datetime_entities.add(
                                     f"{DOMAIN}_{subentry.subentry_id}_"
-                                    "dli_low_threshold_ignore_until"
+                                    "daily_light_integral_low_threshold_ignore_until"
                                 )
                         except (
                             ValueError,
@@ -155,8 +155,8 @@ async def _cleanup_orphaned_datetime_entities(  # noqa: PLR0912
                 "_soil_moisture_high_threshold_ignore_until",
                 "_soil_conductivity_ignore_until",
                 "_soil_conductivity_high_threshold_ignore_until",
-                "_dli_high_threshold_ignore_until",
-                "_dli_low_threshold_ignore_until",
+                "_daily_light_integral_high_threshold_ignore_until",
+                "_daily_light_integral_low_threshold_ignore_until",
             ]
 
             if any(kw in unique_id for kw in datetime_keywords) and (
@@ -458,35 +458,39 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
                 # Create DLI threshold entities if illuminance sensor exists
                 if illuminance_entity_id and has_plant_slots:
                     _LOGGER.debug(
-                        "Creating DLI high/low threshold ignore entities "
-                        "for subentry %s with illuminance sensor %s",
+                        "Creating Daily Light Integral high/low threshold ignore "
+                        "entities for subentry %s with illuminance sensor %s",
                         subentry_id,
                         illuminance_entity_id,
                     )
 
-                    dli_high_ignore_entity = DLIHighThresholdIgnoreUntilEntity(
-                        hass=hass,
-                        entry_id=entry.entry_id,
-                        subentry_id=subentry.subentry_id,
-                        location_name=location_name,
-                        subentry_data=subentry.data,
-                        illuminance_entity_id=illuminance_entity_id,
+                    dli_high_ignore_entity = (
+                        DailyLightIntegralHighThresholdIgnoreUntilEntity(
+                            hass=hass,
+                            entry_id=entry.entry_id,
+                            subentry_id=subentry.subentry_id,
+                            location_name=location_name,
+                            subentry_data=subentry.data,
+                            illuminance_entity_id=illuminance_entity_id,
+                        )
                     )
                     subentry_datetime_entities.append(dli_high_ignore_entity)
 
-                    dli_low_ignore_entity = DLILowThresholdIgnoreUntilEntity(
-                        hass=hass,
-                        entry_id=entry.entry_id,
-                        subentry_id=subentry.subentry_id,
-                        location_name=location_name,
-                        subentry_data=subentry.data,
-                        illuminance_entity_id=illuminance_entity_id,
+                    dli_low_ignore_entity = (
+                        DailyLightIntegralLowThresholdIgnoreUntilEntity(
+                            hass=hass,
+                            entry_id=entry.entry_id,
+                            subentry_id=subentry.subentry_id,
+                            location_name=location_name,
+                            subentry_data=subentry.data,
+                            illuminance_entity_id=illuminance_entity_id,
+                        )
                     )
                     subentry_datetime_entities.append(dli_low_ignore_entity)
                 else:
                     _LOGGER.debug(
-                        "Skipping DLI threshold ignore entities for subentry %s: "
-                        "illuminance_sensor=%s, plant_slots=%s",
+                        "Skipping Daily Light Integral threshold ignore entities "
+                        "for subentry %s: illuminance_sensor=%s, plant_slots=%s",
                         subentry_id,
                         bool(illuminance_entity_id),
                         has_plant_slots,
@@ -1655,8 +1659,8 @@ class SoilConductivityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEnti
         return has_monitoring_device and has_plant_slots and has_conductivity_sensor
 
 
-class DLIHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
-    """Datetime entity for DLI high threshold ignore until."""
+class DailyLightIntegralHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
+    """Datetime entity for Daily Light Integral high threshold ignore until."""
 
     def __init__(  # noqa: PLR0913
         self,
@@ -1667,7 +1671,7 @@ class DLIHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         subentry_data: Mapping[str, Any],
         illuminance_entity_id: str | None = None,
     ) -> None:
-        """Initialize the DLI high threshold ignore until entity."""
+        """Initialize the Daily Light Integral high threshold ignore until entity."""
         self._hass = hass
         self._entry_id = entry_id
         self._subentry_id = subentry_id
@@ -1677,8 +1681,12 @@ class DLIHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         self._attr_native_value: py_datetime.datetime | None = None
 
         # Set up entity attributes
-        self._attr_name = f"{location_name} DLI High Threshold Ignore Until"
-        self._attr_unique_id = f"{DOMAIN}_{subentry_id}_dli_high_threshold_ignore_until"
+        self._attr_name = (
+            f"{location_name} Daily Light Integral High Threshold Ignore Until"
+        )
+        self._attr_unique_id = (
+            f"{DOMAIN}_{subentry_id}_daily_light_integral_high_threshold_ignore_until"
+        )
         self._attr_icon = "mdi:brightness-7"
         self._attr_has_entity_name = False
 
@@ -1797,8 +1805,8 @@ class DLIHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         return has_illuminance_sensor and has_plant_slots
 
 
-class DLILowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
-    """Datetime entity for DLI low threshold ignore until."""
+class DailyLightIntegralLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
+    """Datetime entity for Daily Light Integral low threshold ignore until."""
 
     def __init__(  # noqa: PLR0913
         self,
@@ -1809,7 +1817,7 @@ class DLILowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         subentry_data: Mapping[str, Any],
         illuminance_entity_id: str | None = None,
     ) -> None:
-        """Initialize the DLI low threshold ignore until entity."""
+        """Initialize the Daily Light Integral low threshold ignore until entity."""
         self._hass = hass
         self._entry_id = entry_id
         self._subentry_id = subentry_id
@@ -1819,8 +1827,12 @@ class DLILowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         self._attr_native_value: py_datetime.datetime | None = None
 
         # Set up entity attributes
-        self._attr_name = f"{location_name} DLI Low Threshold Ignore Until"
-        self._attr_unique_id = f"{DOMAIN}_{subentry_id}_dli_low_threshold_ignore_until"
+        self._attr_name = (
+            f"{location_name} Daily Light Integral Low Threshold Ignore Until"
+        )
+        self._attr_unique_id = (
+            f"{DOMAIN}_{subentry_id}_daily_light_integral_low_threshold_ignore_until"
+        )
         self._attr_icon = "mdi:brightness-4"
         self._attr_has_entity_name = False
 
