@@ -194,6 +194,17 @@ class PlantCountStatusMonitorConfig:
     location_device_id: str | None = None
 
 
+@dataclass
+class IgnoredStatusesMonitorConfig:
+    """Configuration for IgnoredStatusesMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    location_device_id: str | None = None
+
+
 class PlantCountStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     """
     Binary sensor that monitors plant count status for a location.
@@ -343,6 +354,215 @@ class PlantCountStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         """Clean up when entity is removed."""
         if self._unsubscribe:
             self._unsubscribe()
+
+
+class IgnoredStatusesMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that monitors if any status sensors are being ignored.
+
+    This sensor turns ON (problem detected) when one or more of the other
+    Status binary sensors are currently being ignored (within their
+    ignore_until period). The Message attribute shows "X Ignored" where X
+    is the count of ignored statuses.
+    """
+
+    def __init__(self, config: IgnoredStatusesMonitorConfig) -> None:
+        """
+        Initialize the Ignored Statuses Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.location_device_id = config.location_device_id
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Ignored Statuses"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_ignored_statuses"
+        )
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+        self._state: bool | None = None
+        self._ignored_count: int = 0
+        # List of ignore_until entity IDs to track
+        self._ignore_until_entity_ids: list[str] = []
+        self._unsubscribe_handlers: list[Any] = []
+
+    async def _find_ignore_until_entities(self) -> list[str]:
+        """
+        Find all ignore_until datetime entities for this location.
+
+        Returns a list of entity_ids for all ignore_until entities.
+        """
+        ignore_until_entities: list[str] = []
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "datetime"
+                    and entity.unique_id
+                    and "ignore_until" in entity.unique_id
+                    and self.entry_id in entity.unique_id
+                ):
+                    ignore_until_entities.append(entity.entity_id)
+                    _LOGGER.debug(
+                        "Found ignore_until datetime entity for %s: %s",
+                        self.location_name,
+                        entity.entity_id,
+                    )
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding ignore_until entities: %s", exc)
+
+        return ignore_until_entities
+
+    def _count_ignored_statuses(self) -> int:
+        """
+        Count how many status sensors are currently being ignored.
+
+        Returns the count of status sensors within their ignore_until period.
+        """
+        ignored_count = 0
+        now = dt_util.now()
+
+        for entity_id in self._ignore_until_entity_ids:
+            state = self.hass.states.get(entity_id)
+            if state and state.state not in (
+                STATE_UNAVAILABLE,
+                STATE_UNKNOWN,
+                "unknown",
+            ):
+                try:
+                    ignore_until = dt_util.parse_datetime(state.state)
+                    if ignore_until:
+                        # Ensure timezone info
+                        if ignore_until.tzinfo is None:
+                            ignore_until = ignore_until.replace(
+                                tzinfo=dt_util.get_default_time_zone()
+                            )
+                        # Check if current time is before the ignore until time
+                        if now < ignore_until:
+                            ignored_count += 1
+                except (ValueError, TypeError) as exc:
+                    _LOGGER.debug(
+                        "Error parsing ignore_until datetime for %s: %s",
+                        entity_id,
+                        exc,
+                    )
+
+        return ignored_count
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on count of ignored statuses."""
+        self._ignored_count = self._count_ignored_statuses()
+        # Binary sensor is ON (problem) when one or more statuses are ignored
+        self._state = self._ignored_count > 0
+
+    @callback
+    def _ignore_until_state_changed(
+        self, _entity_id: str, _old_state: Any, _new_state: Any
+    ) -> None:
+        """Handle ignore_until datetime changes."""
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if any status sensors are being ignored."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state."""
+        if self._state is True:
+            return "mdi:pause-circle-outline"
+        return "mdi:pause-circle"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        attrs: dict[str, Any] = {
+            "message": f"{self._ignored_count} Ignored",
+            "master_tag": self.location_name.lower().replace(" ", "_"),
+            "ignored_count": self._ignored_count,
+        }
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return True
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info to associate this entity with the location device."""
+        if self.location_device_id:
+            return DeviceInfo(
+                identifiers={(DOMAIN, self.location_device_id)},
+            )
+        return None
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                self._ignored_count = last_state.attributes.get("ignored_count", 0)
+                _LOGGER.info(
+                    "Restored ignored statuses monitor for %s: %s (%d ignored)",
+                    self.location_name,
+                    self._state,
+                    self._ignored_count,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass."""
+        # Restore previous state if available
+        await super().async_added_to_hass()
+        await self._restore_previous_state()
+
+        # Find all ignore_until entities
+        self._ignore_until_entity_ids = await self._find_ignore_until_entities()
+
+        # Subscribe to state changes for all ignore_until entities
+        for entity_id in self._ignore_until_entity_ids:
+            unsubscribe = async_track_state_change(
+                self.hass,
+                entity_id,
+                self._ignore_until_state_changed,
+            )
+            self._unsubscribe_handlers.append(unsubscribe)
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        for unsubscribe in self._unsubscribe_handlers:
+            if unsubscribe:
+                unsubscribe()
+        self._unsubscribe_handlers.clear()
 
 
 class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
@@ -6056,6 +6276,18 @@ async def _create_plant_count_sensor(
     return sensor
 
 
+async def _create_ignored_statuses_sensor(
+    config: IgnoredStatusesMonitorConfig,
+) -> BinarySensorEntity | None:
+    """Create ignored statuses monitor sensor."""
+    sensor = IgnoredStatusesMonitorBinarySensor(config)
+    _LOGGER.debug(
+        "Created ignored statuses monitor binary sensor for %s",
+        config.location_name,
+    )
+    return sensor
+
+
 async def _create_link_monitors(
     config: LinkMonitorConfig,
 ) -> list[BinarySensorEntity]:
@@ -6121,6 +6353,20 @@ async def _create_subentry_sensors(
     )
     if plant_count_sensor:
         subentry_binary_sensors.append(plant_count_sensor)
+
+    # Create ignored statuses monitor sensor (always created to monitor ignored alerts)
+    ignored_statuses_config = IgnoredStatusesMonitorConfig(
+        hass=hass,
+        entry_id=subentry_id,
+        location_name=location_name,
+        irrigation_zone_name=irrigation_zone_name,
+        location_device_id=location_device_id,
+    )
+    ignored_statuses_sensor = await _create_ignored_statuses_sensor(
+        ignored_statuses_config,
+    )
+    if ignored_statuses_sensor:
+        subentry_binary_sensors.append(ignored_statuses_sensor)
 
     has_plants = plant_count > 0
 
