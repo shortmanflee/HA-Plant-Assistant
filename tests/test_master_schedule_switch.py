@@ -57,8 +57,8 @@ async def test_master_schedule_switch_creation():
     async_add_entities.assert_called_once()
     entities = async_add_entities.call_args[0][0]
 
-    # Verify that one switch was created
-    assert len(entities) == 1
+    # Verify that ten switches were created (one of each type)
+    assert len(entities) == 10
     assert isinstance(entities[0], MasterScheduleSwitch)
     assert entities[0].zone_name == "Front Lawn"
 
@@ -319,12 +319,12 @@ async def test_master_schedule_switch_multiple_zones():
 
         await async_setup_entry(hass, entry, async_add_entities)
 
-    # Verify that async_add_entities was called with 2 switches
+    # Verify that async_add_entities was called with 20 switches (10 per zone)
     async_add_entities.assert_called_once()
     entities = async_add_entities.call_args[0][0]
-    assert len(entities) == 2
+    assert len(entities) == 20
     assert entities[0].zone_name == "Front Lawn"
-    assert entities[1].zone_name == "Back Patio"
+    assert entities[1].zone_name == "Front Lawn"
 
 
 @pytest.mark.asyncio

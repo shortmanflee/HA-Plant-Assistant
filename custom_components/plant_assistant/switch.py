@@ -21,13 +21,17 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
-class MasterScheduleSwitch(SwitchEntity, RestoreEntity):
+class IrrigationZoneSwitch(SwitchEntity, RestoreEntity):
     """
-    Master Schedule switch for an irrigation zone.
+    Base class for irrigation zone switches.
 
-    This switch controls the master schedule for irrigation zones associated
-    with esphome devices. The switch state is restored on Home Assistant restarts.
+    This is a base class for all switches associated with irrigation zones.
+    The switch state is restored on Home Assistant restarts.
     """
+
+    # Override in subclasses
+    _switch_type: str = "base_switch"
+    _switch_name_suffix: str = "Switch"
 
     def __init__(
         self,
@@ -38,7 +42,7 @@ class MasterScheduleSwitch(SwitchEntity, RestoreEntity):
         _zone_device: Any,
     ) -> None:
         """
-        Initialize the Master Schedule switch.
+        Initialize the irrigation zone switch.
 
         Args:
             hass: The Home Assistant instance.
@@ -55,14 +59,14 @@ class MasterScheduleSwitch(SwitchEntity, RestoreEntity):
         self.zone_name = zone_name
 
         # Set entity attributes
-        self._attr_name = f"{zone_name} Master Schedule"
+        self._attr_name = f"{zone_name} {self._switch_name_suffix}"
         # Create unique ID from zone device identifier tuple
         unique_id_parts = (
             DOMAIN,
             entry_id,
             zone_device_id[0],
             zone_device_id[1],
-            "master_schedule",
+            self._switch_type,
         )
         self._attr_unique_id = "_".join(unique_id_parts)
 
@@ -110,10 +114,86 @@ class MasterScheduleSwitch(SwitchEntity, RestoreEntity):
                     self._is_on = False
 
             _LOGGER.debug(
-                "Restored Master Schedule switch %s with state: %s",
+                "Restored %s switch %s with state: %s",
+                self._switch_type,
                 self.entity_id,
                 self._is_on,
             )
+
+
+class MasterScheduleSwitch(IrrigationZoneSwitch):
+    """
+    Master Schedule switch for an irrigation zone.
+
+    This switch controls the master schedule for irrigation zones associated
+    with esphome devices. The switch state is restored on Home Assistant restarts.
+    """
+
+    _switch_type = "master_schedule"
+    _switch_name_suffix = "Master Schedule"
+
+
+class SunriseScheduleSwitch(IrrigationZoneSwitch):
+    """Sunrise Schedule switch for an irrigation zone."""
+
+    _switch_type = "sunrise_schedule"
+    _switch_name_suffix = "Sunrise Schedule"
+
+
+class AfternoonScheduleSwitch(IrrigationZoneSwitch):
+    """Afternoon Schedule switch for an irrigation zone."""
+
+    _switch_type = "afternoon_schedule"
+    _switch_name_suffix = "Afternoon Schedule"
+
+
+class SunsetScheduleSwitch(IrrigationZoneSwitch):
+    """Sunset Schedule switch for an irrigation zone."""
+
+    _switch_type = "sunset_schedule"
+    _switch_name_suffix = "Sunset Schedule"
+
+
+class IgnoreAreaOccupancySwitch(IrrigationZoneSwitch):
+    """Ignore Area Occupancy switch for an irrigation zone."""
+
+    _switch_type = "ignore_area_occupancy"
+    _switch_name_suffix = "Ignore Area Occupancy"
+
+
+class IgnoreSensorsSwitch(IrrigationZoneSwitch):
+    """Ignore Sensors switch for an irrigation zone."""
+
+    _switch_type = "ignore_sensors"
+    _switch_name_suffix = "Ignore Sensors"
+
+
+class IgnoreRainSwitch(IrrigationZoneSwitch):
+    """Ignore Rain switch for an irrigation zone."""
+
+    _switch_type = "ignore_rain"
+    _switch_name_suffix = "Ignore Rain"
+
+
+class AllowRainWaterDeliverySwitch(IrrigationZoneSwitch):
+    """Allow Rain Water Delivery switch for an irrigation zone."""
+
+    _switch_type = "allow_rain_water_delivery"
+    _switch_name_suffix = "Allow Rain Water Delivery"
+
+
+class AllowWaterMainDeliverySwitch(IrrigationZoneSwitch):
+    """Allow Water Main Delivery switch for an irrigation zone."""
+
+    _switch_type = "allow_water_main_delivery"
+    _switch_name_suffix = "Allow Water Main Delivery"
+
+
+class AllowFertiliserInjectionSwitch(IrrigationZoneSwitch):
+    """Allow Fertiliser Injection switch for an irrigation zone."""
+
+    _switch_type = "allow_fertiliser_injection"
+    _switch_name_suffix = "Allow Fertiliser Injection"
 
 
 async def async_setup_entry(
@@ -129,7 +209,21 @@ async def async_setup_entry(
     entry_opts = hass.data.get(DOMAIN, {}).get("entries", {}).get(entry.entry_id, {})
     zones_dict = entry_opts.get("irrigation_zones", {})
 
-    # Create Master Schedule switch for each zone with esphome linked device
+    # List of switch classes to create for each zone
+    switch_classes = [
+        MasterScheduleSwitch,
+        SunriseScheduleSwitch,
+        AfternoonScheduleSwitch,
+        SunsetScheduleSwitch,
+        IgnoreAreaOccupancySwitch,
+        IgnoreSensorsSwitch,
+        IgnoreRainSwitch,
+        AllowRainWaterDeliverySwitch,
+        AllowWaterMainDeliverySwitch,
+        AllowFertiliserInjectionSwitch,
+    ]
+
+    # Create switches for each zone with esphome linked device
     for zone_id, zone in zones_dict.items():
         # Check if this zone has a linked esphome device
         if linked_device_id := zone.get("linked_device_id"):
@@ -152,22 +246,24 @@ async def async_setup_entry(
                 else (DOMAIN, linked_device_id)
             )
 
-            # Create the Master Schedule switch for this zone
-            master_schedule_switch = MasterScheduleSwitch(
-                hass=hass,
-                entry_id=entry.entry_id,
-                zone_device_id=zone_device_identifier,
-                zone_name=zone_name,
-                _zone_device=zone_device,
-            )
+            # Create all switches for this zone
+            for switch_class in switch_classes:
+                switch = switch_class(
+                    hass=hass,
+                    entry_id=entry.entry_id,
+                    zone_device_id=zone_device_identifier,
+                    zone_name=zone_name,
+                    _zone_device=zone_device,
+                )
 
-            switches.append(master_schedule_switch)
+                switches.append(switch)
 
-            _LOGGER.debug(
-                "Created Master Schedule switch for irrigation zone %s (device: %s)",
-                zone_name,
-                linked_device_id,
-            )
+                _LOGGER.debug(
+                    "Created %s switch for irrigation zone %s (device: %s)",
+                    switch_class.__name__,
+                    zone_name,
+                    linked_device_id,
+                )
 
     # Add entities to Home Assistant
     if switches:
