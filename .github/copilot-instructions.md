@@ -6,3 +6,5 @@ When making a change to files in the repository, ensure that you run pre-commit 
 ```
 
 NEVER run vscode tasks, run the commands directly in the terminal instead.
+
+NEVER use pylint or any other linter outside of pre-commit hooks, as this may lead to inconsistent code styles.
