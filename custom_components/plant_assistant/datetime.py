@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.datetime import DateTimeEntity
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -576,6 +577,90 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
                     subentry_datetime_entities,
                     config_subentry_id=subentry_id,  # type: ignore[call-arg]
                 )
+
+        # Process irrigation zones with esphome linked devices
+        irrigation_zone_datetime_entities = []
+        zones_dict = entry.options.get("irrigation_zones", {})
+        device_registry = dr.async_get(hass)
+
+        for zone_id, zone in zones_dict.items():
+            if linked_device_id := zone.get("linked_device_id"):
+                zone_name = zone.get("name") or f"Zone {zone_id}"
+                zone_device = device_registry.async_get(linked_device_id)
+                if zone_device and zone_device.identifiers:
+                    zone_device_identifier = next(iter(zone_device.identifiers))
+
+                    _LOGGER.debug(
+                        "Creating irrigation zone datetime entities for %s",
+                        zone_name,
+                    )
+
+                    # Create schedule ignore until entity
+                    schedule_ignore_entity = IrrigationZoneScheduleIgnoreUntilEntity(
+                        hass=hass,
+                        entry_id=entry.entry_id,
+                        zone_device_id=zone_device_identifier,
+                        zone_name=zone_name,
+                    )
+                    irrigation_zone_datetime_entities.append(schedule_ignore_entity)
+                    _LOGGER.debug(
+                        "Created schedule ignore until entity for irrigation zone %s",
+                        zone_name,
+                    )
+
+                    # Create schedule misconfiguration ignore until entity
+                    schedule_misc_entity = (
+                        IrrigationZoneScheduleMisconfigurationIgnoreUntilEntity(
+                            hass=hass,
+                            entry_id=entry.entry_id,
+                            zone_device_id=zone_device_identifier,
+                            zone_name=zone_name,
+                        )
+                    )
+                    irrigation_zone_datetime_entities.append(schedule_misc_entity)
+                    _LOGGER.debug(
+                        "Created schedule misconfiguration ignore until entity "
+                        "for irrigation zone %s",
+                        zone_name,
+                    )
+
+                    # Create water delivery preference ignore until entity
+                    water_delivery_entity = (
+                        IrrigationZoneWaterDeliveryPreferenceIgnoreUntilEntity(
+                            hass=hass,
+                            entry_id=entry.entry_id,
+                            zone_device_id=zone_device_identifier,
+                            zone_name=zone_name,
+                        )
+                    )
+                    irrigation_zone_datetime_entities.append(water_delivery_entity)
+                    _LOGGER.debug(
+                        "Created water delivery preference ignore until entity "
+                        "for irrigation zone %s",
+                        zone_name,
+                    )
+
+                    # Create error ignore until entity
+                    error_ignore_entity = IrrigationZoneErrorIgnoreUntilEntity(
+                        hass=hass,
+                        entry_id=entry.entry_id,
+                        zone_device_id=zone_device_identifier,
+                        zone_name=zone_name,
+                    )
+                    irrigation_zone_datetime_entities.append(error_ignore_entity)
+                    _LOGGER.debug(
+                        "Created error ignore until entity for irrigation zone %s",
+                        zone_name,
+                    )
+
+        # Add irrigation zone datetime entities
+        if irrigation_zone_datetime_entities:
+            _LOGGER.info(
+                "Adding %d irrigation zone datetime entities for entry %s",
+                len(irrigation_zone_datetime_entities),
+                entry.entry_id,
+            )
+            async_add_entities(irrigation_zone_datetime_entities)
 
     else:
         # Process legacy entries or direct configuration if needed
@@ -2450,4 +2535,528 @@ class MonitorLinkIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     def available(self) -> bool:
         """Return True if entity is available."""
         # Monitor link entity should always be available as long as the location exists
+        return True
+
+
+class IrrigationZoneScheduleIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
+    """Datetime entity for irrigation zone schedule ignore until."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        zone_device_id: tuple[str, str],
+        zone_name: str,
+    ) -> None:
+        """Initialize irrigation zone schedule ignore until entity."""
+        self._hass = hass
+        self._entry_id = entry_id
+        self._zone_device_id = zone_device_id
+        self._zone_name = zone_name
+        self._attr_native_value: py_datetime.datetime | None = None
+
+        # Set entity attributes
+        self._attr_name = f"{zone_name} Schedule Ignore Until"
+        self._attr_unique_id = (
+            f"{DOMAIN}_{zone_device_id[0]}_{zone_device_id[1]}_schedule_ignore_until"
+        )
+        self._attr_has_entity_name = False
+        self._attr_icon = "mdi:calendar-remove"
+
+        # Device info to associate with the irrigation zone device
+        self._attr_device_info = DeviceInfo(
+            identifiers={zone_device_id},
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Restore state when entity is added to hass."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                restored_datetime = dt_util.parse_datetime(last_state.state)
+                if restored_datetime is not None:
+                    if restored_datetime.tzinfo is None:
+                        restored_datetime = restored_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+
+                    self._attr_native_value = restored_datetime
+                    _LOGGER.info(
+                        "🔄 Schedule ignore until entity %s: restored state %s",
+                        self._zone_name,
+                        restored_datetime.isoformat(),
+                    )
+                else:
+                    _LOGGER.warning(
+                        "⚠️ Schedule ignore until entity %s: "
+                        "could not parse datetime from %s",
+                        self._zone_name,
+                        last_state.state,
+                    )
+            except (ValueError, TypeError) as e:
+                _LOGGER.warning(
+                    "⚠️ Schedule ignore until entity %s: "
+                    "could not restore state from %s: %s",
+                    self._zone_name,
+                    last_state.state,
+                    e,
+                )
+        else:
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
+            _LOGGER.info(
+                "🆕 Schedule ignore until entity %s: "
+                "initialized to current date at midnight (%s)",
+                self._zone_name,
+                midnight.isoformat(),
+            )
+
+    @property
+    def native_value(self) -> py_datetime.datetime | None:
+        """Return the current datetime value."""
+        return self._attr_native_value
+
+    async def async_set_value(self, value: py_datetime.datetime) -> None:
+        """Set the datetime value."""
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt_util.get_default_time_zone())
+
+        self._attr_native_value = value
+        self.async_write_ha_state()
+
+        _LOGGER.debug(
+            "Set schedule ignore until datetime for %s to %s",
+            self._zone_name,
+            value.isoformat(),
+        )
+
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        attrs = {
+            "zone_name": self._zone_name,
+            "zone_device_id": self._zone_device_id,
+        }
+
+        if self._attr_native_value:
+            now = dt_util.now()
+            is_ignoring = now < self._attr_native_value
+            attrs["currently_ignoring"] = is_ignoring
+            attrs["ignore_expires_in_seconds"] = (
+                int((self._attr_native_value - now).total_seconds())
+                if is_ignoring
+                else 0
+            )
+
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return True
+
+
+class IrrigationZoneScheduleMisconfigurationIgnoreUntilEntity(
+    RestoreEntity, DateTimeEntity
+):
+    """Datetime entity for irrigation zone schedule misconfiguration ignore until."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        zone_device_id: tuple[str, str],
+        zone_name: str,
+    ) -> None:
+        """Initialize irrigation zone schedule misconfiguration ignore until entity."""
+        self._hass = hass
+        self._entry_id = entry_id
+        self._zone_device_id = zone_device_id
+        self._zone_name = zone_name
+        self._attr_native_value: py_datetime.datetime | None = None
+
+        # Set entity attributes
+        self._attr_name = f"{zone_name} Schedule Misconfiguration Ignore Until"
+        self._attr_unique_id = (
+            f"{DOMAIN}_{zone_device_id[0]}_{zone_device_id[1]}_"
+            f"schedule_misconfiguration_ignore_until"
+        )
+        self._attr_has_entity_name = False
+        self._attr_icon = "mdi:alert-circle"
+
+        # Device info to associate with the irrigation zone device
+        self._attr_device_info = DeviceInfo(
+            identifiers={zone_device_id},
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Restore state when entity is added to hass."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                restored_datetime = dt_util.parse_datetime(last_state.state)
+                if restored_datetime is not None:
+                    if restored_datetime.tzinfo is None:
+                        restored_datetime = restored_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+
+                    self._attr_native_value = restored_datetime
+                    _LOGGER.info(
+                        "🔄 Schedule misconfiguration ignore until entity %s: "
+                        "restored state %s",
+                        self._zone_name,
+                        restored_datetime.isoformat(),
+                    )
+                else:
+                    _LOGGER.warning(
+                        "⚠️ Schedule misconfiguration ignore until entity %s: "
+                        "could not parse datetime from %s",
+                        self._zone_name,
+                        last_state.state,
+                    )
+            except (ValueError, TypeError) as e:
+                _LOGGER.warning(
+                    "⚠️ Schedule misconfiguration ignore until entity %s: "
+                    "could not restore state from %s: %s",
+                    self._zone_name,
+                    last_state.state,
+                    e,
+                )
+        else:
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
+            _LOGGER.info(
+                "🆕 Schedule misconfiguration ignore until entity %s: "
+                "initialized to current date at midnight (%s)",
+                self._zone_name,
+                midnight.isoformat(),
+            )
+
+    @property
+    def native_value(self) -> py_datetime.datetime | None:
+        """Return the current datetime value."""
+        return self._attr_native_value
+
+    async def async_set_value(self, value: py_datetime.datetime) -> None:
+        """Set the datetime value."""
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt_util.get_default_time_zone())
+
+        self._attr_native_value = value
+        self.async_write_ha_state()
+
+        _LOGGER.debug(
+            "Set schedule misconfiguration ignore until datetime for %s to %s",
+            self._zone_name,
+            value.isoformat(),
+        )
+
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        attrs = {
+            "zone_name": self._zone_name,
+            "zone_device_id": self._zone_device_id,
+        }
+
+        if self._attr_native_value:
+            now = dt_util.now()
+            is_ignoring = now < self._attr_native_value
+            attrs["currently_ignoring"] = is_ignoring
+            attrs["ignore_expires_in_seconds"] = (
+                int((self._attr_native_value - now).total_seconds())
+                if is_ignoring
+                else 0
+            )
+
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return True
+
+
+class IrrigationZoneWaterDeliveryPreferenceIgnoreUntilEntity(
+    RestoreEntity, DateTimeEntity
+):
+    """Datetime entity for irrigation zone water delivery preference ignore until."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        zone_device_id: tuple[str, str],
+        zone_name: str,
+    ) -> None:
+        """Initialize irrigation zone water delivery preference ignore until entity."""
+        self._hass = hass
+        self._entry_id = entry_id
+        self._zone_device_id = zone_device_id
+        self._zone_name = zone_name
+        self._attr_native_value: py_datetime.datetime | None = None
+
+        # Set entity attributes
+        self._attr_name = f"{zone_name} Water Delivery Preference Ignore Until"
+        self._attr_unique_id = (
+            f"{DOMAIN}_{zone_device_id[0]}_{zone_device_id[1]}_"
+            f"water_delivery_preference_ignore_until"
+        )
+        self._attr_has_entity_name = False
+        self._attr_icon = "mdi:water-remove"
+
+        # Device info to associate with the irrigation zone device
+        self._attr_device_info = DeviceInfo(
+            identifiers={zone_device_id},
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Restore state when entity is added to hass."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                restored_datetime = dt_util.parse_datetime(last_state.state)
+                if restored_datetime is not None:
+                    if restored_datetime.tzinfo is None:
+                        restored_datetime = restored_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+
+                    self._attr_native_value = restored_datetime
+                    _LOGGER.info(
+                        "🔄 Water delivery preference ignore until entity %s: "
+                        "restored state %s",
+                        self._zone_name,
+                        restored_datetime.isoformat(),
+                    )
+                else:
+                    _LOGGER.warning(
+                        "⚠️ Water delivery preference ignore until entity %s: "
+                        "could not parse datetime from %s",
+                        self._zone_name,
+                        last_state.state,
+                    )
+            except (ValueError, TypeError) as e:
+                _LOGGER.warning(
+                    "⚠️ Water delivery preference ignore until entity %s: "
+                    "could not restore state from %s: %s",
+                    self._zone_name,
+                    last_state.state,
+                    e,
+                )
+        else:
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
+            _LOGGER.info(
+                "🆕 Water delivery preference ignore until entity %s: "
+                "initialized to current date at midnight (%s)",
+                self._zone_name,
+                midnight.isoformat(),
+            )
+
+    @property
+    def native_value(self) -> py_datetime.datetime | None:
+        """Return the current datetime value."""
+        return self._attr_native_value
+
+    async def async_set_value(self, value: py_datetime.datetime) -> None:
+        """Set the datetime value."""
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt_util.get_default_time_zone())
+
+        self._attr_native_value = value
+        self.async_write_ha_state()
+
+        _LOGGER.debug(
+            "Set water delivery preference ignore until datetime for %s to %s",
+            self._zone_name,
+            value.isoformat(),
+        )
+
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        attrs = {
+            "zone_name": self._zone_name,
+            "zone_device_id": self._zone_device_id,
+        }
+
+        if self._attr_native_value:
+            now = dt_util.now()
+            is_ignoring = now < self._attr_native_value
+            attrs["currently_ignoring"] = is_ignoring
+            attrs["ignore_expires_in_seconds"] = (
+                int((self._attr_native_value - now).total_seconds())
+                if is_ignoring
+                else 0
+            )
+
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return True
+
+
+class IrrigationZoneErrorIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
+    """Datetime entity for irrigation zone error ignore until."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        zone_device_id: tuple[str, str],
+        zone_name: str,
+    ) -> None:
+        """Initialize irrigation zone error ignore until entity."""
+        self._hass = hass
+        self._entry_id = entry_id
+        self._zone_device_id = zone_device_id
+        self._zone_name = zone_name
+        self._attr_native_value: py_datetime.datetime | None = None
+
+        # Set entity attributes
+        self._attr_name = f"{zone_name} Error Ignore Until"
+        self._attr_unique_id = (
+            f"{DOMAIN}_{zone_device_id[0]}_{zone_device_id[1]}_error_ignore_until"
+        )
+        self._attr_has_entity_name = False
+        self._attr_icon = "mdi:alert-octagon"
+
+        # Device info to associate with the irrigation zone device
+        self._attr_device_info = DeviceInfo(
+            identifiers={zone_device_id},
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Restore state when entity is added to hass."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                restored_datetime = dt_util.parse_datetime(last_state.state)
+                if restored_datetime is not None:
+                    if restored_datetime.tzinfo is None:
+                        restored_datetime = restored_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+
+                    self._attr_native_value = restored_datetime
+                    _LOGGER.info(
+                        "🔄 Error ignore until entity %s: restored state %s",
+                        self._zone_name,
+                        restored_datetime.isoformat(),
+                    )
+                else:
+                    _LOGGER.warning(
+                        "⚠️ Error ignore until entity %s: "
+                        "could not parse datetime from %s",
+                        self._zone_name,
+                        last_state.state,
+                    )
+            except (ValueError, TypeError) as e:
+                _LOGGER.warning(
+                    "⚠️ Error ignore until entity %s: "
+                    "could not restore state from %s: %s",
+                    self._zone_name,
+                    last_state.state,
+                    e,
+                )
+        else:
+            now = dt_util.now()
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._attr_native_value = midnight
+            _LOGGER.info(
+                "🆕 Error ignore until entity %s: "
+                "initialized to current date at midnight (%s)",
+                self._zone_name,
+                midnight.isoformat(),
+            )
+
+    @property
+    def native_value(self) -> py_datetime.datetime | None:
+        """Return the current datetime value."""
+        return self._attr_native_value
+
+    async def async_set_value(self, value: py_datetime.datetime) -> None:
+        """Set the datetime value."""
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt_util.get_default_time_zone())
+
+        self._attr_native_value = value
+        self.async_write_ha_state()
+
+        _LOGGER.debug(
+            "Set error ignore until datetime for %s to %s",
+            self._zone_name,
+            value.isoformat(),
+        )
+
+    def set_value(self, value: py_datetime.datetime) -> None:
+        """Set value - abstract method stub (implementation uses async_set_value)."""
+        # pylint: disable=abstract-method
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        attrs = {
+            "zone_name": self._zone_name,
+            "zone_device_id": self._zone_device_id,
+        }
+
+        if self._attr_native_value:
+            now = dt_util.now()
+            is_ignoring = now < self._attr_native_value
+            attrs["currently_ignoring"] = is_ignoring
+            attrs["ignore_expires_in_seconds"] = (
+                int((self._attr_native_value - now).total_seconds())
+                if is_ignoring
+                else 0
+            )
+
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
         return True
