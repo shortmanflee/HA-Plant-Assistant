@@ -1055,8 +1055,499 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
         ]
     )
 
+    # Create irrigation zone last run start time sensors for zones with esphome devices
+    device_registry = dr.async_get(hass)
+    for zone_id, zone in zones.items():
+        if linked_device_id := zone.get("linked_device_id"):
+            zone_name = zone.get("name") or f"Zone {zone_id}"
+            zone_device = device_registry.async_get(linked_device_id)
+            if zone_device and zone_device.identifiers:
+                zone_device_identifier = next(iter(zone_device.identifiers))
+
+                last_run_start_sensor = IrrigationZoneLastRunStartTimeSensor(
+                    hass=hass,
+                    entry_id=entry.entry_id,
+                    zone_device_id=zone_device_identifier,
+                    zone_name=zone_name,
+                    zone_id=zone_id,
+                )
+                sensors.append(last_run_start_sensor)
+                _LOGGER.debug(
+                    "Created last run start time sensor for irrigation zone %s",
+                    zone_name,
+                )
+
+                last_run_end_sensor = IrrigationZoneLastRunEndTimeSensor(
+                    hass=hass,
+                    entry_id=entry.entry_id,
+                    zone_device_id=zone_device_identifier,
+                    zone_name=zone_name,
+                    zone_id=zone_id,
+                )
+                sensors.append(last_run_end_sensor)
+                _LOGGER.debug(
+                    "Created last run end time sensor for irrigation zone %s",
+                    zone_name,
+                )
+
     _LOGGER.info("Adding %d sensors for entry %s", len(sensors), entry.entry_id)
     async_add_entities(sensors)
+
+
+class IrrigationZoneLastRunStartTimeSensor(SensorEntity, RestoreEntity):
+    """
+    Sensor that tracks the last run start time of an irrigation zone.
+
+    This sensor listens for the 'esphome.irrigation_gateway_update' event
+    and updates when the event fires with the zone's start time data.
+    The sensor uses the timestamp device_class for proper formatting.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        zone_device_id: tuple[str, str],
+        zone_name: str,
+        zone_id: str,
+    ) -> None:
+        """
+        Initialize the irrigation zone last run start time sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The config entry ID.
+            zone_device_id: The device identifier tuple (domain, device_id).
+            zone_name: The name of the irrigation zone.
+            zone_id: The zone ID used to extract data from events.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.zone_device_id = zone_device_id
+        self.zone_name = zone_name
+        self.zone_id = zone_id
+
+        # Set entity attributes
+        self._attr_name = f"{zone_name} Last Run Start Time"
+        self._attr_device_class = SensorDeviceClass.TIMESTAMP
+        self._attr_icon = "mdi:clock-outline"
+
+        # Create unique ID from zone device identifier tuple
+        unique_id_parts = (
+            DOMAIN,
+            entry_id,
+            zone_device_id[0],
+            zone_device_id[1],
+            "last_run_start_time",
+        )
+        self._attr_unique_id = "_".join(unique_id_parts)
+
+        # Set device info to associate with the irrigation zone device
+        self._attr_device_info = DeviceInfo(
+            identifiers={zone_device_id},
+        )
+
+        self._state: Any = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+    def _extract_zone_start_time(self, event_data: dict[str, Any]) -> str | None:
+        """
+        Extract the zone start time from event data.
+
+        The zone ID is converted to a key like 'zone_1_start_time' for Zone 1.
+        The zone_id may be stored as 'zone-1' in config but the event data
+        uses 'zone_1_start_time' format, so we normalize by replacing dashes.
+
+        Args:
+            event_data: The event data dictionary.
+
+        Returns:
+            The start time value if found, None otherwise.
+
+        """
+        # Convert zone_id from 'zone-1' format to 'zone_1_start_time' format
+        # by replacing dashes with underscores
+        normalized_zone_id = self.zone_id.replace("-", "_")
+        zone_key = f"{normalized_zone_id}_start_time"
+        start_time = event_data.get(zone_key)
+
+        if start_time:
+            _LOGGER.debug(
+                "Extracted zone start time for %s: zone_id=%s, "
+                "normalized=%s, key=%s, value=%s",
+                self.zone_name,
+                self.zone_id,
+                normalized_zone_id,
+                zone_key,
+                start_time,
+            )
+
+        return start_time
+
+    @callback
+    def _handle_esphome_event(self, event: Any) -> None:
+        """Handle esphome.irrigation_gateway_update event."""
+        try:
+            event_data = event.data if hasattr(event, "data") else {}
+
+            # Log the event for debugging
+            _LOGGER.debug(
+                "Received esphome.irrigation_gateway_update event for zone %s. "
+                "Event data keys: %s",
+                self.zone_name,
+                list(event_data.keys()),
+            )
+
+            # Extract the start time for this specific zone
+            start_time = self._extract_zone_start_time(event_data)
+
+            if not start_time:
+                _LOGGER.debug(
+                    "No start time extracted for %s from event data",
+                    self.zone_name,
+                )
+                return
+
+            if start_time in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                _LOGGER.debug(
+                    "Start time for %s is unavailable/unknown: %s",
+                    self.zone_name,
+                    start_time,
+                )
+                return
+
+            # Update the state with the new start time
+            old_state = self._state
+            self._state = start_time
+
+            # Store event data in attributes
+            self._attributes = {
+                "event_type": "esphome.irrigation_gateway_update",
+                "zone_id": self.zone_id,
+                "zone_key": f"{self.zone_id.replace('-', '_')}_start_time",
+            }
+
+            # Log the update
+            if old_state != self._state:
+                _LOGGER.debug(
+                    "Updated %s start time from %s to %s",
+                    self.zone_name,
+                    old_state,
+                    self._state,
+                )
+
+            self.async_write_ha_state()
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Error processing esphome event for %s: %s",
+                self.zone_name,
+                exc,
+            )
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+
+        # Parse ISO 8601 datetime string to datetime object for TIMESTAMP device class
+        try:
+            if isinstance(self._state, str):
+                # Use dt_util.parse_datetime to handle ISO 8601 format with timezone
+                parsed_dt = dt_util.parse_datetime(self._state)
+                if parsed_dt:
+                    return parsed_dt
+                _LOGGER.warning(
+                    "Failed to parse datetime for %s: %s",
+                    self.zone_name,
+                    self._state,
+                )
+                return None
+        except (ValueError, TypeError) as exc:
+            _LOGGER.warning(
+                "Error converting state to datetime for %s: %s",
+                self.zone_name,
+                exc,
+            )
+            return None
+        else:
+            # Already a datetime object
+            return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes if self._attributes else None
+
+    async def async_added_to_hass(self) -> None:
+        """Set up event listener when entity is added to hass."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (
+            last_state := await self.async_get_last_state()
+        ) and last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._state = last_state.state
+            if last_state.attributes:
+                self._attributes = dict(last_state.attributes)
+
+            _LOGGER.debug(
+                "Restored last run start time sensor %s with state: %s",
+                self.entity_id,
+                self._state,
+            )
+
+        # Subscribe to esphome irrigation gateway update events
+        try:
+            self._unsubscribe = self.hass.bus.async_listen(
+                "esphome.irrigation_gateway_update",
+                self._handle_esphome_event,
+            )
+            _LOGGER.debug(
+                "Set up event listener for %s",
+                self.zone_name,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up event listener for %s: %s",
+                self.zone_name,
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class IrrigationZoneLastRunEndTimeSensor(SensorEntity, RestoreEntity):
+    """
+    Sensor that tracks the last run end time of an irrigation zone.
+
+    This sensor listens for the 'esphome.irrigation_gateway_update' event
+    and updates when the event fires with the zone's end time data.
+    The sensor uses the timestamp device_class for proper formatting.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        zone_device_id: tuple[str, str],
+        zone_name: str,
+        zone_id: str,
+    ) -> None:
+        """
+        Initialize the irrigation zone last run end time sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The config entry ID.
+            zone_device_id: The device identifier tuple (domain, device_id).
+            zone_name: The name of the irrigation zone.
+            zone_id: The zone ID used to extract data from events.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.zone_device_id = zone_device_id
+        self.zone_name = zone_name
+        self.zone_id = zone_id
+
+        # Set entity attributes
+        self._attr_name = f"{zone_name} Last Run End Time"
+        self._attr_device_class = SensorDeviceClass.TIMESTAMP
+        self._attr_icon = "mdi:clock-outline"
+
+        # Create unique ID from zone device identifier tuple
+        unique_id_parts = (
+            DOMAIN,
+            entry_id,
+            zone_device_id[0],
+            zone_device_id[1],
+            "last_run_end_time",
+        )
+        self._attr_unique_id = "_".join(unique_id_parts)
+
+        # Set device info to associate with the irrigation zone device
+        self._attr_device_info = DeviceInfo(
+            identifiers={zone_device_id},
+        )
+
+        self._state: Any = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+    def _extract_zone_end_time(self, event_data: dict[str, Any]) -> str | None:
+        """
+        Extract the zone end time from event data.
+
+        The zone ID is converted to a key like 'zone_1_end_time' for Zone 1.
+        The zone_id may be stored as 'zone-1' in config but the event data
+        uses 'zone_1_end_time' format, so we normalize by replacing dashes.
+
+        Args:
+            event_data: The event data dictionary.
+
+        Returns:
+            The end time value if found, None otherwise.
+
+        """
+        # Convert zone_id from 'zone-1' format to 'zone_1_end_time' format
+        # by replacing dashes with underscores
+        normalized_zone_id = self.zone_id.replace("-", "_")
+        zone_key = f"{normalized_zone_id}_end_time"
+        end_time = event_data.get(zone_key)
+
+        if end_time:
+            _LOGGER.debug(
+                "Extracted zone end time for %s: zone_id=%s, "
+                "normalized=%s, key=%s, value=%s",
+                self.zone_name,
+                self.zone_id,
+                normalized_zone_id,
+                zone_key,
+                end_time,
+            )
+
+        return end_time
+
+    @callback
+    def _handle_esphome_event(self, event: Any) -> None:
+        """Handle esphome.irrigation_gateway_update event."""
+        try:
+            event_data = event.data if hasattr(event, "data") else {}
+
+            # Log the event for debugging
+            _LOGGER.debug(
+                "Received esphome.irrigation_gateway_update event for zone %s. "
+                "Event data keys: %s",
+                self.zone_name,
+                list(event_data.keys()),
+            )
+
+            # Extract the end time for this specific zone
+            end_time = self._extract_zone_end_time(event_data)
+
+            if not end_time:
+                _LOGGER.debug(
+                    "No end time extracted for %s from event data",
+                    self.zone_name,
+                )
+                return
+
+            if end_time in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                _LOGGER.debug(
+                    "End time for %s is unavailable/unknown: %s",
+                    self.zone_name,
+                    end_time,
+                )
+                return
+
+            # Update the state with the new end time
+            old_state = self._state
+            self._state = end_time
+
+            # Store event data in attributes
+            self._attributes = {
+                "event_type": "esphome.irrigation_gateway_update",
+                "zone_id": self.zone_id,
+                "zone_key": f"{self.zone_id.replace('-', '_')}_end_time",
+            }
+
+            # Log the update
+            if old_state != self._state:
+                _LOGGER.debug(
+                    "Updated %s end time from %s to %s",
+                    self.zone_name,
+                    old_state,
+                    self._state,
+                )
+
+            self.async_write_ha_state()
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Error processing esphome event for %s: %s",
+                self.zone_name,
+                exc,
+            )
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+
+        # Parse ISO 8601 datetime string to datetime object for TIMESTAMP device class
+        try:
+            if isinstance(self._state, str):
+                # Use dt_util.parse_datetime to handle ISO 8601 format with timezone
+                parsed_dt = dt_util.parse_datetime(self._state)
+                if parsed_dt:
+                    return parsed_dt
+                _LOGGER.warning(
+                    "Failed to parse datetime for %s: %s",
+                    self.zone_name,
+                    self._state,
+                )
+                return None
+        except (ValueError, TypeError) as exc:
+            _LOGGER.warning(
+                "Error converting state to datetime for %s: %s",
+                self.zone_name,
+                exc,
+            )
+            return None
+        else:
+            # Already a datetime object
+            return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes if self._attributes else None
+
+    async def async_added_to_hass(self) -> None:
+        """Set up event listener when entity is added to hass."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (
+            last_state := await self.async_get_last_state()
+        ) and last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._state = last_state.state
+            if last_state.attributes:
+                self._attributes = dict(last_state.attributes)
+
+            _LOGGER.debug(
+                "Restored last run end time sensor %s with state: %s",
+                self.entity_id,
+                self._state,
+            )
+
+        # Subscribe to esphome irrigation gateway update events
+        try:
+            self._unsubscribe = self.hass.bus.async_listen(
+                "esphome.irrigation_gateway_update",
+                self._handle_esphome_event,
+            )
+            _LOGGER.debug(
+                "Set up event listener for %s",
+                self.zone_name,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up event listener for %s: %s",
+                self.zone_name,
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
 
 
 def _metric_to_attr(metric: str) -> str:
