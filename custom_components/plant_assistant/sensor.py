@@ -1219,6 +1219,19 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                     zone_name,
                 )
 
+                fertiliser_due_sensor = IrrigationZoneFertiliserDueSensor(
+                    hass=hass,
+                    entry_id=entry.entry_id,
+                    zone_device_id=zone_device_identifier,
+                    zone_name=zone_name,
+                    zone_id=zone_id,
+                )
+                sensors.append(fertiliser_due_sensor)
+                _LOGGER.debug(
+                    "Created fertiliser due sensor for irrigation zone %s",
+                    zone_name,
+                )
+
     _LOGGER.info("Adding %d sensors for entry %s", len(sensors), entry.entry_id)
     async_add_entities(sensors)
 
@@ -6126,6 +6139,358 @@ class HumidityAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.warning(
                 "Failed to set up humidity above threshold sensor: %s",
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class IrrigationZoneFertiliserDueSensor(SensorEntity, RestoreEntity):
+    """
+    Sensor that assesses if fertiliser is due for an irrigation zone.
+
+    This sensor evaluates whether fertiliser injection is due based on multiple
+    conditions including:
+    - System-wide fertiliser enabled state
+    - Zone-specific fertiliser enabled state
+    - Fertiliser injection schedule (in days)
+    - Current month (only active April-September)
+    - Last fertiliser injection timestamp
+    - Current date/time
+
+    The sensor state is 'on' when fertiliser is due, 'off' otherwise.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        zone_device_id: tuple[str, str],
+        zone_name: str,
+        zone_id: str,
+    ) -> None:
+        """
+        Initialize the irrigation zone fertiliser due sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The config entry ID.
+            zone_device_id: The device identifier tuple (domain, device_id).
+            zone_name: The name of the irrigation zone.
+            zone_id: The zone ID used to extract data from events and entities.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.zone_device_id = zone_device_id
+        self.zone_name = zone_name
+        self.zone_id = zone_id
+
+        # Set entity attributes
+        self._attr_name = f"{zone_name} Fertiliser Due"
+        self._attr_device_class = SensorDeviceClass.ENUM
+        self._attr_icon = "mdi:water-opacity"
+        self._attr_options = ["off", "on"]
+
+        # Create unique ID from zone device identifier tuple
+        unique_id_parts = (
+            DOMAIN,
+            entry_id,
+            zone_device_id[0],
+            zone_device_id[1],
+            "fertiliser_due",
+        )
+        self._attr_unique_id = "_".join(unique_id_parts)
+
+        # Set device info to associate with the irrigation zone device
+        self._attr_device_info = DeviceInfo(
+            identifiers={zone_device_id},
+        )
+
+        self._state: str = "off"
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+    def _build_entity_id(self, entity_type: str, suffix: str) -> str:
+        """
+        Build a Home Assistant entity ID for configuration entities.
+
+        Args:
+            entity_type: The entity type
+                (input_boolean, input_number, sensor, switch).
+            suffix: The entity suffix
+                (e.g., 'front_garden_irrigation_zone_fertiliser_injection').
+
+        Returns:
+            The full entity ID
+            (e.g., 'input_boolean.front_garden_irrigation_zone_fertiliser_injection').
+
+        """
+        return f"{entity_type}.{suffix}"
+
+    def _get_entity_state(self, entity_id: str) -> str | None:
+        """
+        Safely get the state of an entity.
+
+        Args:
+            entity_id: The entity ID to retrieve state for.
+
+        Returns:
+            The state value as a string, or None if unavailable/unknown.
+
+        """
+        try:
+            state = self.hass.states.get(entity_id)
+            if state is not None and state.state not in (
+                STATE_UNAVAILABLE,
+                STATE_UNKNOWN,
+            ):
+                return state.state
+            return None  # noqa: TRY300
+        except (AttributeError, KeyError, ValueError):
+            return None
+
+    def _parse_datetime_state(self, datetime_str: str | None) -> Any:
+        """
+        Parse a datetime string to a datetime object.
+
+        Args:
+            datetime_str: The datetime string to parse (ISO 8601 format).
+
+        Returns:
+            A datetime object if parsing succeeds, None otherwise.
+
+        """
+        if not datetime_str or datetime_str in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+
+        try:
+            return dt_util.parse_datetime(datetime_str)
+        except (ValueError, TypeError):
+            return None
+
+    def _evaluate_fertiliser_due(self) -> bool:  # noqa: PLR0911
+        """
+        Evaluate if fertiliser is due based on configuration.
+
+        Implements the logic checking:
+        - Zone-specific fertiliser enabled state (from device switch)
+        - Fertiliser injection schedule (from device number entity)
+        - Current month (only active April-September, months 4-9)
+        - Last fertiliser injection timestamp
+        - Current date/time
+
+        Returns:
+            True if fertiliser is due, False otherwise.
+
+        """
+        # 1. Check if zone fertiliser injection is enabled
+        # Device switch: {DOMAIN}_{entry_id}_{zone_device_id}_allow_fertiliser_injection
+        zone_fertiliser_switch_entity = (
+            f"switch.{DOMAIN}_{self.entry_id}_esphome_{self.zone_device_id[1]}_"
+            "allow_fertiliser_injection"
+        )
+        zone_fertiliser_enabled = self._get_entity_state(zone_fertiliser_switch_entity)
+        if zone_fertiliser_enabled != "on":
+            _LOGGER.debug(
+                "Fertiliser due %s: Zone fertiliser enabled is %s (from %s)",
+                self.zone_name,
+                zone_fertiliser_enabled,
+                zone_fertiliser_switch_entity,
+            )
+            return False
+
+        # 2. Check if fertiliser schedule is configured (> 0 days)
+        # Device number: {DOMAIN}_{entry_id}_{zone_device_id}_fertiliser_injection_days
+        schedule_number_entity = (
+            f"number.{DOMAIN}_{self.entry_id}_esphome_{self.zone_device_id[1]}_"
+            "fertiliser_injection_days"
+        )
+        schedule_str = self._get_entity_state(schedule_number_entity)
+        if not schedule_str:
+            _LOGGER.debug(
+                "Fertiliser due %s: Schedule not available from %s",
+                self.zone_name,
+                schedule_number_entity,
+            )
+            return False
+
+        try:
+            schedule_days = int(float(schedule_str))
+        except (ValueError, TypeError):
+            _LOGGER.debug(
+                "Fertiliser due %s: Could not parse schedule: %s",
+                self.zone_name,
+                schedule_str,
+            )
+            return False
+
+        if schedule_days <= 0:
+            _LOGGER.debug(
+                "Fertiliser due %s: Schedule is 0 or negative: %d days",
+                self.zone_name,
+                schedule_days,
+            )
+            return False
+
+        # 3. Check if current month is in season (April-September)
+        current_month = dt_util.now().month
+        if current_month < 4 or current_month > 9:  # noqa: PLR2004
+            _LOGGER.debug(
+                "Fertiliser due %s: Outside fertiliser season (month=%d)",
+                self.zone_name,
+                current_month,
+            )
+            return False
+
+        # 4. Get last fertiliser injection date
+        # Normalize zone ID from 'zone-1' format to 'zone_1' for entity IDs
+        zone_suffix = self.zone_id.replace("-", "_")
+        last_injection_str = self._get_entity_state(
+            self._build_entity_id("sensor", f"{zone_suffix}_last_fertiliser_injection")
+        )
+
+        # If never injected before, fertiliser is due
+        if not last_injection_str:
+            _LOGGER.debug(
+                "Fertiliser due %s: No previous injection recorded",
+                self.zone_name,
+            )
+            return True
+
+        # 5. Parse last injection timestamp
+        last_injection_dt = self._parse_datetime_state(last_injection_str)
+        if not last_injection_dt:
+            _LOGGER.debug(
+                "Fertiliser due %s: Could not parse last injection date: %s",
+                self.zone_name,
+                last_injection_str,
+            )
+            return False
+
+        # 6. Calculate next due date
+        try:
+            next_due_dt = last_injection_dt + timedelta(days=schedule_days)
+        except (TypeError, ValueError):
+            _LOGGER.debug(
+                "Fertiliser due %s: Could not calculate next due date",
+                self.zone_name,
+            )
+            return False
+
+        # 7. Get current datetime and compare if current time >= next due time
+        current_dt = dt_util.now()
+        is_due: bool = current_dt >= next_due_dt
+
+        _LOGGER.debug(
+            "Fertiliser due %s: Evaluated - last_injection=%s, schedule=%d days, "
+            "next_due=%s, current=%s, is_due=%s",
+            self.zone_name,
+            last_injection_dt,
+            schedule_days,
+            next_due_dt,
+            current_dt,
+            is_due,
+        )
+
+        return is_due
+
+    @callback
+    def _handle_esphome_event(self, _event: Any) -> None:
+        """
+        Handle esphome.irrigation_gateway_update event.
+
+        This event triggers re-evaluation of the fertiliser due state
+        in case any relevant data has changed.
+        """
+        try:
+            _LOGGER.debug(
+                "Fertiliser due sensor %s received esphome event",
+                self.zone_name,
+            )
+
+            # Re-evaluate fertiliser due status
+            is_due = self._evaluate_fertiliser_due()
+            new_state = "on" if is_due else "off"
+
+            if self._state != new_state:
+                old_state = self._state
+                self._state = new_state
+
+                self._attributes = {
+                    "last_evaluation": dt_util.now().isoformat(),
+                    "event_type": "esphome.irrigation_gateway_update",
+                    "zone_id": self.zone_id,
+                }
+
+                _LOGGER.info(
+                    "Fertiliser due %s changed from %s to %s",
+                    self.zone_name,
+                    old_state,
+                    new_state,
+                )
+
+                self.async_write_ha_state()
+        except (AttributeError, KeyError, ValueError, TypeError) as exc:
+            _LOGGER.warning(
+                "Error processing esphome event for fertiliser due %s: %s",
+                self.zone_name,
+                exc,
+            )
+
+    @property
+    def native_value(self) -> str:
+        """Return the native value of the sensor."""
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes if self._attributes else None
+
+    async def async_added_to_hass(self) -> None:
+        """Set up event listener when entity is added to hass."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (
+            last_state := await self.async_get_last_state()
+        ) and last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._state = last_state.state
+            if last_state.attributes:
+                self._attributes = dict(last_state.attributes)
+
+            _LOGGER.debug(
+                "Restored fertiliser due sensor %s with state: %s",
+                self.entity_id,
+                self._state,
+            )
+        else:
+            # Perform initial evaluation
+            is_due = self._evaluate_fertiliser_due()
+            self._state = "on" if is_due else "off"
+            self._attributes = {
+                "last_evaluation": dt_util.now().isoformat(),
+                "zone_id": self.zone_id,
+            }
+
+        # Subscribe to esphome irrigation gateway update events
+        try:
+            self._unsubscribe = self.hass.bus.async_listen(
+                "esphome.irrigation_gateway_update",
+                self._handle_esphome_event,
+            )
+            _LOGGER.debug(
+                "Set up event listener for fertiliser due sensor %s",
+                self.zone_name,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up event listener for fertiliser due %s: %s",
+                self.zone_name,
                 exc,
             )
 
