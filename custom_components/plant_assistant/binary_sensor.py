@@ -216,6 +216,18 @@ class StatusMonitorConfig:
     location_device_id: str | None = None
 
 
+@dataclass
+class MasterScheduleStatusMonitorConfig:
+    """Configuration for MasterScheduleStatusMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    master_schedule_switch_entity_id: str
+    zone_device_identifier: tuple[str, str]
+
+
 class PlantCountStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     """
     Binary sensor that monitors plant count status for a location.
@@ -824,6 +836,289 @@ class StatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             if unsubscribe:
                 unsubscribe()
         self._unsubscribe_handlers.clear()
+
+
+class MasterScheduleStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that monitors master schedule status for an irrigation zone.
+
+    This sensor turns ON (problem detected) when the master schedule switch
+    for an irrigation zone associated with an esphome device has been turned off.
+    The sensor respects the Schedule Ignore Until datetime entity - if the current
+    time is before the ignore until datetime, the problem is not raised.
+    """
+
+    def __init__(self, config: MasterScheduleStatusMonitorConfig) -> None:
+        """
+        Initialize the Master Schedule Status Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.zone_device_identifier = config.zone_device_identifier
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+        self.master_schedule_switch_entity_id = config.master_schedule_switch_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Master Schedule Status"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_master_schedule_status"
+        )
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+        # Set device info to associate with the irrigation zone device
+        self._attr_device_info = DeviceInfo(
+            identifiers={self.zone_device_identifier},
+        )
+
+        self._state: bool | None = None
+        self._master_schedule_on: bool | None = None
+        self._ignore_until_datetime: Any = None
+        self._unsubscribe_switch: Any = None
+        self._unsubscribe_ignore_until: Any = None
+
+        # Initialize with current state of master schedule switch entity
+        if switch_state := self.hass.states.get(self.master_schedule_switch_entity_id):
+            self._master_schedule_on = switch_state.state == "on"
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on master schedule switch status."""
+        # If master schedule switch state is unavailable, set state to None
+        if self._master_schedule_on is None:
+            self._state = None
+            return
+
+        # Check if we're currently in the ignore period
+        if self._ignore_until_datetime is not None:
+            try:
+                now = dt_util.now()
+                if now < self._ignore_until_datetime:
+                    # Current time is before ignore until datetime, no problem
+                    self._state = False
+                    return
+            except (TypeError, AttributeError) as exc:
+                _LOGGER.debug("Error checking ignore until datetime: %s", exc)
+
+        # Binary sensor is ON (problem) when master schedule switch is OFF
+        self._state = not self._master_schedule_on
+
+    async def _find_schedule_ignore_until_entity(self) -> str | None:
+        """
+        Find schedule ignore until datetime entity for this irrigation zone.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "datetime"
+                    and entity.unique_id
+                    and "schedule_ignore_until" in entity.unique_id
+                    and self.entry_id in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found schedule ignore until datetime: %s",
+                        entity.entity_id,
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding schedule ignore until entity: %s", exc)
+
+        return None
+
+    @callback
+    def _master_schedule_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle master schedule switch state changes."""
+        if new_state is None:
+            self._master_schedule_on = None
+        else:
+            self._master_schedule_on = new_state.state == "on"
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _schedule_ignore_until_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle schedule ignore until datetime changes."""
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._ignore_until_datetime = None
+        else:
+            try:
+                parsed_datetime = dt_util.parse_datetime(new_state.state)
+                if parsed_datetime is not None:
+                    # Ensure timezone info
+                    if parsed_datetime.tzinfo is None:
+                        parsed_datetime = parsed_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+                    self._ignore_until_datetime = parsed_datetime
+                else:
+                    self._ignore_until_datetime = None
+            except (ValueError, TypeError) as exc:
+                _LOGGER.debug("Error parsing schedule ignore until datetime: %s", exc)
+                self._ignore_until_datetime = None
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if master schedule is off (problem detected)."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state."""
+        if self._state is True:
+            return "mdi:clock-remove"
+        return "mdi:clock-check"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        attrs = {
+            "type": "Warning",
+            "message": "Master Schedule Off" if self._state else "Master Schedule On",
+            "task": True,
+            "tags": [
+                self.irrigation_zone_name.lower().replace(" ", "_"),
+            ],
+            "master_schedule_on": self._master_schedule_on,
+            "source_entity": self.master_schedule_switch_entity_id,
+        }
+
+        # Add ignore until information if available
+        if self._ignore_until_datetime:
+            now = dt_util.now()
+            attrs["ignore_until"] = self._ignore_until_datetime.isoformat()
+            attrs["currently_ignoring"] = now < self._ignore_until_datetime
+
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        switch_state = self.hass.states.get(self.master_schedule_switch_entity_id)
+        return switch_state is not None
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                _LOGGER.info(
+                    "Restored master schedule status for %s: %s",
+                    self.location_name,
+                    self._state,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def _setup_schedule_ignore_until_subscription(self) -> None:
+        """Find and subscribe to schedule ignore until datetime entity."""
+        ignore_until_entity_id = await self._find_schedule_ignore_until_entity()
+        if ignore_until_entity_id:
+            if ignore_until_state := self.hass.states.get(ignore_until_entity_id):
+                try:
+                    parsed_datetime = dt_util.parse_datetime(ignore_until_state.state)
+                    if parsed_datetime is not None:
+                        if parsed_datetime.tzinfo is None:
+                            parsed_datetime = parsed_datetime.replace(
+                                tzinfo=dt_util.get_default_time_zone()
+                            )
+                        self._ignore_until_datetime = parsed_datetime
+                except (ValueError, TypeError) as exc:
+                    _LOGGER.debug(
+                        "Error parsing schedule ignore until datetime: %s", exc
+                    )
+
+            try:
+                self._unsubscribe_ignore_until = async_track_state_change(
+                    self.hass,
+                    ignore_until_entity_id,
+                    self._schedule_ignore_until_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to schedule ignore until datetime: %s",
+                    ignore_until_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to schedule ignore until entity %s: %s",
+                    ignore_until_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.debug(
+                "Schedule ignore until datetime not found for zone %s",
+                self.irrigation_zone_name,
+            )
+
+    async def _setup_master_schedule_subscription(self) -> None:
+        """Subscribe to master schedule switch entity state changes."""
+        try:
+            self._unsubscribe_switch = async_track_state_change(
+                self.hass,
+                self.master_schedule_switch_entity_id,
+                self._master_schedule_state_changed,
+            )
+            _LOGGER.debug(
+                "Subscribed to master schedule switch: %s",
+                self.master_schedule_switch_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to master schedule entity %s: %s",
+                self.master_schedule_switch_entity_id,
+                exc,
+            )
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass and subscribe to state changes."""
+        # Restore previous state if available
+        await super().async_added_to_hass()
+        await self._restore_previous_state()
+
+        # Set up subscriptions
+        await self._setup_schedule_ignore_until_subscription()
+        await self._setup_master_schedule_subscription()
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe_switch:
+            self._unsubscribe_switch()
+        if (
+            hasattr(self, "_unsubscribe_ignore_until")
+            and self._unsubscribe_ignore_until
+        ):
+            self._unsubscribe_ignore_until()
 
 
 class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
@@ -6561,6 +6856,18 @@ async def _create_status_sensor(
     return sensor
 
 
+async def _create_master_schedule_status_sensor(
+    config: MasterScheduleStatusMonitorConfig,
+) -> BinarySensorEntity | None:
+    """Create master schedule status monitor sensor."""
+    sensor = MasterScheduleStatusMonitorBinarySensor(config)
+    _LOGGER.debug(
+        "Created master schedule status monitor binary sensor for %s",
+        config.location_name,
+    )
+    return sensor
+
+
 async def _create_link_monitors(
     config: LinkMonitorConfig,
 ) -> list[BinarySensorEntity]:
@@ -6752,6 +7059,67 @@ async def async_setup_entry(
             entry.entry_id,
         )
         return
+
+    # Process master schedule status sensors for irrigation zones with linked devices
+    irrigation_zones = entry.options.get("irrigation_zones", {})
+    if irrigation_zones:
+        _LOGGER.debug(
+            "Processing %d irrigation zones for master schedule status sensors",
+            len(irrigation_zones),
+        )
+
+        irrigation_zone_sensors: list[BinarySensorEntity] = []
+        device_registry = dr.async_get(hass)
+
+        for zone_id, zone_data in irrigation_zones.items():
+            if isinstance(zone_data, dict) and (
+                linked_device_id := zone_data.get("linked_device_id")
+            ):
+                zone_name = zone_data.get("name", f"Zone {zone_id}")
+
+                # Get the zone device from device registry
+                zone_device = device_registry.async_get(linked_device_id)
+                if not zone_device:
+                    _LOGGER.warning(
+                        "Could not find zone device with ID %s for zone %s",
+                        linked_device_id,
+                        zone_name,
+                    )
+                    continue
+
+                # Get the first identifier from the zone device
+                zone_device_identifier = (
+                    next(iter(zone_device.identifiers))
+                    if zone_device.identifiers
+                    else (DOMAIN, linked_device_id)
+                )
+
+                # Get the master schedule switch entity ID
+                master_schedule_switch_entity_id = (
+                    f"switch.{zone_name.lower().replace(' ', '_')}_master_schedule"
+                )
+
+                # Create master schedule status sensor
+                master_schedule_config = MasterScheduleStatusMonitorConfig(
+                    hass=hass,
+                    entry_id=entry.entry_id,
+                    location_name=zone_name,
+                    irrigation_zone_name=zone_name,
+                    master_schedule_switch_entity_id=master_schedule_switch_entity_id,
+                    zone_device_identifier=zone_device_identifier,
+                )
+                master_schedule_sensor = await _create_master_schedule_status_sensor(
+                    master_schedule_config
+                )
+                if master_schedule_sensor:
+                    irrigation_zone_sensors.append(master_schedule_sensor)
+                    _LOGGER.debug(
+                        "Created master schedule status sensor for irrigation zone %s",
+                        zone_name,
+                    )
+
+        if irrigation_zone_sensors:
+            async_add_entities(irrigation_zone_sensors)
 
     # Process main entry subentries (like openplantbook_ref)
     if not entry.subentries:
