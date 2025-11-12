@@ -935,13 +935,18 @@ class MasterScheduleStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
         try:
             ent_reg = er.async_get(self.hass)
 
+            # Build the expected unique_id pattern based on zone device identifier
+            zone_device_domain = self.zone_device_identifier[0]
+            zone_device_id = self.zone_device_identifier[1]
+
             for entity in ent_reg.entities.values():
                 if (
                     entity.platform == DOMAIN
                     and entity.domain == "datetime"
                     and entity.unique_id
                     and "schedule_ignore_until" in entity.unique_id
-                    and self.entry_id in entity.unique_id
+                    and zone_device_domain in entity.unique_id
+                    and zone_device_id in entity.unique_id
                 ):
                     _LOGGER.debug(
                         "Found schedule ignore until datetime: %s",
@@ -1247,13 +1252,18 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
         try:
             ent_reg = er.async_get(self.hass)
 
+            # Build the expected unique_id pattern based on zone device identifier
+            zone_device_domain = self.zone_device_identifier[0]
+            zone_device_id = self.zone_device_identifier[1]
+
             for entity in ent_reg.entities.values():
                 if (
                     entity.platform == DOMAIN
                     and entity.domain == "datetime"
                     and entity.unique_id
                     and "schedule_misconfiguration_ignore_until" in entity.unique_id
-                    and self.entry_id in entity.unique_id
+                    and zone_device_domain in entity.unique_id
+                    and zone_device_id in entity.unique_id
                 ):
                     _LOGGER.debug(
                         "Found schedule misconfiguration ignore until datetime: %s",

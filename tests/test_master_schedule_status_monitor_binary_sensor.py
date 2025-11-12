@@ -396,11 +396,13 @@ class TestMasterScheduleStatusMonitorBinarySensorAsyncOperations:
 
         sensor = MasterScheduleStatusMonitorBinarySensor(config)
 
-        # Create mock entity
+        # Create mock entity with correct unique_id based on zone_device_identifier
         mock_entity = MagicMock()
         mock_entity.platform = DOMAIN
         mock_entity.domain = "datetime"
-        mock_entity.unique_id = f"{DOMAIN}_test_entry_123_schedule_ignore_until"
+        mock_entity.unique_id = (
+            f"{DOMAIN}_plant_assistant_test_zone_456_schedule_ignore_until"
+        )
         mock_entity.entity_id = "datetime.test_zone_schedule_ignore_until"
 
         mock_registry = MagicMock()
