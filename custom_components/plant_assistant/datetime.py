@@ -578,94 +578,95 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
                     config_subentry_id=subentry_id,  # type: ignore[call-arg]
                 )
 
-        # Process irrigation zones with esphome linked devices
-        irrigation_zone_datetime_entities = []
-        zones_dict = entry.options.get("irrigation_zones", {})
-        device_registry = dr.async_get(hass)
-
-        for zone_id, zone in zones_dict.items():
-            if linked_device_id := zone.get("linked_device_id"):
-                zone_name = zone.get("name") or f"Zone {zone_id}"
-                zone_device = device_registry.async_get(linked_device_id)
-                if zone_device and zone_device.identifiers:
-                    zone_device_identifier = next(iter(zone_device.identifiers))
-
-                    _LOGGER.debug(
-                        "Creating irrigation zone datetime entities for %s",
-                        zone_name,
-                    )
-
-                    # Create schedule ignore until entity
-                    schedule_ignore_entity = IrrigationZoneScheduleIgnoreUntilEntity(
-                        hass=hass,
-                        entry_id=entry.entry_id,
-                        zone_device_id=zone_device_identifier,
-                        zone_name=zone_name,
-                    )
-                    irrigation_zone_datetime_entities.append(schedule_ignore_entity)
-                    _LOGGER.debug(
-                        "Created schedule ignore until entity for irrigation zone %s",
-                        zone_name,
-                    )
-
-                    # Create schedule misconfiguration ignore until entity
-                    schedule_misc_entity = (
-                        IrrigationZoneScheduleMisconfigurationIgnoreUntilEntity(
-                            hass=hass,
-                            entry_id=entry.entry_id,
-                            zone_device_id=zone_device_identifier,
-                            zone_name=zone_name,
-                        )
-                    )
-                    irrigation_zone_datetime_entities.append(schedule_misc_entity)
-                    _LOGGER.debug(
-                        "Created schedule misconfiguration ignore until entity "
-                        "for irrigation zone %s",
-                        zone_name,
-                    )
-
-                    # Create water delivery preference ignore until entity
-                    water_delivery_entity = (
-                        IrrigationZoneWaterDeliveryPreferenceIgnoreUntilEntity(
-                            hass=hass,
-                            entry_id=entry.entry_id,
-                            zone_device_id=zone_device_identifier,
-                            zone_name=zone_name,
-                        )
-                    )
-                    irrigation_zone_datetime_entities.append(water_delivery_entity)
-                    _LOGGER.debug(
-                        "Created water delivery preference ignore until entity "
-                        "for irrigation zone %s",
-                        zone_name,
-                    )
-
-                    # Create error ignore until entity
-                    error_ignore_entity = IrrigationZoneErrorIgnoreUntilEntity(
-                        hass=hass,
-                        entry_id=entry.entry_id,
-                        zone_device_id=zone_device_identifier,
-                        zone_name=zone_name,
-                    )
-                    irrigation_zone_datetime_entities.append(error_ignore_entity)
-                    _LOGGER.debug(
-                        "Created error ignore until entity for irrigation zone %s",
-                        zone_name,
-                    )
-
-        # Add irrigation zone datetime entities
-        if irrigation_zone_datetime_entities:
-            _LOGGER.info(
-                "Adding %d irrigation zone datetime entities for entry %s",
-                len(irrigation_zone_datetime_entities),
-                entry.entry_id,
-            )
-            async_add_entities(irrigation_zone_datetime_entities)
-
     else:
         # Process legacy entries or direct configuration if needed
         _LOGGER.debug("Processing legacy entry or direct configuration")
         # Add logic here if you need to support non-subentry configurations
+
+    # Process irrigation zones with esphome linked devices
+    # This should happen regardless of whether entry has subentries
+    irrigation_zone_datetime_entities = []
+    zones_dict = entry.options.get("irrigation_zones", {})
+    device_registry = dr.async_get(hass)
+
+    for zone_id, zone in zones_dict.items():
+        if linked_device_id := zone.get("linked_device_id"):
+            zone_name = zone.get("name") or f"Zone {zone_id}"
+            zone_device = device_registry.async_get(linked_device_id)
+            if zone_device and zone_device.identifiers:
+                zone_device_identifier = next(iter(zone_device.identifiers))
+
+                _LOGGER.debug(
+                    "Creating irrigation zone datetime entities for %s",
+                    zone_name,
+                )
+
+                # Create schedule ignore until entity
+                schedule_ignore_entity = IrrigationZoneScheduleIgnoreUntilEntity(
+                    hass=hass,
+                    entry_id=entry.entry_id,
+                    zone_device_id=zone_device_identifier,
+                    zone_name=zone_name,
+                )
+                irrigation_zone_datetime_entities.append(schedule_ignore_entity)
+                _LOGGER.debug(
+                    "Created schedule ignore until entity for irrigation zone %s",
+                    zone_name,
+                )
+
+                # Create schedule misconfiguration ignore until entity
+                schedule_misc_entity = (
+                    IrrigationZoneScheduleMisconfigurationIgnoreUntilEntity(
+                        hass=hass,
+                        entry_id=entry.entry_id,
+                        zone_device_id=zone_device_identifier,
+                        zone_name=zone_name,
+                    )
+                )
+                irrigation_zone_datetime_entities.append(schedule_misc_entity)
+                _LOGGER.debug(
+                    "Created schedule misconfiguration ignore until entity "
+                    "for irrigation zone %s",
+                    zone_name,
+                )
+
+                # Create water delivery preference ignore until entity
+                water_delivery_entity = (
+                    IrrigationZoneWaterDeliveryPreferenceIgnoreUntilEntity(
+                        hass=hass,
+                        entry_id=entry.entry_id,
+                        zone_device_id=zone_device_identifier,
+                        zone_name=zone_name,
+                    )
+                )
+                irrigation_zone_datetime_entities.append(water_delivery_entity)
+                _LOGGER.debug(
+                    "Created water delivery preference ignore until entity "
+                    "for irrigation zone %s",
+                    zone_name,
+                )
+
+                # Create error ignore until entity
+                error_ignore_entity = IrrigationZoneErrorIgnoreUntilEntity(
+                    hass=hass,
+                    entry_id=entry.entry_id,
+                    zone_device_id=zone_device_identifier,
+                    zone_name=zone_name,
+                )
+                irrigation_zone_datetime_entities.append(error_ignore_entity)
+                _LOGGER.debug(
+                    "Created error ignore until entity for irrigation zone %s",
+                    zone_name,
+                )
+
+    # Add irrigation zone datetime entities
+    if irrigation_zone_datetime_entities:
+        _LOGGER.info(
+            "Adding %d irrigation zone datetime entities for entry %s",
+            len(irrigation_zone_datetime_entities),
+            entry.entry_id,
+        )
+        async_add_entities(irrigation_zone_datetime_entities)
 
 
 class TemperatureLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
