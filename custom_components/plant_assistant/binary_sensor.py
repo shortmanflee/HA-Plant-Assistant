@@ -243,6 +243,20 @@ class ScheduleMisconfigurationStatusMonitorConfig:
     zone_device_identifier: tuple[str, str]
 
 
+@dataclass
+class WaterDeliveryPreferenceStatusMonitorConfig:
+    """Configuration for WaterDeliveryPreferenceStatusMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    master_schedule_switch_entity_id: str
+    allow_rain_water_delivery_switch_entity_id: str
+    allow_water_main_delivery_switch_entity_id: str
+    zone_device_identifier: tuple[str, str]
+
+
 class PlantCountStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     """
     Binary sensor that monitors plant count status for a location.
@@ -1583,6 +1597,434 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
             self._unsubscribe_afternoon()
         if self._unsubscribe_sunset:
             self._unsubscribe_sunset()
+        if (
+            hasattr(self, "_unsubscribe_ignore_until")
+            and self._unsubscribe_ignore_until
+        ):
+            self._unsubscribe_ignore_until()
+
+
+class WaterDeliveryPreferenceStatusMonitorBinarySensor(
+    BinarySensorEntity, RestoreEntity
+):
+    """
+    Binary sensor that monitors water delivery preference status for an irrigation zone.
+
+    This sensor turns ON (problem detected) when the master schedule switch is on,
+    but both the Allow Rain Water Delivery and Allow Water Main Delivery switches
+    are off, indicating no water delivery methods are available. The sensor respects
+    the Water Delivery Preference Ignore Until datetime entity - if the current time
+    is before the ignore until datetime, the problem is not raised.
+    """
+
+    def __init__(self, config: WaterDeliveryPreferenceStatusMonitorConfig) -> None:
+        """
+        Initialize the Water Delivery Preference Status Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.zone_device_identifier = config.zone_device_identifier
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+        self.master_schedule_switch_entity_id = config.master_schedule_switch_entity_id
+        self.allow_rain_water_delivery_switch_entity_id = (
+            config.allow_rain_water_delivery_switch_entity_id
+        )
+        self.allow_water_main_delivery_switch_entity_id = (
+            config.allow_water_main_delivery_switch_entity_id
+        )
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Water Delivery Preference Status"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_"
+            "water_delivery_preference_status"
+        )
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+        # Set device info to associate with the irrigation zone device
+        self._attr_device_info = DeviceInfo(
+            identifiers={self.zone_device_identifier},
+        )
+
+        self._state: bool | None = None
+        self._master_schedule_on: bool | None = None
+        self._allow_rain_water_delivery_on: bool | None = None
+        self._allow_water_main_delivery_on: bool | None = None
+        self._ignore_until_datetime: Any = None
+        self._unsubscribe_master: Any = None
+        self._unsubscribe_rain_delivery: Any = None
+        self._unsubscribe_main_delivery: Any = None
+        self._unsubscribe_ignore_until: Any = None
+
+        # Initialize with current state of switch entities
+        if master_state := self.hass.states.get(self.master_schedule_switch_entity_id):
+            self._master_schedule_on = master_state.state == "on"
+        if rain_state := self.hass.states.get(
+            self.allow_rain_water_delivery_switch_entity_id
+        ):
+            self._allow_rain_water_delivery_on = rain_state.state == "on"
+        if main_state := self.hass.states.get(
+            self.allow_water_main_delivery_switch_entity_id
+        ):
+            self._allow_water_main_delivery_on = main_state.state == "on"
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on delivery preference switch status."""
+        # If any switch state is unavailable, set state to None
+        if (
+            self._master_schedule_on is None
+            or self._allow_rain_water_delivery_on is None
+            or self._allow_water_main_delivery_on is None
+        ):
+            self._state = None
+            return
+
+        # Check if we're currently in the ignore period
+        if self._ignore_until_datetime is not None:
+            try:
+                now = dt_util.now()
+                if now < self._ignore_until_datetime:
+                    # Current time is before ignore until datetime, no problem
+                    self._state = False
+                    return
+            except (TypeError, AttributeError) as exc:
+                _LOGGER.debug("Error checking ignore until datetime: %s", exc)
+
+        # Binary sensor is ON (problem) when:
+        # - Master schedule switch is ON AND
+        # - Both delivery preference switches are OFF
+        both_delivery_methods_off = (
+            not self._allow_rain_water_delivery_on
+            and not self._allow_water_main_delivery_on
+        )
+        self._state = self._master_schedule_on and both_delivery_methods_off
+
+    async def _find_water_delivery_preference_ignore_until_entity(
+        self,
+    ) -> str | None:
+        """
+        Find water delivery preference ignore until datetime entity for this zone.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            # Build the expected unique_id pattern based on zone device identifier
+            zone_device_domain = self.zone_device_identifier[0]
+            zone_device_id = self.zone_device_identifier[1]
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "datetime"
+                    and entity.unique_id
+                    and "water_delivery_preference_ignore_until" in entity.unique_id
+                    and zone_device_domain in entity.unique_id
+                    and zone_device_id in entity.unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found water delivery preference ignore until datetime: %s",
+                        entity.entity_id,
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug(
+                "Error finding water delivery preference ignore until entity: %s", exc
+            )
+
+        return None
+
+    @callback
+    def _master_schedule_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle master schedule switch state changes."""
+        if new_state is None:
+            self._master_schedule_on = None
+        else:
+            self._master_schedule_on = new_state.state == "on"
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _allow_rain_water_delivery_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle allow rain water delivery switch state changes."""
+        if new_state is None:
+            self._allow_rain_water_delivery_on = None
+        else:
+            self._allow_rain_water_delivery_on = new_state.state == "on"
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _allow_water_main_delivery_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle allow water main delivery switch state changes."""
+        if new_state is None:
+            self._allow_water_main_delivery_on = None
+        else:
+            self._allow_water_main_delivery_on = new_state.state == "on"
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _water_delivery_preference_ignore_until_state_changed(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle water delivery preference ignore until datetime changes."""
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._ignore_until_datetime = None
+        else:
+            try:
+                parsed_datetime = dt_util.parse_datetime(new_state.state)
+                if parsed_datetime is not None:
+                    # Ensure timezone info
+                    if parsed_datetime.tzinfo is None:
+                        parsed_datetime = parsed_datetime.replace(
+                            tzinfo=dt_util.get_default_time_zone()
+                        )
+                    self._ignore_until_datetime = parsed_datetime
+                else:
+                    self._ignore_until_datetime = None
+            except (ValueError, TypeError) as exc:
+                _LOGGER.debug(
+                    "Error parsing water delivery preference ignore until datetime: %s",
+                    exc,
+                )
+                self._ignore_until_datetime = None
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if water delivery preference misconfigured (problem)."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state."""
+        if self._state is True:
+            return "mdi:water-alert"
+        return "mdi:water-check"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        attrs = {
+            "type": "Warning",
+            "message": (
+                "Water Delivery Unset" if self._state else "Water Delivery Available"
+            ),
+            "task": True,
+            "tags": [
+                self.irrigation_zone_name.lower().replace(" ", "_"),
+            ],
+            "master_schedule_on": self._master_schedule_on,
+            "allow_rain_water_delivery_on": self._allow_rain_water_delivery_on,
+            "allow_water_main_delivery_on": self._allow_water_main_delivery_on,
+            "source_entity_master": self.master_schedule_switch_entity_id,
+            "source_entity_rain_delivery": (
+                self.allow_rain_water_delivery_switch_entity_id
+            ),
+            "source_entity_main_delivery": (
+                self.allow_water_main_delivery_switch_entity_id
+            ),
+        }
+
+        # Add ignore until information if available
+        if self._ignore_until_datetime:
+            now = dt_util.now()
+            attrs["ignore_until"] = self._ignore_until_datetime.isoformat()
+            attrs["currently_ignoring"] = now < self._ignore_until_datetime
+
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        master_state = self.hass.states.get(self.master_schedule_switch_entity_id)
+        rain_state = self.hass.states.get(
+            self.allow_rain_water_delivery_switch_entity_id
+        )
+        main_state = self.hass.states.get(
+            self.allow_water_main_delivery_switch_entity_id
+        )
+
+        # Entity is available if all switches exist and are not unavailable/unknown
+        for state in [master_state, rain_state, main_state]:
+            if state is None:
+                return False
+            if state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                return False
+
+        return True
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                _LOGGER.info(
+                    "Restored water delivery preference status for %s: %s",
+                    self.location_name,
+                    self._state,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def _setup_water_delivery_preference_ignore_until_subscription(
+        self,
+    ) -> None:
+        """Find and subscribe to water delivery preference ignore until entity."""
+        ignore_until_entity_id = (
+            await self._find_water_delivery_preference_ignore_until_entity()
+        )
+        if ignore_until_entity_id:
+            if ignore_until_state := self.hass.states.get(ignore_until_entity_id):
+                try:
+                    parsed_datetime = dt_util.parse_datetime(ignore_until_state.state)
+                    if parsed_datetime is not None:
+                        if parsed_datetime.tzinfo is None:
+                            parsed_datetime = parsed_datetime.replace(
+                                tzinfo=dt_util.get_default_time_zone()
+                            )
+                        self._ignore_until_datetime = parsed_datetime
+                except (ValueError, TypeError) as exc:
+                    _LOGGER.debug(
+                        "Error parsing water delivery preference ignore until "
+                        "datetime: %s",
+                        exc,
+                    )
+
+            try:
+                self._unsubscribe_ignore_until = async_track_state_change(
+                    self.hass,
+                    ignore_until_entity_id,
+                    self._water_delivery_preference_ignore_until_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to water delivery preference ignore until datetime: %s",
+                    ignore_until_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to water delivery preference ignore until "
+                    "entity %s: %s",
+                    ignore_until_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.debug(
+                "Water delivery preference ignore until datetime not found for zone %s",
+                self.irrigation_zone_name,
+            )
+
+    async def _setup_master_schedule_subscription(self) -> None:
+        """Subscribe to master schedule switch entity state changes."""
+        try:
+            self._unsubscribe_master = async_track_state_change(
+                self.hass,
+                self.master_schedule_switch_entity_id,
+                self._master_schedule_state_changed,
+            )
+            _LOGGER.debug(
+                "Subscribed to master schedule switch: %s",
+                self.master_schedule_switch_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to master schedule entity %s: %s",
+                self.master_schedule_switch_entity_id,
+                exc,
+            )
+
+    async def _setup_allow_rain_water_delivery_subscription(self) -> None:
+        """Subscribe to allow rain water delivery switch entity state changes."""
+        try:
+            self._unsubscribe_rain_delivery = async_track_state_change(
+                self.hass,
+                self.allow_rain_water_delivery_switch_entity_id,
+                self._allow_rain_water_delivery_state_changed,
+            )
+            _LOGGER.debug(
+                "Subscribed to allow rain water delivery switch: %s",
+                self.allow_rain_water_delivery_switch_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to allow rain water delivery entity %s: %s",
+                self.allow_rain_water_delivery_switch_entity_id,
+                exc,
+            )
+
+    async def _setup_allow_water_main_delivery_subscription(self) -> None:
+        """Subscribe to allow water main delivery switch entity state changes."""
+        try:
+            self._unsubscribe_main_delivery = async_track_state_change(
+                self.hass,
+                self.allow_water_main_delivery_switch_entity_id,
+                self._allow_water_main_delivery_state_changed,
+            )
+            _LOGGER.debug(
+                "Subscribed to allow water main delivery switch: %s",
+                self.allow_water_main_delivery_switch_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to allow water main delivery entity %s: %s",
+                self.allow_water_main_delivery_switch_entity_id,
+                exc,
+            )
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass and subscribe to state changes."""
+        # Restore previous state if available
+        await super().async_added_to_hass()
+        await self._restore_previous_state()
+
+        # Set up subscriptions
+        await self._setup_water_delivery_preference_ignore_until_subscription()
+        await self._setup_master_schedule_subscription()
+        await self._setup_allow_rain_water_delivery_subscription()
+        await self._setup_allow_water_main_delivery_subscription()
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe_master:
+            self._unsubscribe_master()
+        if self._unsubscribe_rain_delivery:
+            self._unsubscribe_rain_delivery()
+        if self._unsubscribe_main_delivery:
+            self._unsubscribe_main_delivery()
         if (
             hasattr(self, "_unsubscribe_ignore_until")
             and self._unsubscribe_ignore_until
@@ -7349,6 +7791,18 @@ async def _create_schedule_misconfiguration_status_sensor(
     return sensor
 
 
+async def _create_water_delivery_preference_status_sensor(
+    config: WaterDeliveryPreferenceStatusMonitorConfig,
+) -> BinarySensorEntity | None:
+    """Create water delivery preference status monitor sensor."""
+    sensor = WaterDeliveryPreferenceStatusMonitorBinarySensor(config)
+    _LOGGER.debug(
+        "Created water delivery preference status monitor binary sensor for %s",
+        config.location_name,
+    )
+    return sensor
+
+
 async def _create_link_monitors(
     config: LinkMonitorConfig,
 ) -> list[BinarySensorEntity]:
@@ -7634,6 +8088,47 @@ async def async_setup_entry(
                     irrigation_zone_sensors.append(schedule_misconfiguration_sensor)
                     _LOGGER.debug(
                         "Created schedule misconfiguration status sensor for "
+                        "irrigation zone %s",
+                        zone_name,
+                    )
+
+                # Create water delivery preference status sensor
+                allow_rain_water_delivery_switch_entity_id = (
+                    f"switch.{zone_name.lower().replace(' ', '_')}"
+                    "_allow_rain_water_delivery"
+                )
+                allow_water_main_delivery_switch_entity_id = (
+                    f"switch.{zone_name.lower().replace(' ', '_')}"
+                    "_allow_water_main_delivery"
+                )
+
+                water_delivery_preference_config = (
+                    WaterDeliveryPreferenceStatusMonitorConfig(
+                        hass=hass,
+                        entry_id=entry.entry_id,
+                        location_name=zone_name,
+                        irrigation_zone_name=zone_name,
+                        master_schedule_switch_entity_id=(
+                            master_schedule_switch_entity_id
+                        ),
+                        allow_rain_water_delivery_switch_entity_id=(
+                            allow_rain_water_delivery_switch_entity_id
+                        ),
+                        allow_water_main_delivery_switch_entity_id=(
+                            allow_water_main_delivery_switch_entity_id
+                        ),
+                        zone_device_identifier=zone_device_identifier,
+                    )
+                )
+                water_delivery_preference_sensor = (
+                    await _create_water_delivery_preference_status_sensor(
+                        water_delivery_preference_config
+                    )
+                )
+                if water_delivery_preference_sensor:
+                    irrigation_zone_sensors.append(water_delivery_preference_sensor)
+                    _LOGGER.debug(
+                        "Created water delivery preference status sensor for "
                         "irrigation zone %s",
                         zone_name,
                     )
