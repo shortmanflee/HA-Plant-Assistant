@@ -36,6 +36,7 @@ async def async_setup(hass: HomeAssistant, _config: dict[str, Any]) -> bool:
 
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
+    Platform.BUTTON,
     Platform.SENSOR,
     Platform.DATETIME,
     Platform.SWITCH,
