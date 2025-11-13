@@ -879,12 +879,12 @@ class MasterScheduleStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
         self.master_schedule_switch_entity_id = config.master_schedule_switch_entity_id
 
         # Set entity attributes
-        self._attr_name = f"{self.location_name} Master Schedule Status"
+        self._attr_name = f"{self.location_name} Schedule Status"
 
         # Generate unique_id
         location_name_safe = self.location_name.lower().replace(" ", "_")
         self._attr_unique_id = (
-            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_master_schedule_status"
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_schedule_status"
         )
 
         # Set binary sensor properties

@@ -58,8 +58,8 @@ class TestMasterScheduleStatusMonitorBinarySensorInit:
         """Test initialization with valid parameters."""
         sensor = MasterScheduleStatusMonitorBinarySensor(sensor_config)
 
-        assert sensor._attr_name == "Test Zone Master Schedule Status"
-        expected_unique_id = f"{DOMAIN}_test_entry_123_test_zone_master_schedule_status"
+        assert sensor._attr_name == "Test Zone Schedule Status"
+        expected_unique_id = f"{DOMAIN}_test_entry_123_test_zone_schedule_status"
         assert sensor._attr_unique_id == expected_unique_id
         assert sensor.master_schedule_switch_entity_id == (
             "switch.test_zone_master_schedule"

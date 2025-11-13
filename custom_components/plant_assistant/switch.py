@@ -130,7 +130,7 @@ class MasterScheduleSwitch(IrrigationZoneSwitch):
     """
 
     _switch_type = "master_schedule"
-    _switch_name_suffix = "Master Schedule"
+    _switch_name_suffix = "Schedule"
 
 
 class SunriseScheduleSwitch(IrrigationZoneSwitch):

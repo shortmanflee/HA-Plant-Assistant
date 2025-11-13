@@ -123,7 +123,7 @@ async def test_master_schedule_switch_initialization():
 
     # Verify attributes
     assert switch.zone_name == "Front Lawn"
-    assert switch._attr_name == "Front Lawn Master Schedule"
+    assert switch._attr_name == "Front Lawn Schedule"
     assert switch.is_on is False
     assert (
         switch._attr_unique_id

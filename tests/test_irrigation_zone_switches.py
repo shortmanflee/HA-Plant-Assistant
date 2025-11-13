@@ -23,7 +23,7 @@ from custom_components.plant_assistant.switch import (
 
 # List of all switch classes to test
 SWITCH_CLASSES = (
-    (MasterScheduleSwitch, "master_schedule", "Master Schedule"),
+    (MasterScheduleSwitch, "master_schedule", "Schedule"),
     (SunriseScheduleSwitch, "sunrise_schedule", "Sunrise Schedule"),
     (AfternoonScheduleSwitch, "afternoon_schedule", "Afternoon Schedule"),
     (SunsetScheduleSwitch, "sunset_schedule", "Sunset Schedule"),
