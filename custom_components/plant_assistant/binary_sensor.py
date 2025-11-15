@@ -8407,7 +8407,7 @@ async def _create_zone_sensors(
     zone_name_safe = zone_name.lower().replace(" ", "_")
 
     # Get the master schedule switch entity ID
-    master_schedule_switch_entity_id = f"switch.{zone_name_safe}_master_schedule"
+    master_schedule_switch_entity_id = f"switch.{zone_name_safe}_schedule"
 
     # Create master schedule status sensor
     master_schedule_config = MasterScheduleStatusMonitorConfig(

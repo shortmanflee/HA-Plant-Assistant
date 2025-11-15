@@ -46,7 +46,7 @@ def sensor_config(mock_hass):
         entry_id="test_entry_123",
         location_name="Test Zone",
         irrigation_zone_name="Zone A",
-        master_schedule_switch_entity_id="switch.test_zone_master_schedule",
+        master_schedule_switch_entity_id="switch.test_zone_schedule",
         sunrise_switch_entity_id="switch.test_zone_sunrise",
         afternoon_switch_entity_id="switch.test_zone_afternoon",
         sunset_switch_entity_id="switch.test_zone_sunset",
@@ -66,9 +66,7 @@ class TestScheduleMisconfigurationStatusMonitorBinarySensorInit:
             f"{DOMAIN}_test_entry_123_test_zone_schedule_misconfiguration_status"
         )
         assert sensor._attr_unique_id == expected_unique_id
-        assert sensor.master_schedule_switch_entity_id == (
-            "switch.test_zone_master_schedule"
-        )
+        assert sensor.master_schedule_switch_entity_id == ("switch.test_zone_schedule")
         assert sensor.sunrise_switch_entity_id == "switch.test_zone_sunrise"
         assert sensor.afternoon_switch_entity_id == "switch.test_zone_afternoon"
         assert sensor.sunset_switch_entity_id == "switch.test_zone_sunset"
@@ -82,7 +80,7 @@ class TestScheduleMisconfigurationStatusMonitorBinarySensorInit:
             entry_id="test_entry",
             location_name="Test Zone",
             irrigation_zone_name="Zone A",
-            master_schedule_switch_entity_id="switch.test_zone_master_schedule",
+            master_schedule_switch_entity_id="switch.test_zone_schedule",
             sunrise_switch_entity_id="switch.test_zone_sunrise",
             afternoon_switch_entity_id="switch.test_zone_afternoon",
             sunset_switch_entity_id="switch.test_zone_sunset",
@@ -111,7 +109,7 @@ class TestScheduleMisconfigurationStatusMonitorBinarySensorInit:
             entry_id="test_entry",
             location_name="Test Zone",
             irrigation_zone_name="Zone A",
-            master_schedule_switch_entity_id="switch.test_zone_master_schedule",
+            master_schedule_switch_entity_id="switch.test_zone_schedule",
             sunrise_switch_entity_id="switch.test_zone_sunrise",
             afternoon_switch_entity_id="switch.test_zone_afternoon",
             sunset_switch_entity_id="switch.test_zone_sunset",
@@ -298,7 +296,7 @@ class TestScheduleMisconfigurationStatusMonitorBinarySensorProperties:
         """Test availability when at least one switch is unavailable."""
 
         def side_effect(entity_id):
-            if entity_id == "switch.test_zone_master_schedule":
+            if entity_id == "switch.test_zone_schedule":
                 return MagicMock(state="on")
             return None
 

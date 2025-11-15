@@ -46,7 +46,7 @@ def sensor_config(mock_hass):
         entry_id="test_entry_123",
         location_name="Test Zone",
         irrigation_zone_name="Zone A",
-        master_schedule_switch_entity_id="switch.test_zone_master_schedule",
+        master_schedule_switch_entity_id="switch.test_zone_schedule",
         zone_device_identifier=("plant_assistant", "test_zone_456"),
     )
 
@@ -61,9 +61,7 @@ class TestMasterScheduleStatusMonitorBinarySensorInit:
         assert sensor._attr_name == "Test Zone Schedule Status"
         expected_unique_id = f"{DOMAIN}_test_entry_123_test_zone_schedule_status"
         assert sensor._attr_unique_id == expected_unique_id
-        assert sensor.master_schedule_switch_entity_id == (
-            "switch.test_zone_master_schedule"
-        )
+        assert sensor.master_schedule_switch_entity_id == ("switch.test_zone_schedule")
         assert sensor.location_name == "Test Zone"
         assert sensor.irrigation_zone_name == "Zone A"
 
@@ -74,7 +72,7 @@ class TestMasterScheduleStatusMonitorBinarySensorInit:
             entry_id="test_entry",
             location_name="Test Zone",
             irrigation_zone_name="Zone A",
-            master_schedule_switch_entity_id="switch.test_zone_master_schedule",
+            master_schedule_switch_entity_id="switch.test_zone_schedule",
             zone_device_identifier=("plant_assistant", "test_zone"),
         )
         sensor = MasterScheduleStatusMonitorBinarySensor(config)
@@ -97,7 +95,7 @@ class TestMasterScheduleStatusMonitorBinarySensorInit:
             entry_id="test_entry",
             location_name="Test Zone",
             irrigation_zone_name="Zone A",
-            master_schedule_switch_entity_id="switch.test_zone_master_schedule",
+            master_schedule_switch_entity_id="switch.test_zone_schedule",
             zone_device_identifier=("esphome", "test_zone_123"),
         )
         sensor = MasterScheduleStatusMonitorBinarySensor(config)
@@ -261,7 +259,7 @@ class TestMasterScheduleStatusMonitorBinarySensorProperties:
         assert attrs["message"] == "Master Schedule Off"
         assert attrs["task"] is True
         assert attrs["master_schedule_on"] is False
-        assert attrs["source_entity"] == "switch.test_zone_master_schedule"
+        assert attrs["source_entity"] == "switch.test_zone_schedule"
         assert attrs["tags"] == ["zone_a"]
 
     def test_extra_state_attributes_when_no_problem(self, sensor_config):
@@ -390,7 +388,7 @@ class TestMasterScheduleStatusMonitorBinarySensorAsyncOperations:
             entry_id="test_entry_123",
             location_name="Test Zone",
             irrigation_zone_name="Zone A",
-            master_schedule_switch_entity_id="switch.test_zone_master_schedule",
+            master_schedule_switch_entity_id="switch.test_zone_schedule",
             zone_device_identifier=("plant_assistant", "test_zone_456"),
         )
 
@@ -424,7 +422,7 @@ class TestMasterScheduleStatusMonitorBinarySensorAsyncOperations:
             entry_id="test_entry_123",
             location_name="Test Zone",
             irrigation_zone_name="Zone A",
-            master_schedule_switch_entity_id="switch.test_zone_master_schedule",
+            master_schedule_switch_entity_id="switch.test_zone_schedule",
             zone_device_identifier=("plant_assistant", "test_zone_456"),
         )
 
