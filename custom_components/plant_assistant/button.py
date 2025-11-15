@@ -14,6 +14,7 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.const import EntityCategory
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_registry import async_get
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
@@ -138,17 +139,30 @@ class IrrigationZoneErrorCountResetButton(ButtonEntity, RestoreEntity):
         try:
             # Construct the error count sensor entity_id
             zone_name_safe = self.zone_name.lower().replace(" ", "_")
-
-            # The error count sensor entity_id follows the pattern:
-            # sensor.zone_name_error_count
             error_count_entity_id = f"sensor.{zone_name_safe}_error_count"
 
-            # Set the state to 0
-            self.hass.states.async_set(error_count_entity_id, "0")
+            # Try to find and reset the sensor entity using the entity registry
+            entity_registry = async_get(self.hass)
+            entity_entry = entity_registry.async_get(error_count_entity_id)
 
-            _LOGGER.debug(
-                "Reset error count for zone %s (entity: %s)",
-                self.zone_name,
+            if entity_entry and (
+                platform := self.hass.data.get("entity_components", {}).get("sensor")
+            ):
+                for entity in platform.entities:
+                    if entity.entity_id == error_count_entity_id and hasattr(
+                        entity, "reset_error_count"
+                    ):
+                        entity.reset_error_count()
+                        _LOGGER.debug(
+                            "Reset error count for zone %s (entity: %s)",
+                            self.zone_name,
+                            error_count_entity_id,
+                        )
+                        return
+
+            # Fallback: if entity not found, log a warning
+            _LOGGER.warning(
+                "Could not find sensor entity %s to reset error count",
                 error_count_entity_id,
             )
         except Exception as exc:  # noqa: BLE001 - Defensive

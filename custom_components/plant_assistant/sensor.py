@@ -3482,70 +3482,70 @@ class IrrigationZoneErrorCountSensor(SensorEntity, RestoreEntity):
         self._state: int = 0
         self._attributes: dict[str, Any] = {}
         self._last_error_state: str | None = None
-        self._unsubscribe = None
+        self._unsubscribe_last_error = None
+        self._last_error_entity_id: str | None = None
 
-    def _extract_zone_error_time(self, event_data: dict[str, Any]) -> str | None:
-        """
-        Extract the zone error time from event data.
-
-        Args:
-            event_data: The event data dictionary.
-
-        Returns:
-            The error time value if found, None otherwise.
-
-        """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_error_time"
-        return event_data.get(zone_key)
+    def reset_error_count(self) -> None:
+        """Reset the error count to 0 and clear tracking state."""
+        self._state = 0
+        self._last_error_state = None
+        self._attributes = {}
+        self.async_write_ha_state()
+        _LOGGER.debug(
+            "Reset error count for %s",
+            self.zone_name,
+        )
 
     @callback
-    def _handle_esphome_event(self, event: Any) -> None:
-        """Handle esphome.irrigation_gateway_update event."""
+    def _handle_last_error_state_change(
+        self, _entity_id: str, _old_state: Any, new_state: Any
+    ) -> None:
+        """Handle Last Error entity state changes."""
         try:
-            event_data = event.data if hasattr(event, "data") else {}
+            if not new_state:
+                return
 
-            # Extract the current error time from event data
-            error_time = self._extract_zone_error_time(event_data)
-
-            if not error_time:
+            new_error_time = new_state.state
+            if new_error_time in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
                 _LOGGER.debug(
-                    "No error time extracted for %s",
+                    "Last Error state for %s is unavailable/unknown/None",
                     self.zone_name,
                 )
                 return
 
-            if error_time in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-                _LOGGER.debug(
-                    "Error time for %s is unavailable/unknown",
-                    self.zone_name,
-                )
-                return
-
-            # Check if this is a new error (different from last recorded)
-            if error_time != self._last_error_state:
+            # Check if this is a new error (different from internal tracking)
+            if new_error_time != self._last_error_state:
                 old_count = self._state
                 self._state += 1
-                self._last_error_state = error_time
+                self._last_error_state = new_error_time
 
                 self._attributes = {
-                    "event_type": "esphome.irrigation_gateway_update",
+                    "event_type": "last_error_state_change",
                     "zone_id": self.zone_id,
-                    "last_error_time": error_time,
+                    "last_error_time": new_error_time,
                 }
 
                 _LOGGER.debug(
-                    "Incremented %s error count from %d to %d (new error at %s)",
+                    "Incremented %s error count from %d to %d"
+                    " (Last Error state change to %s)",
                     self.zone_name,
                     old_count,
                     self._state,
-                    error_time,
+                    new_error_time,
                 )
 
                 self.async_write_ha_state()
+            else:
+                _LOGGER.debug(
+                    "Last Error state change for %s: new time %s"
+                    " matches internal tracking %s",
+                    self.zone_name,
+                    new_error_time,
+                    self._last_error_state,
+                )
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.warning(
-                "Error processing esphome event for %s: %s",
+                "Error processing Last Error state change for %s: %s",
                 self.zone_name,
                 exc,
             )
@@ -3582,29 +3582,57 @@ class IrrigationZoneErrorCountSensor(SensorEntity, RestoreEntity):
                 "Restored error count sensor %s with state: %d",
                 self.entity_id,
                 self._state,
-            )
+            )  # Find the Last Error entity ID by its unique ID
+        last_error_unique_id_parts = (
+            DOMAIN,
+            self.entry_id,
+            self.zone_device_id[0],
+            self.zone_device_id[1],
+            "last_error",
+        )
+        last_error_unique_id = "_".join(last_error_unique_id_parts)
 
-        # Subscribe to esphome irrigation gateway update events
         try:
-            self._unsubscribe = self.hass.bus.async_listen(
-                "esphome.irrigation_gateway_update",
-                self._handle_esphome_event,
-            )
-            _LOGGER.debug(
-                "Set up event listener for %s",
-                self.zone_name,
-            )
+            registry = er.async_get(self.hass)
+            for entity in registry.entities.values():
+                if entity.unique_id == last_error_unique_id:
+                    self._last_error_entity_id = entity.entity_id
+                    _LOGGER.debug(
+                        "Found Last Error entity for %s: %s",
+                        self.zone_name,
+                        self._last_error_entity_id,
+                    )
+                    break
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.warning(
-                "Failed to set up event listener for %s: %s",
+                "Failed to find Last Error entity for %s: %s",
                 self.zone_name,
                 exc,
             )
 
+        # Subscribe to Last Error entity state changes
+        if self._last_error_entity_id:
+            try:
+                self._unsubscribe_last_error = async_track_state_change(
+                    self.hass,
+                    self._last_error_entity_id,
+                    self._handle_last_error_state_change,
+                )
+                _LOGGER.debug(
+                    "Set up Last Error state change listener for %s",
+                    self.zone_name,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to set up Last Error state change listener for %s: %s",
+                    self.zone_name,
+                    exc,
+                )
+
     async def async_will_remove_from_hass(self) -> None:
         """Clean up when entity is removed."""
-        if self._unsubscribe:
-            self._unsubscribe()
+        if self._unsubscribe_last_error:
+            self._unsubscribe_last_error()
 
 
 def _metric_to_attr(metric: str) -> str:
