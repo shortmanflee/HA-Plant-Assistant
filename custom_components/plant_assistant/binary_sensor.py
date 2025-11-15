@@ -272,6 +272,18 @@ class ErrorStatusMonitorConfig:
     zone_device_identifier: tuple[str, str]
 
 
+@dataclass
+class ESPHomeRunningStatusMonitorConfig:
+    """Configuration for ESPHomeRunningStatusMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    monitoring_device_id: str
+    zone_device_identifier: tuple[str, str]
+
+
 class PlantCountStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     """
     Binary sensor that monitors plant count status for a location.
@@ -2204,6 +2216,206 @@ class ErrorStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 "Failed to subscribe to error count entity %s: %s",
                 self.error_count_entity_id,
                 exc,
+            )
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class ESPHomeRunningStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that monitors ESPHome binary sensor with 'running' device class.
+
+    This sensor turns ON when the ESPHome device associated with an irrigation zone
+    has a binary sensor with device_class='running' that is ON, indicating the
+    device is currently running/active.
+    """
+
+    def __init__(self, config: ESPHomeRunningStatusMonitorConfig) -> None:
+        """
+        Initialize the ESPHome Running Status Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.zone_device_identifier = config.zone_device_identifier
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+        self.monitoring_device_id = config.monitoring_device_id
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Status"
+
+        # Generate unique_id
+        zone_device_domain = config.zone_device_identifier[0]
+        zone_device_id = config.zone_device_identifier[1]
+        unique_id_parts = (
+            DOMAIN,
+            self.entry_id,
+            zone_device_domain,
+            zone_device_id,
+            "esphome_running_status",
+        )
+        self._attr_unique_id = "_".join(unique_id_parts)
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.RUNNING
+
+        # Set device info to associate with the irrigation zone device
+        self._attr_device_info = DeviceInfo(
+            identifiers={self.zone_device_identifier},
+        )
+
+        self._state: bool | None = None
+        self._running_sensor_entity_id: str | None = None
+        self._unsubscribe = None
+
+    def _find_running_binary_sensor(self) -> str | None:
+        """
+        Find binary sensor with device_class='running' on monitoring device.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            # Find all binary sensor entities associated with the monitoring device
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.device_id == self.monitoring_device_id
+                    and entity.domain == "binary_sensor"
+                ):
+                    # Get the entity's state to check device_class attribute
+                    entity_state = self.hass.states.get(entity.entity_id)
+                    if entity_state:
+                        device_class = entity_state.attributes.get("device_class")
+                        if device_class == "running":
+                            _LOGGER.debug(
+                                "Found running binary sensor on device %s: %s",
+                                self.monitoring_device_id,
+                                entity.entity_id,
+                            )
+                            return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding running binary sensor: %s", exc)
+
+        return None
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on running sensor state."""
+        # If no running sensor found, set state to None (sensor unavailable)
+        if self._running_sensor_entity_id is None:
+            self._state = None
+            return
+
+        # Get the current state of the running sensor
+        running_sensor_state = self.hass.states.get(self._running_sensor_entity_id)
+        if running_sensor_state is None:
+            self._state = None
+            return
+
+        # Binary sensor is ON (problem) when running sensor is ON
+        self._state = running_sensor_state.state == "on"
+
+    @callback
+    def _running_sensor_state_changed(
+        self, _entity_id: str, _old_state: Any, _new_state: Any
+    ) -> None:
+        """Handle running sensor state changes."""
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if device is running."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state."""
+        if self._state is True:
+            return "mdi:play-circle-outline"
+        return "mdi:stop-circle-outline"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        return {
+            "type": "Warning",
+            "message": "Device Running" if self._state else "Device Stopped",
+            "task": self._state is True,
+            "tags": [
+                self.irrigation_zone_name.lower().replace(" ", "_"),
+            ],
+            "device_id": self.monitoring_device_id,
+            "running_sensor_entity": self._running_sensor_entity_id,
+        }
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Entity is available if we found a running sensor
+        return self._running_sensor_entity_id is not None
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                _LOGGER.info(
+                    "Restored esphome running status for %s: %s",
+                    self.location_name,
+                    self._state,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass and subscribe to running sensor state changes."""
+        await super().async_added_to_hass()
+        await self._restore_previous_state()
+
+        # Find the running binary sensor
+        self._running_sensor_entity_id = self._find_running_binary_sensor()
+
+        if self._running_sensor_entity_id:
+            # Subscribe to running sensor state changes
+            try:
+                self._unsubscribe = async_track_state_change(
+                    self.hass,
+                    self._running_sensor_entity_id,
+                    self._running_sensor_state_changed,
+                )
+                _LOGGER.debug(
+                    "Subscribed to running sensor: %s",
+                    self._running_sensor_entity_id,
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to running sensor %s: %s",
+                    self._running_sensor_entity_id,
+                    exc,
+                )
+        else:
+            _LOGGER.debug(
+                "Running binary sensor not found for device %s",
+                self.monitoring_device_id,
             )
 
         # Update initial state
@@ -7999,6 +8211,18 @@ async def _create_error_status_sensor(
     return sensor
 
 
+async def _create_esphome_running_status_sensor(
+    config: ESPHomeRunningStatusMonitorConfig,
+) -> BinarySensorEntity | None:
+    """Create ESPHome running status monitor sensor."""
+    sensor = ESPHomeRunningStatusMonitorBinarySensor(config)
+    _LOGGER.debug(
+        "Created esphome running status monitor binary sensor for %s",
+        config.location_name,
+    )
+    return sensor
+
+
 async def _create_link_monitors(
     config: LinkMonitorConfig,
 ) -> list[BinarySensorEntity]:
@@ -8171,6 +8395,143 @@ async def async_setup_platform(
     # Binary sensors are set up via config entries, not legacy platform
 
 
+async def _create_zone_sensors(
+    hass: HomeAssistant,
+    entry: ConfigEntry[Any],
+    zone_name: str,
+    linked_device_id: str,
+    zone_device_identifier: tuple[str, str],
+) -> list[BinarySensorEntity]:
+    """Create all sensors for a single irrigation zone."""
+    zone_sensors: list[BinarySensorEntity] = []
+    zone_name_safe = zone_name.lower().replace(" ", "_")
+
+    # Get the master schedule switch entity ID
+    master_schedule_switch_entity_id = f"switch.{zone_name_safe}_master_schedule"
+
+    # Create master schedule status sensor
+    master_schedule_config = MasterScheduleStatusMonitorConfig(
+        hass=hass,
+        entry_id=entry.entry_id,
+        location_name=zone_name,
+        irrigation_zone_name=zone_name,
+        master_schedule_switch_entity_id=master_schedule_switch_entity_id,
+        zone_device_identifier=zone_device_identifier,
+    )
+    master_schedule_sensor = await _create_master_schedule_status_sensor(
+        master_schedule_config
+    )
+    if master_schedule_sensor:
+        zone_sensors.append(master_schedule_sensor)
+        _LOGGER.debug(
+            "Created master schedule status sensor for irrigation zone %s",
+            zone_name,
+        )
+
+    # Create schedule misconfiguration status sensor
+    sunrise_switch_entity_id = f"switch.{zone_name_safe}_sunrise_schedule"
+    afternoon_switch_entity_id = f"switch.{zone_name_safe}_afternoon_schedule"
+    sunset_switch_entity_id = f"switch.{zone_name_safe}_sunset_schedule"
+
+    schedule_misconfiguration_config = ScheduleMisconfigurationStatusMonitorConfig(
+        hass=hass,
+        entry_id=entry.entry_id,
+        location_name=zone_name,
+        irrigation_zone_name=zone_name,
+        master_schedule_switch_entity_id=master_schedule_switch_entity_id,
+        sunrise_switch_entity_id=sunrise_switch_entity_id,
+        afternoon_switch_entity_id=afternoon_switch_entity_id,
+        sunset_switch_entity_id=sunset_switch_entity_id,
+        zone_device_identifier=zone_device_identifier,
+    )
+    schedule_misconfiguration_sensor = (
+        await _create_schedule_misconfiguration_status_sensor(
+            schedule_misconfiguration_config
+        )
+    )
+    if schedule_misconfiguration_sensor:
+        zone_sensors.append(schedule_misconfiguration_sensor)
+        _LOGGER.debug(
+            "Created schedule misconfiguration status sensor for irrigation zone %s",
+            zone_name,
+        )
+
+    # Create water delivery preference status sensor
+    allow_rain_water_delivery_switch_entity_id = (
+        f"switch.{zone_name_safe}_allow_rain_water_delivery"
+    )
+    allow_water_main_delivery_switch_entity_id = (
+        f"switch.{zone_name_safe}_allow_water_main_delivery"
+    )
+
+    water_delivery_preference_config = WaterDeliveryPreferenceStatusMonitorConfig(
+        hass=hass,
+        entry_id=entry.entry_id,
+        location_name=zone_name,
+        irrigation_zone_name=zone_name,
+        master_schedule_switch_entity_id=master_schedule_switch_entity_id,
+        allow_rain_water_delivery_switch_entity_id=(
+            allow_rain_water_delivery_switch_entity_id
+        ),
+        allow_water_main_delivery_switch_entity_id=(
+            allow_water_main_delivery_switch_entity_id
+        ),
+        zone_device_identifier=zone_device_identifier,
+    )
+    water_delivery_preference_sensor = (
+        await _create_water_delivery_preference_status_sensor(
+            water_delivery_preference_config
+        )
+    )
+    if water_delivery_preference_sensor:
+        zone_sensors.append(water_delivery_preference_sensor)
+        _LOGGER.debug(
+            "Created water delivery preference status sensor for irrigation zone %s",
+            zone_name,
+        )
+
+    # Create error status sensor
+    error_count_entity_id = f"sensor.{zone_name_safe}_error_count"
+
+    error_status_config = ErrorStatusMonitorConfig(
+        hass=hass,
+        entry_id=entry.entry_id,
+        location_name=zone_name,
+        irrigation_zone_name=zone_name,
+        error_count_entity_id=error_count_entity_id,
+        zone_device_identifier=zone_device_identifier,
+    )
+    error_status_sensor = await _create_error_status_sensor(error_status_config)
+    if error_status_sensor:
+        zone_sensors.append(error_status_sensor)
+        _LOGGER.debug(
+            "Created error status sensor for irrigation zone %s",
+            zone_name,
+        )
+
+    # Create ESPHome running status sensor (monitors binary sensor with 'running'
+    # device class on linked ESPHome device)
+    esphome_running_config = ESPHomeRunningStatusMonitorConfig(
+        hass=hass,
+        entry_id=entry.entry_id,
+        location_name=zone_name,
+        irrigation_zone_name=zone_name,
+        monitoring_device_id=linked_device_id,
+        zone_device_identifier=zone_device_identifier,
+    )
+    esphome_running_sensor = await _create_esphome_running_status_sensor(
+        esphome_running_config
+    )
+    if esphome_running_sensor:
+        zone_sensors.append(esphome_running_sensor)
+        _LOGGER.debug(
+            "Created esphome running status sensor for irrigation zone %s",
+            zone_name,
+        )
+
+    return zone_sensors
+
+
 async def _setup_irrigation_zone_sensors(
     hass: HomeAssistant,
     entry: ConfigEntry[Any],
@@ -8216,119 +8577,11 @@ async def _setup_irrigation_zone_sensors(
             else (DOMAIN, linked_device_id)
         )
 
-        # Get the master schedule switch entity ID
-        master_schedule_switch_entity_id = (
-            f"switch.{zone_name.lower().replace(' ', '_')}_master_schedule"
+        # Create all sensors for this zone
+        zone_sensors = await _create_zone_sensors(
+            hass, entry, zone_name, linked_device_id, zone_device_identifier
         )
-
-        # Create master schedule status sensor
-        master_schedule_config = MasterScheduleStatusMonitorConfig(
-            hass=hass,
-            entry_id=entry.entry_id,
-            location_name=zone_name,
-            irrigation_zone_name=zone_name,
-            master_schedule_switch_entity_id=master_schedule_switch_entity_id,
-            zone_device_identifier=zone_device_identifier,
-        )
-        master_schedule_sensor = await _create_master_schedule_status_sensor(
-            master_schedule_config
-        )
-        if master_schedule_sensor:
-            irrigation_zone_sensors.append(master_schedule_sensor)
-            _LOGGER.debug(
-                "Created master schedule status sensor for irrigation zone %s",
-                zone_name,
-            )
-
-        # Create schedule misconfiguration status sensor
-        sunrise_switch_entity_id = (
-            f"switch.{zone_name.lower().replace(' ', '_')}_sunrise_schedule"
-        )
-        afternoon_switch_entity_id = (
-            f"switch.{zone_name.lower().replace(' ', '_')}_afternoon_schedule"
-        )
-        sunset_switch_entity_id = (
-            f"switch.{zone_name.lower().replace(' ', '_')}_sunset_schedule"
-        )
-
-        schedule_misconfiguration_config = ScheduleMisconfigurationStatusMonitorConfig(
-            hass=hass,
-            entry_id=entry.entry_id,
-            location_name=zone_name,
-            irrigation_zone_name=zone_name,
-            master_schedule_switch_entity_id=(master_schedule_switch_entity_id),
-            sunrise_switch_entity_id=sunrise_switch_entity_id,
-            afternoon_switch_entity_id=afternoon_switch_entity_id,
-            sunset_switch_entity_id=sunset_switch_entity_id,
-            zone_device_identifier=zone_device_identifier,
-        )
-        schedule_misconfiguration_sensor = (
-            await _create_schedule_misconfiguration_status_sensor(
-                schedule_misconfiguration_config
-            )
-        )
-        if schedule_misconfiguration_sensor:
-            irrigation_zone_sensors.append(schedule_misconfiguration_sensor)
-            _LOGGER.debug(
-                "Created schedule misconfiguration status sensor for "
-                "irrigation zone %s",
-                zone_name,
-            )
-
-        # Create water delivery preference status sensor
-        allow_rain_water_delivery_switch_entity_id = (
-            f"switch.{zone_name.lower().replace(' ', '_')}_allow_rain_water_delivery"
-        )
-        allow_water_main_delivery_switch_entity_id = (
-            f"switch.{zone_name.lower().replace(' ', '_')}_allow_water_main_delivery"
-        )
-
-        water_delivery_preference_config = WaterDeliveryPreferenceStatusMonitorConfig(
-            hass=hass,
-            entry_id=entry.entry_id,
-            location_name=zone_name,
-            irrigation_zone_name=zone_name,
-            master_schedule_switch_entity_id=(master_schedule_switch_entity_id),
-            allow_rain_water_delivery_switch_entity_id=(
-                allow_rain_water_delivery_switch_entity_id
-            ),
-            allow_water_main_delivery_switch_entity_id=(
-                allow_water_main_delivery_switch_entity_id
-            ),
-            zone_device_identifier=zone_device_identifier,
-        )
-        water_delivery_preference_sensor = (
-            await _create_water_delivery_preference_status_sensor(
-                water_delivery_preference_config
-            )
-        )
-        if water_delivery_preference_sensor:
-            irrigation_zone_sensors.append(water_delivery_preference_sensor)
-            _LOGGER.debug(
-                "Created water delivery preference status sensor for "
-                "irrigation zone %s",
-                zone_name,
-            )
-
-        # Create error status sensor
-        zone_name_safe = zone_name.lower().replace(" ", "_")
-        error_count_entity_id = f"sensor.{zone_name_safe}_error_count"
-
-        error_status_config = ErrorStatusMonitorConfig(
-            hass=hass,
-            entry_id=entry.entry_id,
-            location_name=zone_name,
-            irrigation_zone_name=zone_name,
-            error_count_entity_id=error_count_entity_id,
-            zone_device_identifier=zone_device_identifier,
-        )
-        error_status_sensor = await _create_error_status_sensor(error_status_config)
-        if error_status_sensor:
-            irrigation_zone_sensors.append(error_status_sensor)
-            _LOGGER.debug(
-                "Created error status sensor for irrigation zone %s",
-                zone_name,
-            )
+        irrigation_zone_sensors.extend(zone_sensors)
 
     if irrigation_zone_sensors:
         async_add_entities(irrigation_zone_sensors)
