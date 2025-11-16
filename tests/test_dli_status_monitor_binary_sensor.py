@@ -151,6 +151,10 @@ class TestDailyLightIntegralStatusMonitorBinarySensorStateUpdate:
         """Test state update when all values are None."""
         sensor = DailyLightIntegralStatusMonitorBinarySensor(sensor_config)
 
+        # Explicitly set values to None to test unavailable state
+        sensor._weekly_average_dli = None
+        sensor._min_dli = None
+        sensor._max_dli = None
         sensor._update_state()
 
         assert sensor._state is None
