@@ -4154,9 +4154,9 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
 
         self._state: bool | None = None
         self._conductivity_status: str = "normal"  # 'low', 'normal', or 'high'
-        self._min_soil_conductivity: float | None = None
-        self._max_soil_conductivity: float | None = None
-        self._current_soil_conductivity: float | None = None
+        self._min_soil_conductivity: float | None = 0.0
+        self._max_soil_conductivity: float | None = 0.0
+        self._current_soil_conductivity: float | None = 0.0
         self._unsubscribe: Any = None
         self._unsubscribe_conductivity_min: Any = None
         self._unsubscribe_conductivity_max: Any = None
@@ -4523,9 +4523,9 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self._moisture_status: str = (
             "normal"  # 'low', 'high', 'water_soon', or 'normal'
         )
-        self._min_soil_moisture: float | None = None
-        self._max_soil_moisture: float | None = None
-        self._current_soil_moisture: float | None = None
+        self._min_soil_moisture: float | None = 0.0
+        self._max_soil_moisture: float | None = 0.0
+        self._current_soil_moisture: float | None = 0.0
         self._ignore_until_datetime: Any = None
         self._unsubscribe: Any = None
         self._unsubscribe_moisture_min: Any = None
@@ -5026,8 +5026,8 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
         self._state: bool | None = None
         self._temperature_status: str = "normal"  # 'above', 'below', or 'normal'
-        self._above_threshold_hours: float | None = None
-        self._below_threshold_hours: float | None = None
+        self._above_threshold_hours: float | None = 0.0
+        self._below_threshold_hours: float | None = 0.0
         self._threshold_hours: float = 2.0  # 2 hours threshold
         self._high_threshold_ignore_until_datetime: Any = None
         self._low_threshold_ignore_until_datetime: Any = None
@@ -5617,8 +5617,8 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
         self._state: bool | None = None
         self._humidity_status: str = "normal"  # 'above', 'below', or 'normal'
-        self._above_threshold_hours: float | None = None
-        self._below_threshold_hours: float | None = None
+        self._above_threshold_hours: float | None = 0.0
+        self._below_threshold_hours: float | None = 0.0
         self._threshold_hours: float = 2.0  # 2 hours threshold
         self._high_threshold_ignore_until_datetime: Any = None
         self._low_threshold_ignore_until_datetime: Any = None
@@ -7223,9 +7223,9 @@ class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEnt
 
         self._state: bool | None = None
         self._dli_status: str = "normal"  # 'above', 'below', or 'normal'
-        self._weekly_average_dli: float | None = None
-        self._min_dli: float | None = None
-        self._max_dli: float | None = None
+        self._weekly_average_dli: float | None = 0.0
+        self._min_dli: float | None = 0.0
+        self._max_dli: float | None = 0.0
         self._high_threshold_ignore_until_datetime: Any = None
         self._low_threshold_ignore_until_datetime: Any = None
         self._unsubscribe: Any = None
