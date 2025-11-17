@@ -54,9 +54,9 @@ class TestESPHomeRunningStatusMonitorBinarySensorInit:
         """Test initialization with valid parameters."""
         sensor = ESPHomeRunningStatusMonitorBinarySensor(sensor_config)
 
-        assert sensor._attr_name == "Irrigation Zone A Status"
+        assert sensor._attr_name == "Irrigation Zone A Irrigation Status"
         expected_unique_id = (
-            f"{DOMAIN}_test_entry_123_esphome_device_abc123_esphome_running_status"
+            f"{DOMAIN}_test_entry_123_esphome_device_abc123_irrigation_status"
         )
         assert sensor._attr_unique_id == expected_unique_id
         assert sensor.monitoring_device_id == "esphome_device_abc123"

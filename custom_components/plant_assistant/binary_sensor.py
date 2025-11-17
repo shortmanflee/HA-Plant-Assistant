@@ -7,6 +7,7 @@ such as soil moisture levels falling below configured thresholds.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -301,6 +302,18 @@ class ESPHomeRunningStatusMonitorConfig:
     location_name: str
     irrigation_zone_name: str
     monitoring_device_id: str
+    zone_device_identifier: tuple[str, str]
+
+
+@dataclass
+class IrrigationZoneStatusMonitorConfig:
+    """Configuration for IrrigationZoneStatusMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    zone_id: str
     zone_device_identifier: tuple[str, str]
 
 
@@ -2691,7 +2704,7 @@ class ESPHomeRunningStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
         self.monitoring_device_id = config.monitoring_device_id
 
         # Set entity attributes
-        self._attr_name = f"{self.location_name} Status"
+        self._attr_name = f"{self.location_name} Irrigation Status"
 
         # Generate unique_id
         zone_device_domain = config.zone_device_identifier[0]
@@ -2701,7 +2714,7 @@ class ESPHomeRunningStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
             self.entry_id,
             zone_device_domain,
             zone_device_id,
-            "esphome_running_status",
+            "irrigation_status",
         )
         self._attr_unique_id = "_".join(unique_id_parts)
 
@@ -2946,6 +2959,490 @@ class ESPHomeRunningStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
         """Clean up when entity is removed."""
         if self._unsubscribe:
             self._unsubscribe()
+
+
+class IrrigationZoneStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that monitors overall status of an irrigation zone.
+
+    This sensor turns ON (problem detected) when any of the zone's problem
+    binary sensors are ON, OR when any plant location within the zone has
+    its Status sensor ON. This provides a comprehensive view of the entire
+    irrigation zone's health including all associated plant locations.
+    """
+
+    def __init__(self, config: IrrigationZoneStatusMonitorConfig) -> None:
+        """
+        Initialize the Irrigation Zone Status Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.zone_device_identifier = config.zone_device_identifier
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+        self.zone_id = config.zone_id
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Status"
+
+        # Generate unique_id
+        zone_device_domain = config.zone_device_identifier[0]
+        zone_device_id = config.zone_device_identifier[1]
+        unique_id_parts = (
+            DOMAIN,
+            self.entry_id,
+            zone_device_domain,
+            zone_device_id,
+            "status",
+        )
+        self._attr_unique_id = "_".join(unique_id_parts)
+
+        # Set binary sensor properties
+        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+        # Set device info to associate with the irrigation zone device
+        self._attr_device_info = DeviceInfo(
+            identifiers={self.zone_device_identifier},
+        )
+
+        self._state: bool | None = None
+        self._zone_problem_sensors: dict[str, bool | None] = {}
+        self._location_status_sensors: dict[str, bool | None] = {}
+        self._zone_problem_entity_ids: dict[str, str] = {}
+        self._location_status_entity_ids: dict[str, str] = {}
+        self._zone_problem_entity_unique_ids: dict[str, str] = {}
+        self._location_status_entity_unique_ids: dict[str, str] = {}
+        self._unsubscribe_handlers: list[Any] = []
+
+    def _get_entity_unique_id(self, entity_id: str) -> str | None:
+        """Get unique_id for an entity_id."""
+        try:
+            entity_reg = er.async_get(self.hass)
+            if entity_reg is not None:
+                entity_entry = entity_reg.async_get(entity_id)
+                if entity_entry and entity_entry.unique_id:
+                    return entity_entry.unique_id
+        except (TypeError, AttributeError, ValueError):
+            pass
+        return None
+
+    async def _find_zone_problem_sensors(self) -> dict[str, str]:
+        """
+        Find all problem sensor entities for this irrigation zone.
+
+        Returns a dictionary mapping sensor display name to entity_id.
+        Zone problem sensors that are found:
+        - Schedule Status (master schedule off)
+        - Schedule Misconfiguration Status
+        - Water Delivery Preference Status
+        - Error Status (error count >= 3)
+        - Irrigation Status (ESPHome running)
+        """
+        problem_sensors: dict[str, str] = {}
+        try:
+            ent_reg = er.async_get(self.hass)
+            zone_device_domain = self.zone_device_identifier[0]
+            zone_device_id = self.zone_device_identifier[1]
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "binary_sensor"
+                    and entity.unique_id
+                    and self.entry_id in entity.unique_id
+                    and zone_device_domain in entity.unique_id
+                    and zone_device_id in entity.unique_id
+                ):
+                    unique_id = entity.unique_id
+                    is_problem_sensor = False
+                    sensor_name = ""
+
+                    if "schedule_status" in unique_id:
+                        is_problem_sensor = True
+                        sensor_name = "Schedule Status"
+                    elif "schedule_misconfiguration" in unique_id:
+                        is_problem_sensor = True
+                        sensor_name = "Schedule Misconfiguration"
+                    elif "water_delivery_preference" in unique_id:
+                        is_problem_sensor = True
+                        sensor_name = "Water Delivery Preference"
+                    elif "error_status" in unique_id:
+                        is_problem_sensor = True
+                        sensor_name = "Error Status"
+                    elif "irrigation_status" in unique_id:
+                        is_problem_sensor = True
+                        sensor_name = "Irrigation Status"
+
+                    # Exclude the overall status sensor itself
+                    # by checking if the unique_id ends with just
+                    # "status" (not "schedule_status", etc.)
+                    if is_problem_sensor and not unique_id.endswith(
+                        f"{zone_device_id}_status"
+                    ):
+                        problem_sensors[sensor_name] = entity.entity_id
+                        self._zone_problem_entity_unique_ids[entity.entity_id] = (
+                            unique_id
+                        )
+                        _LOGGER.debug(
+                            "Found zone problem sensor for %s: %s -> %s"
+                            " (unique_id: %s)",
+                            self.location_name,
+                            sensor_name,
+                            entity.entity_id,
+                            unique_id,
+                        )
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding zone problem sensors: %s", exc)
+
+        return problem_sensors
+
+    async def _find_location_status_sensors(self) -> dict[str, str]:
+        """
+        Find all plant location Status sensors for this irrigation zone.
+
+        Returns a dictionary mapping location name to status sensor entity_id.
+        """
+        status_sensors: dict[str, str] = {}
+        try:
+            ent_reg = er.async_get(self.hass)
+
+            # Get the parent config entry to access its subentries
+            parent_entry = self.hass.config_entries.async_get_entry(self.entry_id)
+            if not parent_entry:
+                _LOGGER.warning(
+                    "Could not find parent entry with ID: %s", self.entry_id
+                )
+                return status_sensors
+
+            if not parent_entry.subentries:
+                _LOGGER.debug("Parent entry %s has no subentries", self.entry_id)
+                return status_sensors
+
+            _LOGGER.debug(
+                "Found parent entry %s with %d subentries",
+                self.entry_id,
+                len(parent_entry.subentries),
+            )
+
+            # Build a set of subentry IDs that belong to this zone
+            zone_subentry_ids = set()
+            for subentry_id, subentry in parent_entry.subentries.items():
+                zone_id = subentry.data.get("zone_id")
+                location_name = subentry.data.get("name", "Unknown")
+                _LOGGER.debug(
+                    "Checking subentry %s: zone_id=%s, location=%s (target zone=%s)",
+                    subentry_id,
+                    zone_id,
+                    location_name,
+                    self.zone_id,
+                )
+                if zone_id == self.zone_id:
+                    zone_subentry_ids.add(subentry_id)
+                    _LOGGER.debug(
+                        "Matched subentry %s for zone %s (location: %s)",
+                        subentry_id,
+                        self.zone_id,
+                        location_name,
+                    )
+
+            _LOGGER.debug(
+                "Found %d subentries for zone %s: %s",
+                len(zone_subentry_ids),
+                self.zone_id,
+                zone_subentry_ids,
+            )
+
+            # Look through all binary sensors to find status sensors
+            # that belong to our zone's subentries
+            # Note: We check if the subentry_id is in the unique_id because
+            # all entities are registered with the parent entry's config_entry_id
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "binary_sensor"
+                    and entity.unique_id
+                    and entity.unique_id.endswith("_status")
+                ):
+                    # Check if this entity belongs to any of our zone's subentries
+                    # by checking if the subentry_id appears in the unique_id
+                    for subentry_id in zone_subentry_ids:
+                        if subentry_id in entity.unique_id:
+                            # This is a status sensor for a plant location in our zone
+                            # Get the subentry to extract the location name
+                            subentry = parent_entry.subentries.get(subentry_id)
+                            if subentry is not None:
+                                location_name = subentry.data.get(
+                                    "name", "Unknown Location"
+                                )
+                                status_sensors[location_name] = entity.entity_id
+                                self._location_status_entity_unique_ids[
+                                    entity.entity_id
+                                ] = entity.unique_id
+                                _LOGGER.info(
+                                    "Found location status sensor for zone %s: "
+                                    "%s -> %s (unique_id: %s, subentry_id: %s)",
+                                    self.location_name,
+                                    location_name,
+                                    entity.entity_id,
+                                    entity.unique_id,
+                                    subentry_id,
+                                )
+                            break  # Found a match, no need to check other subentries
+
+        except (AttributeError, KeyError, ValueError):
+            _LOGGER.exception("Error finding location status sensors")
+
+        _LOGGER.info(
+            "Irrigation zone %s found %d location status sensors: %s",
+            self.location_name,
+            len(status_sensors),
+            list(status_sensors.keys()),
+        )
+
+        return status_sensors
+
+    async def _refresh_location_status_sensors(self) -> None:
+        """Refresh location status sensors and subscribe to their state changes."""
+        # Find all location status sensors
+        new_location_status_entity_ids = await self._find_location_status_sensors()
+
+        # Resolve all location status entity IDs
+        resolved_location_status_entity_ids = {}
+        for location_name, entity_id in new_location_status_entity_ids.items():
+            unique_id = self._location_status_entity_unique_ids.get(entity_id)
+            resolved_entity_id = _resolve_entity_id(self.hass, entity_id, unique_id)
+            if resolved_entity_id:
+                if resolved_entity_id != entity_id:
+                    _LOGGER.debug(
+                        "Resolved location status sensor entity ID: %s -> %s",
+                        entity_id,
+                        resolved_entity_id,
+                    )
+                    if unique_id:
+                        self._location_status_entity_unique_ids[resolved_entity_id] = (
+                            unique_id
+                        )
+                        del self._location_status_entity_unique_ids[entity_id]
+                resolved_location_status_entity_ids[location_name] = resolved_entity_id
+            else:
+                resolved_location_status_entity_ids[location_name] = entity_id
+
+        # Update the entity IDs
+        self._location_status_entity_ids = resolved_location_status_entity_ids
+
+        # Initialize tracking dictionary
+        for location_name in self._location_status_entity_ids:
+            self._location_status_sensors[location_name] = None
+
+        # Subscribe to state changes for all location status sensors
+        for location_name, entity_id in self._location_status_entity_ids.items():
+            if state := self.hass.states.get(entity_id):
+                self._location_status_sensors[location_name] = state.state == "on"
+
+            unsubscribe = async_track_state_change_event(
+                self.hass,
+                entity_id,
+                self._sensor_state_changed,
+            )
+            self._unsubscribe_handlers.append(unsubscribe)
+
+        # Update state after finding new sensors
+        self._update_state()
+        self.async_write_ha_state()
+
+        _LOGGER.info(
+            "Refreshed location status sensors for zone %s: found %d sensors",
+            self.location_name,
+            len(self._location_status_entity_ids),
+        )
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on all monitored sensors."""
+        # Check if any zone problem sensor is ON
+        zone_problems = [
+            name for name, is_on in self._zone_problem_sensors.items() if is_on is True
+        ]
+
+        # Check if any location status sensor is ON
+        location_problems = [
+            name
+            for name, is_on in self._location_status_sensors.items()
+            if is_on is True
+        ]
+
+        # Overall status is problem if ANY monitored sensor has a problem
+        self._state = len(zone_problems) > 0 or len(location_problems) > 0
+
+    @callback
+    def _sensor_state_changed(self, event: Event[EventStateChangedData]) -> None:
+        """Handle monitored sensor state changes."""
+        entity_id = event.data.get("entity_id")
+        new_state = event.data.get("new_state")
+
+        # Check if it's a zone problem sensor
+        for sensor_name, sensor_entity_id in self._zone_problem_entity_ids.items():
+            if sensor_entity_id == entity_id:
+                if new_state is None:
+                    self._zone_problem_sensors[sensor_name] = None
+                else:
+                    self._zone_problem_sensors[sensor_name] = new_state.state == "on"
+                break
+
+        # Check if it's a location status sensor
+        for location_name, sensor_entity_id in self._location_status_entity_ids.items():
+            if sensor_entity_id == entity_id:
+                if new_state is None:
+                    self._location_status_sensors[location_name] = None
+                else:
+                    self._location_status_sensors[location_name] = (
+                        new_state.state == "on"
+                    )
+                break
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if any monitored sensor has a problem."""
+        return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on sensor state."""
+        if self._state is True:
+            return "mdi:alert-circle-outline"
+        return "mdi:check-circle-outline"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        # Build list of zone problems
+        zone_problems = [
+            name for name, is_on in self._zone_problem_sensors.items() if is_on is True
+        ]
+
+        # Build list of location problems
+        location_problems = [
+            name
+            for name, is_on in self._location_status_sensors.items()
+            if is_on is True
+        ]
+
+        # Total issue count
+        total_issues = len(zone_problems) + len(location_problems)
+        message = (
+            f"{total_issues} Issue" if total_issues == 1 else f"{total_issues} Issues"
+        )
+
+        attrs: dict[str, Any] = {
+            "message": message,
+            "zone_problems": zone_problems,
+            "location_problems": location_problems,
+            "total_zone_sensors_monitored": len(self._zone_problem_sensors),
+            "total_location_sensors_monitored": len(self._location_status_sensors),
+        }
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Available if we have found at least one sensor to monitor
+        return (
+            len(self._zone_problem_sensors) > 0
+            or len(self._location_status_sensors) > 0
+        )
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state if available."""
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None and last_state.state not in (
+            "unknown",
+            "unavailable",
+            None,
+        ):
+            try:
+                self._state = last_state.state == "on"
+                _LOGGER.info(
+                    "Restored irrigation zone status monitor for %s: %s",
+                    self.location_name,
+                    self._state,
+                )
+            except (AttributeError, ValueError):
+                pass
+
+    async def async_added_to_hass(self) -> None:
+        """Add entity to hass."""
+        await super().async_added_to_hass()
+        await self._restore_previous_state()
+
+        # Find all zone problem sensors
+        self._zone_problem_entity_ids = await self._find_zone_problem_sensors()
+
+        # Resolve all zone problem entity IDs
+        resolved_zone_problem_entity_ids = {}
+        for sensor_name, entity_id in self._zone_problem_entity_ids.items():
+            unique_id = self._zone_problem_entity_unique_ids.get(entity_id)
+            resolved_entity_id = _resolve_entity_id(self.hass, entity_id, unique_id)
+            if resolved_entity_id:
+                if resolved_entity_id != entity_id:
+                    _LOGGER.debug(
+                        "Resolved zone problem sensor entity ID: %s -> %s",
+                        entity_id,
+                        resolved_entity_id,
+                    )
+                    if unique_id:
+                        self._zone_problem_entity_unique_ids[resolved_entity_id] = (
+                            unique_id
+                        )
+                        del self._zone_problem_entity_unique_ids[entity_id]
+                resolved_zone_problem_entity_ids[sensor_name] = resolved_entity_id
+            else:
+                resolved_zone_problem_entity_ids[sensor_name] = entity_id
+        self._zone_problem_entity_ids = resolved_zone_problem_entity_ids
+
+        # Initialize tracking dictionaries for zone problem sensors
+        for sensor_name in self._zone_problem_entity_ids:
+            self._zone_problem_sensors[sensor_name] = None
+
+        # Subscribe to state changes for all zone problem sensors
+        for sensor_name, entity_id in self._zone_problem_entity_ids.items():
+            if state := self.hass.states.get(entity_id):
+                self._zone_problem_sensors[sensor_name] = state.state == "on"
+
+            unsubscribe = async_track_state_change_event(
+                self.hass,
+                entity_id,
+                self._sensor_state_changed,
+            )
+            self._unsubscribe_handlers.append(unsubscribe)
+
+        # Schedule a delayed refresh to find location status sensors
+        # This is necessary because location status sensors may not be
+        # registered in the entity registry yet when this sensor is added
+        async def _delayed_refresh() -> None:
+            """Refresh location status sensors after a delay."""
+            await asyncio.sleep(2)  # Wait for other entities to be registered
+            await self._refresh_location_status_sensors()
+
+        self.hass.async_create_task(_delayed_refresh())
+
+        # Update initial state (will update again after delayed refresh)
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        for unsubscribe in self._unsubscribe_handlers:
+            if unsubscribe:
+                unsubscribe()
+        self._unsubscribe_handlers.clear()
 
 
 class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
@@ -8952,6 +9449,18 @@ async def _create_esphome_running_status_sensor(
     return sensor
 
 
+async def _create_irrigation_zone_status_sensor(
+    config: IrrigationZoneStatusMonitorConfig,
+) -> BinarySensorEntity | None:
+    """Create irrigation zone overall status monitor sensor."""
+    sensor = IrrigationZoneStatusMonitorBinarySensor(config)
+    _LOGGER.debug(
+        "Created irrigation zone status monitor binary sensor for %s",
+        config.location_name,
+    )
+    return sensor
+
+
 async def _create_link_monitors(
     config: LinkMonitorConfig,
 ) -> list[BinarySensorEntity]:
@@ -9124,9 +9633,10 @@ async def async_setup_platform(
     # Binary sensors are set up via config entries
 
 
-async def _create_zone_sensors(  # noqa: PLR0912, PLR0915
+async def _create_zone_sensors(  # noqa: PLR0912, PLR0913, PLR0915
     hass: HomeAssistant,
     entry: ConfigEntry[Any],
+    zone_id: str,
     zone_name: str,
     linked_device_id: str,
     zone_device_identifier: tuple[str, str],
@@ -9360,6 +9870,26 @@ async def _create_zone_sensors(  # noqa: PLR0912, PLR0915
             zone_name,
         )
 
+    # Create overall irrigation zone status sensor (monitors all zone problem sensors
+    # and associated plant location status sensors)
+    irrigation_zone_status_config = IrrigationZoneStatusMonitorConfig(
+        hass=hass,
+        entry_id=entry.entry_id,
+        location_name=zone_name,
+        irrigation_zone_name=zone_name,
+        zone_id=zone_id,
+        zone_device_identifier=zone_device_identifier,
+    )
+    irrigation_zone_status_sensor = await _create_irrigation_zone_status_sensor(
+        irrigation_zone_status_config
+    )
+    if irrigation_zone_status_sensor:
+        zone_sensors.append(irrigation_zone_status_sensor)
+        _LOGGER.debug(
+            "Created overall status sensor for irrigation zone %s",
+            zone_name,
+        )
+
     return zone_sensors
 
 
@@ -9410,7 +9940,7 @@ async def _setup_irrigation_zone_sensors(
 
         # Create all sensors for this zone
         zone_sensors = await _create_zone_sensors(
-            hass, entry, zone_name, linked_device_id, zone_device_identifier
+            hass, entry, zone_id, zone_name, linked_device_id, zone_device_identifier
         )
         irrigation_zone_sensors.extend(zone_sensors)
 
