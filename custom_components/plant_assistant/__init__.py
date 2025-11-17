@@ -28,19 +28,13 @@ _LOGGER = logging.getLogger(__name__)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
-async def async_setup(hass: HomeAssistant, _config: dict[str, Any]) -> bool:
-    """Set up the Plant Assistant integration (legacy YAML)."""
-    hass.data.setdefault(DOMAIN, {})
-    return True
-
-
 PLATFORMS: list[Platform] = [
-    Platform.BINARY_SENSOR,
-    Platform.BUTTON,
     Platform.SENSOR,
-    Platform.DATETIME,
     Platform.SWITCH,
     Platform.NUMBER,
+    Platform.DATETIME,
+    Platform.BINARY_SENSOR,
+    Platform.BUTTON,
 ]
 
 
@@ -103,8 +97,6 @@ async def async_setup_entry(
             "Detected subentry - delegating to subentry setup for entry %s",
             entry.entry_id,
         )
-        # Perform migration: capture unique_ids for existing configs
-        await _migrate_subentry_unique_ids(hass, entry)
         return await async_setup_location_subentry(hass, entry)
 
     # This is a main Plant Assistant entry
@@ -268,80 +260,3 @@ def _build_diagnostics_mappings(
             mappings[f"{z.get('id')}/{loc.get('id')}"] = list(dict.fromkeys(found))
 
     return mappings
-
-
-async def _migrate_subentry_unique_ids(
-    hass: HomeAssistant, entry: config_entries.ConfigEntry[Any]
-) -> None:
-    """
-    Migrate subentry config to include unique_ids for entity references.
-
-    This provides backward compatibility by capturing unique_ids for existing
-    entity_id references, allowing the system to handle entity renames gracefully.
-
-    Migration covers:
-    - humidity_entity_id -> humidity_entity_unique_id
-
-    This ensures that if users rename their source entities, the system can still
-    find them via unique_id lookup as a fallback.
-    """
-    try:
-        entity_registry = er.async_get(hass)
-        if entity_registry is None:
-            _LOGGER.debug(
-                "Entity registry not available for migration of entry %s",
-                entry.entry_id,
-            )
-            return
-
-        data = dict(entry.data)
-        updated = False
-
-        # Migrate humidity_entity_id to include unique_id
-        if (humidity_entity_id := data.get("humidity_entity_id")) and (
-            "humidity_entity_unique_id" not in data
-        ):
-            try:
-                entity_entry = entity_registry.async_get(humidity_entity_id)
-                if entity_entry and entity_entry.unique_id:
-                    data["humidity_entity_unique_id"] = entity_entry.unique_id
-                    updated = True
-                    _LOGGER.info(
-                        "Migrated humidity_entity_unique_id for entry %s: "
-                        "entity_id=%s, unique_id=%s",
-                        entry.entry_id,
-                        humidity_entity_id,
-                        entity_entry.unique_id,
-                    )
-                else:
-                    _LOGGER.warning(
-                        "Could not find entity_entry or unique_id for "
-                        "humidity_entity_id %s in entry %s - entity may have "
-                        "been deleted",
-                        humidity_entity_id,
-                        entry.entry_id,
-                    )
-            except (AttributeError, KeyError, ValueError) as exc:
-                _LOGGER.warning(
-                    "Error looking up humidity_entity_id %s for entry %s: %s",
-                    humidity_entity_id,
-                    entry.entry_id,
-                    exc,
-                )
-
-        if updated:
-            hass.config_entries.async_update_entry(entry, data=data)
-            _LOGGER.debug(
-                "Updated entry %s with unique_id migrations",
-                entry.entry_id,
-            )
-        else:
-            _LOGGER.debug(
-                "No unique_id migrations needed for entry %s",
-                entry.entry_id,
-            )
-
-    except Exception:
-        _LOGGER.exception(
-            "Error migrating subentry unique_ids for entry %s", entry.entry_id
-        )

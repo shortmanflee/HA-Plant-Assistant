@@ -18,7 +18,11 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .sensor import _get_monitoring_device_sensors, _has_plants_in_slots
+from .sensor import (
+    _get_monitoring_device_sensors,
+    _has_plants_in_slots,
+    _resolve_entity_id,
+)
 
 if TYPE_CHECKING:
     import datetime as py_datetime
@@ -41,9 +45,12 @@ def _collect_expected_datetime_entities(
 
     monitoring_device_id = subentry.data.get("monitoring_device_id")
     humidity_entity_id = subentry.data.get("humidity_entity_id")
+    humidity_entity_unique_id = subentry.data.get("humidity_entity_unique_id")
 
     has_monitoring_device = bool(monitoring_device_id)
-    has_humidity_sensor = bool(humidity_entity_id)
+    # Resolve humidity entity with fallback to unique_id for rename resilience
+    # Use dummy hass object since this is just for checking existence
+    has_humidity_sensor = bool(humidity_entity_id or humidity_entity_unique_id)
     has_plant_slots = _has_plants_in_slots(subentry.data)
 
     # Temperature entities
@@ -252,11 +259,32 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
             if "device_id" in subentry.data:
                 monitoring_device_id = subentry.data.get("monitoring_device_id")
                 humidity_entity_id = subentry.data.get("humidity_entity_id")
+                humidity_entity_unique_id = subentry.data.get(
+                    "humidity_entity_unique_id"
+                )
                 location_name = subentry.data.get("name", "Plant Location")
+
+                # Resolve humidity entity with unique_id fallback for rename resilience
+                resolved_humidity_entity_id = _resolve_entity_id(
+                    hass, humidity_entity_id, humidity_entity_unique_id
+                )
+
+                # Log warning if humidity entity configured but not found
+                if (
+                    humidity_entity_id or humidity_entity_unique_id
+                ) and not resolved_humidity_entity_id:
+                    _LOGGER.warning(
+                        "Humidity entity configured for subentry %s but not found - "
+                        "entity_id=%s, unique_id=%s. "
+                        "Humidity threshold entities will be unavailable.",
+                        subentry_id,
+                        humidity_entity_id,
+                        humidity_entity_unique_id,
+                    )
 
                 # Check conditions
                 has_monitoring_device = bool(monitoring_device_id)
-                has_humidity_sensor = bool(humidity_entity_id)
+                has_humidity_sensor = bool(resolved_humidity_entity_id)
                 has_plant_slots = _has_plants_in_slots(subentry.data)
 
                 _LOGGER.debug(
@@ -363,9 +391,12 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
                     _LOGGER.debug(
                         "Creating humidity low/high threshold ignore until "
                         "datetime entities for subentry %s with humidity sensor %s "
+                        "(resolved from entity_id=%s, unique_id=%s) "
                         "and configured plant slots",
                         subentry_id,
+                        resolved_humidity_entity_id,
                         humidity_entity_id,
+                        humidity_entity_unique_id,
                     )
 
                     humidity_ignore_entity = HumidityLowThresholdIgnoreUntilEntity(
@@ -374,6 +405,7 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
                         subentry_id=subentry.subentry_id,
                         location_name=location_name,
                         subentry_data=subentry.data,
+                        resolved_humidity_entity_id=resolved_humidity_entity_id,
                     )
                     subentry_datetime_entities.append(humidity_ignore_entity)
 
@@ -384,6 +416,7 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
                             subentry_id=subentry.subentry_id,
                             location_name=location_name,
                             subentry_data=subentry.data,
+                            resolved_humidity_entity_id=resolved_humidity_entity_id,
                         )
                     )
                     subentry_datetime_entities.append(humidity_high_ignore_entity)
@@ -596,11 +629,6 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
                     subentry_datetime_entities,
                     config_subentry_id=subentry_id,  # type: ignore[call-arg]
                 )
-
-    else:
-        # Process legacy entries or direct configuration if needed
-        _LOGGER.debug("Processing legacy entry or direct configuration")
-        # Add logic here if you need to support non-subentry configurations
 
     # Process irrigation zones with esphome linked devices
     # This should happen regardless of whether entry has subentries
@@ -983,13 +1011,14 @@ class TemperatureHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
 class HumidityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     """Datetime entity for low humidity threshold ignore until."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         hass: HomeAssistant,
         entry_id: str,
         subentry_id: str,
         location_name: str,
         subentry_data: Mapping[str, Any],
+        resolved_humidity_entity_id: str | None = None,
     ) -> None:
         """Initialize the humidity low threshold ignore until datetime entity."""
         self._hass = hass
@@ -997,6 +1026,7 @@ class HumidityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         self._subentry_id = subentry_id
         self._location_name = location_name
         self._subentry_data = subentry_data
+        self._resolved_humidity_entity_id = resolved_humidity_entity_id
         self._attr_native_value: py_datetime.datetime | None = None
 
         # Set up entity attributes
@@ -1115,8 +1145,9 @@ class HumidityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
-        # Available if humidity sensor and plant slots configured
-        has_humidity_sensor = self._subentry_data.get("humidity_entity_id") is not None
+        # Available if humidity sensor exists (via resolved entity)
+        # and plant slots configured
+        has_humidity_sensor = bool(self._resolved_humidity_entity_id)
         has_plant_slots = _has_plants_in_slots(self._subentry_data)
         return has_humidity_sensor and has_plant_slots
 
@@ -1124,13 +1155,14 @@ class HumidityLowThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
 class HumidityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     """Datetime entity for high humidity threshold ignore until."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         hass: HomeAssistant,
         entry_id: str,
         subentry_id: str,
         location_name: str,
         subentry_data: Mapping[str, Any],
+        resolved_humidity_entity_id: str | None = None,
     ) -> None:
         """Initialize the humidity high threshold ignore until datetime entity."""
         self._hass = hass
@@ -1138,6 +1170,7 @@ class HumidityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
         self._subentry_id = subentry_id
         self._location_name = location_name
         self._subentry_data = subentry_data
+        self._resolved_humidity_entity_id = resolved_humidity_entity_id
         self._attr_native_value: py_datetime.datetime | None = None
 
         # Set up entity attributes
@@ -1235,10 +1268,15 @@ class HumidityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
+        # Use resolved entity ID if available, fallback to stored ID
+        humidity_entity_id = (
+            self._resolved_humidity_entity_id
+            or self._subentry_data.get("humidity_entity_id")
+        )
         attrs = {
             "location_name": self._location_name,
             "subentry_id": self._subentry_id,
-            "humidity_entity_id": self._subentry_data.get("humidity_entity_id"),
+            "humidity_entity_id": humidity_entity_id,
         }
 
         # Add information about whether we're currently in ignore period
@@ -1257,8 +1295,9 @@ class HumidityHighThresholdIgnoreUntilEntity(RestoreEntity, DateTimeEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
-        # Available if humidity sensor and plant slots configured
-        has_humidity_sensor = self._subentry_data.get("humidity_entity_id") is not None
+        # Available if humidity sensor exists (via resolved entity)
+        # and plant slots configured
+        has_humidity_sensor = bool(self._resolved_humidity_entity_id)
         has_plant_slots = _has_plants_in_slots(self._subentry_data)
         return has_humidity_sensor and has_plant_slots
 

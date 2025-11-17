@@ -97,6 +97,19 @@ CONF_SLOT_ID = "slot_id"
 CONF_ACTION = "action"
 CONF_ORDER = "order"
 
+# Unique ID fields for entity references (entity rename resilience)
+CONF_MASTER_SCHEDULE_SWITCH_UNIQUE_ID = "master_schedule_switch_unique_id"
+CONF_SUNRISE_SWITCH_UNIQUE_ID = "sunrise_switch_unique_id"
+CONF_AFTERNOON_SWITCH_UNIQUE_ID = "afternoon_switch_unique_id"
+CONF_SUNSET_SWITCH_UNIQUE_ID = "sunset_switch_unique_id"
+CONF_ALLOW_RAIN_WATER_DELIVERY_SWITCH_UNIQUE_ID = (
+    "allow_rain_water_delivery_switch_unique_id"
+)
+CONF_ALLOW_WATER_MAIN_DELIVERY_SWITCH_UNIQUE_ID = (
+    "allow_water_main_delivery_switch_unique_id"
+)
+CONF_SOIL_MOISTURE_ENTITY_UNIQUE_ID = "soil_moisture_entity_unique_id"
+
 # Limits
 MAX_PLANT_SLOTS = 20
 
@@ -126,7 +139,6 @@ ICON_DLI = "mdi:counter"
 # Human-friendly reading name for PPFD (capitalized for display).
 # Keep short tokens/unique ids lowercase elsewhere.
 READING_PPFD = "PPFD"
-# Keep the short token for backwards-compatibility in places that expect 'dli'
 READING_DLI = "dli"
 
 # Friendly display name for Daily Light Integral and a slug for entity ids

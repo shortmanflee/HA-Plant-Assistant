@@ -332,6 +332,89 @@ def _resolve_entity_id(
     return None
 
 
+def find_device_entities_by_pattern(
+    hass: HomeAssistant,
+    device_id: str,
+    domain: str,
+    pattern_keywords: list[str] | None = None,
+) -> dict[str, tuple[str, str | None]]:
+    """
+    Find entities belonging to a device by domain and optional pattern matching.
+
+    This helper provides a robust way to discover entities associated with a device
+    without relying on constructed entity ID patterns. It queries the entity registry
+    and optionally filters by keywords found in the entity ID or name.
+
+    Args:
+        hass: The Home Assistant instance.
+        device_id: The device ID to search for entities.
+        domain: The entity domain to filter by (e.g., 'switch', 'sensor').
+        pattern_keywords: Optional list of keywords to match in entity_id or name.
+            If None, returns all entities for the device in the specified domain.
+
+    Returns:
+        A dict mapping descriptive keys to tuples of (entity_id, unique_id).
+        Keys are derived from pattern_keywords if provided, or entity_id otherwise.
+        Returns empty dict if device not found or no matching entities.
+
+    Example:
+        # Find schedule switches for a zone device
+        switches = find_device_entities_by_pattern(
+            hass, device_id, 'switch', ['schedule', 'sunrise', 'afternoon']
+        )
+        # Returns: {'schedule': ('switch.zone_schedule', 'unique_123'), ...}
+
+    """
+    entities: dict[str, tuple[str, str | None]] = {}
+
+    try:
+        dev_reg = dr.async_get(hass)
+        ent_reg = er.async_get(hass)
+
+        # Verify device exists
+        if not dev_reg.async_get(device_id):
+            _LOGGER.debug("Device %s not found", device_id)
+            return entities
+
+        # Scan all entities for this device
+        for entity_entry in ent_reg.entities.values():
+            if entity_entry.device_id != device_id or entity_entry.domain != domain:
+                continue
+
+            entity_id = entity_entry.entity_id
+            unique_id = entity_entry.unique_id
+            entity_id_lower = entity_id.lower()
+            entity_name_lower = (entity_entry.name or "").lower()
+
+            # If no pattern specified, add all entities with entity_id as key
+            if not pattern_keywords:
+                key = entity_id.split(".")[-1]  # Use entity name part as key
+                entities[key] = (entity_id, unique_id)
+                continue
+
+            # Check if any pattern keyword matches
+            for keyword in pattern_keywords:
+                keyword_lower = keyword.lower()
+                if (
+                    keyword_lower in entity_id_lower
+                    or keyword_lower in entity_name_lower
+                ):
+                    # Use the keyword as the key for easy lookup
+                    entities[keyword] = (entity_id, unique_id)
+                    _LOGGER.debug(
+                        "Found entity for pattern '%s': %s (unique_id: %s)",
+                        keyword,
+                        entity_id,
+                        unique_id,
+                    )
+                    break
+
+    except (TypeError, AttributeError, ValueError) as exc:
+        _LOGGER.debug("Error finding device entities: %s", exc)
+
+    return entities
+
+
 def _expected_entities_for_subentry(  # noqa: PLR0912, PLR0915
     hass: HomeAssistant, subentry: Any
 ) -> tuple[set[str], set[str], set[str], set[str]]:
@@ -535,6 +618,7 @@ def _create_location_mirrored_sensors(
                 config = {
                     "entry_id": entry_id,
                     "source_entity_id": entity_entry.entity_id,
+                    "source_entity_unique_id": entity_entry.unique_id,
                     "device_name": location_name,
                     "entity_name": display_name,
                     "sensor_type": sensor_type,
@@ -732,7 +816,7 @@ async def async_setup_platform(
     async_add_entities: AddEntitiesCallback,
     _discovery_info: Any = None,
 ) -> None:
-    """Set up the sensor platform (legacy)."""
+    """Set up the sensor platform."""
     async_add_entities([PlantCountSensor()])
 
 
@@ -931,7 +1015,9 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                     hass=hass,
                     entry_id=subentry.subentry_id,
                     location_device_id=location_device_id,
+                    location_name=location_name,
                     humidity_entity_id=resolved_humidity_entity_id,
+                    humidity_entity_unique_id=humidity_entity_unique_id,
                 )
                 subentry_entities.append(humidity_sensor)
                 _LOGGER.debug(
@@ -965,14 +1051,18 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
             if monitoring_device_id:
                 # Find illuminance mirrored sensor source entity for this location
                 illuminance_source_entity_id = None
+                illuminance_source_unique_id = None
                 for sensor in mirrored_sensors:
                     if (
                         isinstance(sensor, MonitoringSensor)
                         and hasattr(sensor, "source_entity_id")
                         and "illuminance" in sensor.source_entity_id.lower()
                     ):
-                        # Use source entity ID (mirrored entity_id not yet created)
+                        # Capture both entity_id and unique_id for resilient lookup
                         illuminance_source_entity_id = sensor.source_entity_id
+                        illuminance_source_unique_id = getattr(
+                            sensor, "source_entity_unique_id", None
+                        )
                         break
 
                 if illuminance_source_entity_id:
@@ -983,6 +1073,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                         location_device_id=location_device_id,
                         location_name=location_name,
                         illuminance_entity_id=illuminance_source_entity_id,
+                        illuminance_entity_unique_id=illuminance_source_unique_id,
                     )
                     subentry_entities.append(ppfd_sensor)
 
@@ -1043,6 +1134,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                         location_device_id=location_device_id,
                         location_name=location_name,
                         dli_entity_id=dli_sensor.entity_id,
+                        dli_entity_unique_id=dli_sensor.unique_id,
                     )
                     subentry_entities.append(dli_prior_period_sensor)
 
@@ -1055,6 +1147,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                         location_device_id=location_device_id,
                         location_name=location_name,
                         dli_prior_period_entity_id=dli_prior_period_sensor.entity_id,
+                        dli_prior_period_entity_unique_id=dli_prior_period_sensor.unique_id,
                     )
                     subentry_entities.append(weekly_avg_dli_sensor)
 
@@ -1065,14 +1158,18 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                 # Create temperature below threshold weekly duration sensor
                 # Only create if a temperature sensor and plant slots exist
                 temperature_source_entity_id = None
+                temperature_source_unique_id = None
                 for sensor in mirrored_sensors:
                     if (
                         isinstance(sensor, MonitoringSensor)
                         and hasattr(sensor, "source_entity_id")
                         and "temperature" in sensor.source_entity_id.lower()
                     ):
-                        # Use source entity ID (mirrored entity_id not yet created)
+                        # Capture both entity_id and unique_id for resilient lookup
                         temperature_source_entity_id = sensor.source_entity_id
+                        temperature_source_unique_id = getattr(
+                            sensor, "source_entity_unique_id", None
+                        )
                         break
 
                 if temperature_source_entity_id and _has_plants_in_slots(subentry.data):
@@ -1082,6 +1179,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                         location_device_id=location_device_id,
                         location_name=location_name,
                         temperature_entity_id=temperature_source_entity_id,
+                        temperature_entity_unique_id=temperature_source_unique_id,
                     )
                     subentry_entities.append(temp_below_threshold_sensor)
                     _LOGGER.debug(
@@ -1096,6 +1194,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                         location_device_id=location_device_id,
                         location_name=location_name,
                         temperature_entity_id=temperature_source_entity_id,
+                        temperature_entity_unique_id=temperature_source_unique_id,
                     )
                     subentry_entities.append(temp_above_threshold_sensor)
                     _LOGGER.debug(
@@ -1106,6 +1205,9 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                 # Create humidity below threshold weekly duration sensor
                 # Only create if a humidity entity is linked
                 humidity_entity_id = subentry.data.get("humidity_entity_id")
+                humidity_entity_unique_id = subentry.data.get(
+                    "humidity_entity_unique_id"
+                )
                 if humidity_entity_id and _has_plants_in_slots(subentry.data):
                     humidity_below_threshold_sensor = HumidityBelowThresholdHoursSensor(
                         hass=hass,
@@ -1113,6 +1215,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                         location_device_id=location_device_id,
                         location_name=location_name,
                         humidity_entity_id=humidity_entity_id,
+                        humidity_entity_unique_id=humidity_entity_unique_id,
                     )
                     subentry_entities.append(humidity_below_threshold_sensor)
                     _LOGGER.debug(
@@ -1127,6 +1230,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                         location_device_id=location_device_id,
                         location_name=location_name,
                         humidity_entity_id=humidity_entity_id,
+                        humidity_entity_unique_id=humidity_entity_unique_id,
                     )
                     subentry_entities.append(humidity_above_threshold_sensor)
                     _LOGGER.debug(
@@ -3967,15 +4071,90 @@ class MonitoringSensor(SensorEntity):
         if self._unsubscribe:
             self._unsubscribe()
 
+    async def async_update_source_entity(self, new_source_entity_id: str) -> None:
+        """
+        Update the source entity ID when the source entity is renamed.
+
+        This method is called by the EntityMonitor when it detects that a source
+        entity has been renamed. It updates the internal reference and re-subscribes
+        to the new entity ID.
+
+        Args:
+            new_source_entity_id: The new entity ID of the source entity.
+
+        """
+        _LOGGER.info(
+            "Updating MonitoringSensor %s source entity from %s to %s",
+            self.entity_id,
+            self.source_entity_id,
+            new_source_entity_id,
+        )
+
+        # Unsubscribe from old entity
+        if self._unsubscribe:
+            self._unsubscribe()
+            self._unsubscribe = None
+
+        # Update the source entity ID
+        old_source_entity_id = self.source_entity_id
+        self.source_entity_id = new_source_entity_id
+
+        # Update attributes to reflect new source
+        self._attributes["source_entity"] = new_source_entity_id
+
+        # Get new state and subscribe to new entity
+        if source_state := self.hass.states.get(new_source_entity_id):
+            self._state = source_state.state
+            self._attributes = dict(source_state.attributes)
+            self._attributes["source_entity"] = new_source_entity_id
+
+            # Capture new source entity unique_id
+            self._capture_source_unique_id()
+
+            # Get unit from source entity if available
+            if not hasattr(self, "_attr_native_unit_of_measurement"):
+                source_unit = source_state.attributes.get("unit_of_measurement")
+                if source_unit:
+                    self._attr_native_unit_of_measurement = source_unit
+        else:
+            _LOGGER.warning(
+                "New source entity %s not found in state for MonitoringSensor %s",
+                new_source_entity_id,
+                self.entity_id,
+            )
+
+        # Subscribe to new entity
+        try:
+            self._unsubscribe = async_track_state_change_event(
+                self.hass, new_source_entity_id, self._source_state_changed
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to new source entity %s: %s",
+                new_source_entity_id,
+                exc,
+            )
+
+        # Update state in Home Assistant
+        self.async_write_ha_state()
+
+        _LOGGER.info(
+            "Successfully updated MonitoringSensor %s from %s to %s",
+            self.entity_id,
+            old_source_entity_id,
+            new_source_entity_id,
+        )
+
 
 class HumidityLinkedSensor(SensorEntity):
     """A sensor that mirrors data from a humidity entity linked to a location."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         hass: HomeAssistant,
         entry_id: str,
         location_device_id: str,
+        location_name: str,
         humidity_entity_id: str,
         humidity_entity_unique_id: str | None = None,
     ) -> None:
@@ -3986,6 +4165,7 @@ class HumidityLinkedSensor(SensorEntity):
             hass: The Home Assistant instance.
             entry_id: The subentry ID.
             location_device_id: The device ID of the location.
+            location_name: The name of the location.
             humidity_entity_id: The entity ID of the humidity sensor to mirror.
             humidity_entity_unique_id: The unique ID for resilient lookup.
 
@@ -3995,11 +4175,6 @@ class HumidityLinkedSensor(SensorEntity):
         self.location_device_id = location_device_id
         self.humidity_entity_id = humidity_entity_id
         self.humidity_entity_unique_id = humidity_entity_unique_id
-
-        # Get location name from device registry
-        device_registry = dr.async_get(hass)
-        device = device_registry.async_get(location_device_id)
-        location_name = device.name if device and device.name else "Unknown Location"
 
         # Set entity name to include location name for better entity_id formatting
         self._attr_name = f"{location_name} Humidity"
@@ -4048,6 +4223,14 @@ class HumidityLinkedSensor(SensorEntity):
                 self._attr_native_unit_of_measurement = source_unit
 
         # Subscribe to humidity entity state changes
+        # Re-resolve entity_id immediately before subscription to handle any
+        # renames that occurred during initialization
+        self.humidity_entity_id = (
+            _resolve_entity_id(
+                hass, self.humidity_entity_id, self.humidity_entity_unique_id
+            )
+            or self.humidity_entity_id
+        )
         try:
             self._unsubscribe = async_track_state_change_event(
                 hass, self.humidity_entity_id, self._humidity_state_changed
@@ -4121,6 +4304,79 @@ class HumidityLinkedSensor(SensorEntity):
         """Clean up when entity is removed."""
         if self._unsubscribe:
             self._unsubscribe()
+
+    async def async_update_source_entity(self, new_humidity_entity_id: str) -> None:
+        """
+        Update the humidity entity ID when the humidity entity is renamed.
+
+        This method is called by the EntityMonitor when it detects that a humidity
+        entity has been renamed. It updates the internal reference and re-subscribes
+        to the new entity ID.
+
+        Args:
+            new_humidity_entity_id: The new entity ID of the humidity entity.
+
+        """
+        _LOGGER.info(
+            "Updating HumidityLinkedSensor %s humidity entity from %s to %s",
+            self.entity_id,
+            self.humidity_entity_id,
+            new_humidity_entity_id,
+        )
+
+        # Unsubscribe from old entity
+        if self._unsubscribe:
+            self._unsubscribe()
+            self._unsubscribe = None
+
+        # Update the humidity entity ID
+        old_humidity_entity_id = self.humidity_entity_id
+        self.humidity_entity_id = new_humidity_entity_id
+
+        # Update attributes to reflect new source
+        self._attributes["source_entity"] = new_humidity_entity_id
+
+        # Get new state and subscribe to new entity
+        if humidity_state := self.hass.states.get(new_humidity_entity_id):
+            self._state = humidity_state.state
+            self._attributes = dict(humidity_state.attributes)
+            self._attributes["source_entity"] = new_humidity_entity_id
+
+            # Capture new humidity entity unique_id
+            self._capture_humidity_unique_id()
+
+            # Get unit from source entity if available
+            source_unit = humidity_state.attributes.get("unit_of_measurement")
+            if source_unit:
+                self._attr_native_unit_of_measurement = source_unit
+        else:
+            _LOGGER.warning(
+                "New humidity entity %s not found in state for HumidityLinkedSensor %s",
+                new_humidity_entity_id,
+                self.entity_id,
+            )
+
+        # Subscribe to new entity
+        try:
+            self._unsubscribe = async_track_state_change_event(
+                self.hass, new_humidity_entity_id, self._humidity_state_changed
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to subscribe to new humidity entity %s: %s",
+                new_humidity_entity_id,
+                exc,
+            )
+
+        # Update state in Home Assistant
+        self.async_write_ha_state()
+
+        _LOGGER.info(
+            "Successfully updated HumidityLinkedSensor %s from %s to %s",
+            self.entity_id,
+            old_humidity_entity_id,
+            new_humidity_entity_id,
+        )
 
 
 class AggregatedLocationSensor(SensorEntity):
@@ -4294,6 +4550,13 @@ class AggregatedLocationSensor(SensorEntity):
                             entity.entity_id,
                             {k: v for k, v in plant_dict.items() if v is not None},
                         )
+                else:
+                    # Plant entity not available (may be unavailable/disabled)
+                    _LOGGER.debug(
+                        "Plant entity %s state not available for location %s",
+                        entity.entity_id,
+                        self.location_name,
+                    )
 
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.debug("Error getting plants from slots: %s", exc)
@@ -4501,6 +4764,9 @@ class AggregatedSensor(SensorEntity):
         self._attr_suggested_display_precision = 0
         self._unsubscribe = None
         self._plant_entity_ids: list[str] | None = None
+        self._plant_entity_unique_ids: dict[
+            str, str | None
+        ] = {}  # entity_id -> unique_id
 
         # subscribe to a humidity entity if configured for this location
         entry_opts = hass.data.get(DOMAIN, {}).get("entries", {}).get(entry_id, {})
@@ -4638,12 +4904,15 @@ class AggregatedSensor(SensorEntity):
         if not device:
             return plant_entity_ids
 
-        plant_entity_ids.extend(
-            eid
-            for ent in getattr(ent_reg, "entities", {}).values()
-            if self._is_matching_sensor_entity(ent, device.id)
-            and (eid := getattr(ent, "entity_id", None))
-        )
+        for ent in getattr(ent_reg, "entities", {}).values():
+            if self._is_matching_sensor_entity(ent, device.id) and (
+                eid := getattr(ent, "entity_id", None)
+            ):
+                plant_entity_ids.append(eid)
+                # Capture unique_id for resilient tracking
+                unique_id = getattr(ent, "unique_id", None)
+                if unique_id:
+                    self._plant_entity_unique_ids[eid] = unique_id
 
         return plant_entity_ids
 
@@ -4657,13 +4926,31 @@ class AggregatedSensor(SensorEntity):
     def _get_entities_from_state_scan(self, mon_device_id: str | None) -> list[str]:
         """Get plant entities by scanning states."""
         states_all = self._get_all_sensor_states()
+        plant_entity_ids: list[str] = []
 
-        return [
-            entity_id
-            for st in states_all
-            if self._state_matches_criteria(st, mon_device_id)
-            and (entity_id := getattr(st, "entity_id", None))
-        ]
+        # Try to get entity registry for unique_id lookup
+        try:
+            ent_reg = er.async_get(self.hass)
+        except (AttributeError, KeyError):
+            ent_reg = None
+
+        for st in states_all:
+            if not self._state_matches_criteria(st, mon_device_id):
+                continue
+            if entity_id := getattr(st, "entity_id", None):
+                plant_entity_ids.append(entity_id)
+                # Try to capture unique_id for resilient tracking
+                if ent_reg:
+                    try:
+                        ent_entry = ent_reg.async_get(entity_id)
+                        if ent_entry and ent_entry.unique_id:
+                            self._plant_entity_unique_ids[entity_id] = (
+                                ent_entry.unique_id
+                            )
+                    except (AttributeError, KeyError, ValueError):
+                        pass
+
+        return plant_entity_ids
 
     def _get_all_sensor_states(self) -> list[Any]:
         """Get all sensor states from Home Assistant."""
@@ -4688,10 +4975,22 @@ class AggregatedSensor(SensorEntity):
         if not plant_entity_ids:
             return
 
-        self._plant_entity_ids = plant_entity_ids
+        # Resolve entity_ids using unique_ids for resilience to renames
+        resolved_entity_ids = []
+        for entity_id in plant_entity_ids:
+            unique_id = self._plant_entity_unique_ids.get(entity_id)
+            resolved_id = _resolve_entity_id(self.hass, entity_id, unique_id)
+            if resolved_id:
+                resolved_entity_ids.append(resolved_id)
+                # Update mapping if entity was renamed
+                if resolved_id != entity_id and unique_id:
+                    self._plant_entity_unique_ids[resolved_id] = unique_id
+                    del self._plant_entity_unique_ids[entity_id]
+
+        self._plant_entity_ids = resolved_entity_ids
         try:
             self._unsubscribe = async_track_state_change_event(
-                self.hass, plant_entity_ids, self._state_changed
+                self.hass, resolved_entity_ids, self._state_changed
             )
         except (AttributeError, KeyError, ValueError):
             self._unsubscribe = None
@@ -4731,19 +5030,21 @@ class PlantLocationPpfdSensor(SensorEntity):
     Based on PlantCurrentPpfd from Olen/homeassistant-plant.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         hass: HomeAssistant,
         entry_id: str,
         location_device_id: str,
         location_name: str,
         illuminance_entity_id: str,
+        illuminance_entity_unique_id: str | None = None,
     ) -> None:
         """Initialize the PPFD sensor."""
         self.hass = hass
         self.entry_id = entry_id
         self.location_device_id = location_device_id
         self._illuminance_entity_id = illuminance_entity_id
+        self._illuminance_entity_unique_id = illuminance_entity_unique_id
 
         # Set entity attributes
         self._attr_name = f"{location_name} {READING_PPFD}"
@@ -4818,8 +5119,35 @@ class PlantLocationPpfdSensor(SensorEntity):
     async def async_added_to_hass(self) -> None:
         """Subscribe to illuminance sensor state changes."""
         try:
+            # Resolve illuminance entity ID with fallback to unique ID for resilience
+            resolved_entity_id = _resolve_entity_id(
+                self.hass,
+                self._illuminance_entity_id,
+                self._illuminance_entity_unique_id,
+            )
+            if resolved_entity_id and resolved_entity_id != self._illuminance_entity_id:
+                _LOGGER.debug(
+                    "Resolved illuminance entity ID: %s -> %s",
+                    self._illuminance_entity_id,
+                    resolved_entity_id,
+                )
+                self._illuminance_entity_id = resolved_entity_id
+
+            # Re-resolve entity_id immediately before subscription to handle any
+            # renames that occurred during initialization
+            self._illuminance_entity_id = (
+                _resolve_entity_id(
+                    self.hass,
+                    self._illuminance_entity_id,
+                    self._illuminance_entity_unique_id,
+                )
+                or self._illuminance_entity_id
+            )
+
             self._unsubscribe = async_track_state_change_event(
-                self.hass, self._illuminance_entity_id, self._illuminance_state_changed
+                self.hass,
+                self._illuminance_entity_id,
+                self._illuminance_state_changed,
             )
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.warning(
@@ -4971,19 +5299,21 @@ class DliPriorPeriodSensor(RestoreEntity, SensorEntity):
     as a standalone sensor entity for easy access in automations and dashboards.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         hass: HomeAssistant,
         entry_id: str,
         location_device_id: str,
         location_name: str,
         dli_entity_id: str,
+        dli_entity_unique_id: str | None = None,
     ) -> None:
         """Initialize the DLI prior period sensor."""
         self.hass = hass
         self.entry_id = entry_id
         self.location_device_id = location_device_id
         self._dli_entity_id = dli_entity_id
+        self._dli_entity_unique_id = dli_entity_unique_id
 
         # Set entity attributes
         # Use the friendly DLI display name for readability.
@@ -5065,6 +5395,18 @@ class DliPriorPeriodSensor(RestoreEntity, SensorEntity):
     async def async_added_to_hass(self) -> None:
         """Subscribe to DLI sensor state changes and restore previous state."""
         await super().async_added_to_hass()
+
+        # Resolve DLI entity ID with fallback to unique ID for resilience
+        resolved_entity_id = _resolve_entity_id(
+            self.hass, self._dli_entity_id, self._dli_entity_unique_id
+        )
+        if resolved_entity_id and resolved_entity_id != self._dli_entity_id:
+            _LOGGER.debug(
+                "Resolved DLI entity ID: %s -> %s",
+                self._dli_entity_id,
+                resolved_entity_id,
+            )
+            self._dli_entity_id = resolved_entity_id
 
         # Restore previous state if available
         if (last_state := await self.async_get_last_state()) and not self._restored:
@@ -5149,13 +5491,14 @@ class WeeklyAverageDliSensor(SensorEntity):
     DLI values and expose their mean over the past 7 days.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         hass: HomeAssistant,
         entry_id: str,
         location_device_id: str,
         location_name: str,
         dli_prior_period_entity_id: str,
+        dli_prior_period_entity_unique_id: str | None = None,
     ) -> None:
         """
         Initialize the weekly average DLI sensor.
@@ -5166,12 +5509,14 @@ class WeeklyAverageDliSensor(SensorEntity):
             location_device_id: The device ID of the location.
             location_name: The name of the location.
             dli_prior_period_entity_id: The entity ID of the prior_period DLI sensor.
+            dli_prior_period_entity_unique_id: The unique ID for resilient lookup.
 
         """
         self.hass = hass
         self.entry_id = entry_id
         self.location_device_id = location_device_id
         self._dli_prior_period_entity_id = dli_prior_period_entity_id
+        self._dli_prior_period_entity_unique_id = dli_prior_period_entity_unique_id
 
         # Set entity attributes
         self._attr_name = f"{location_name} {READING_WEEKLY_AVG_DLI_NAME}"
@@ -5290,6 +5635,23 @@ class WeeklyAverageDliSensor(SensorEntity):
     async def async_added_to_hass(self) -> None:
         """Subscribe to DLI prior_period sensor state changes."""
         try:
+            # Resolve DLI prior_period entity ID with fallback to unique ID
+            resolved_entity_id = _resolve_entity_id(
+                self.hass,
+                self._dli_prior_period_entity_id,
+                self._dli_prior_period_entity_unique_id,
+            )
+            if (
+                resolved_entity_id
+                and resolved_entity_id != self._dli_prior_period_entity_id
+            ):
+                _LOGGER.debug(
+                    "Resolved DLI prior_period entity ID: %s -> %s",
+                    self._dli_prior_period_entity_id,
+                    resolved_entity_id,
+                )
+                self._dli_prior_period_entity_id = resolved_entity_id
+
             # Initialize with current state
             if dli_state := self.hass.states.get(self._dli_prior_period_entity_id):
                 try:
@@ -5332,13 +5694,14 @@ class TemperatureBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
     threshold over the past 7 days.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         hass: HomeAssistant,
         entry_id: str,
         location_device_id: str,
         location_name: str,
         temperature_entity_id: str,
+        temperature_entity_unique_id: str | None = None,
     ) -> None:
         """
         Initialize the temperature below threshold weekly duration sensor.
@@ -5349,12 +5712,15 @@ class TemperatureBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
             location_device_id: The device ID of the location.
             location_name: The name of the location.
             temperature_entity_id: The entity ID of the temperature sensor.
+            temperature_entity_unique_id: The unique ID of the temperature sensor
+                                         (used for resilient lookups if entity renamed).
 
         """
         self.hass = hass
         self.entry_id = entry_id
         self.location_device_id = location_device_id
         self._temperature_entity_id = temperature_entity_id
+        self._temperature_entity_unique_id = temperature_entity_unique_id
 
         # Set entity attributes
         self._attr_name = f"{location_name} Temperature Below Threshold Weekly Duration"
@@ -5631,13 +5997,14 @@ class TemperatureAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
     threshold over the past 7 days.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         hass: HomeAssistant,
         entry_id: str,
         location_device_id: str,
         location_name: str,
         temperature_entity_id: str,
+        temperature_entity_unique_id: str | None = None,
     ) -> None:
         """
         Initialize the temperature above threshold weekly duration sensor.
@@ -5648,12 +6015,15 @@ class TemperatureAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
             location_device_id: The device ID of the location.
             location_name: The name of the location.
             temperature_entity_id: The entity ID of the temperature sensor.
+            temperature_entity_unique_id: The unique ID of the temperature sensor
+                                         (used for resilient lookups if entity renamed).
 
         """
         self.hass = hass
         self.entry_id = entry_id
         self.location_device_id = location_device_id
         self._temperature_entity_id = temperature_entity_id
+        self._temperature_entity_unique_id = temperature_entity_unique_id
 
         # Set entity attributes
         self._attr_name = f"{location_name} Temperature Above Threshold Weekly Duration"
@@ -5930,13 +6300,14 @@ class HumidityBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
     threshold over the past 7 days.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         hass: HomeAssistant,
         entry_id: str,
         location_device_id: str,
         location_name: str,
         humidity_entity_id: str,
+        humidity_entity_unique_id: str | None = None,
     ) -> None:
         """
         Initialize the humidity below threshold weekly duration sensor.
@@ -5947,12 +6318,14 @@ class HumidityBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
             location_device_id: The device ID of the location.
             location_name: The name of the location.
             humidity_entity_id: The entity ID of the humidity sensor.
+            humidity_entity_unique_id: The unique ID for resilient lookup.
 
         """
         self.hass = hass
         self.entry_id = entry_id
         self.location_device_id = location_device_id
         self._humidity_entity_id = humidity_entity_id
+        self._humidity_entity_unique_id = humidity_entity_unique_id
 
         # Set entity attributes
         self._attr_name = f"{location_name} Humidity Below Threshold Weekly Duration"
@@ -6176,6 +6549,18 @@ class HumidityBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
         """Subscribe to humidity sensor state changes and restore state."""
         await super().async_added_to_hass()
 
+        # Resolve humidity entity ID with fallback to unique ID for resilience
+        resolved_entity_id = _resolve_entity_id(
+            self.hass, self._humidity_entity_id, self._humidity_entity_unique_id
+        )
+        if resolved_entity_id and resolved_entity_id != self._humidity_entity_id:
+            _LOGGER.debug(
+                "Resolved humidity entity ID: %s -> %s",
+                self._humidity_entity_id,
+                resolved_entity_id,
+            )
+            self._humidity_entity_id = resolved_entity_id
+
         # Restore previous state if available
         if (
             last_state := await self.async_get_last_state()
@@ -6231,13 +6616,14 @@ class HumidityAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
     threshold over the past 7 days.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         hass: HomeAssistant,
         entry_id: str,
         location_device_id: str,
         location_name: str,
         humidity_entity_id: str,
+        humidity_entity_unique_id: str | None = None,
     ) -> None:
         """
         Initialize the humidity above threshold weekly duration sensor.
@@ -6248,12 +6634,14 @@ class HumidityAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
             location_device_id: The device ID of the location.
             location_name: The name of the location.
             humidity_entity_id: The entity ID of the humidity sensor.
+            humidity_entity_unique_id: The unique ID for resilient lookup.
 
         """
         self.hass = hass
         self.entry_id = entry_id
         self.location_device_id = location_device_id
         self._humidity_entity_id = humidity_entity_id
+        self._humidity_entity_unique_id = humidity_entity_unique_id
 
         # Set entity attributes
         self._attr_name = f"{location_name} Humidity Above Threshold Weekly Duration"
@@ -6477,6 +6865,18 @@ class HumidityAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         """Subscribe to humidity sensor state changes and restore state."""
         await super().async_added_to_hass()
 
+        # Resolve humidity entity ID with fallback to unique ID for resilience
+        resolved_entity_id = _resolve_entity_id(
+            self.hass, self._humidity_entity_id, self._humidity_entity_unique_id
+        )
+        if resolved_entity_id and resolved_entity_id != self._humidity_entity_id:
+            _LOGGER.debug(
+                "Resolved humidity entity ID: %s -> %s",
+                self._humidity_entity_id,
+                resolved_entity_id,
+            )
+            self._humidity_entity_id = resolved_entity_id
+
         # Restore previous state if available
         if (
             last_state := await self.async_get_last_state()
@@ -6589,22 +6989,127 @@ class IrrigationZoneFertiliserDueSensor(SensorEntity, RestoreEntity):
         self._attributes: dict[str, Any] = {}
         self._unsubscribe = None
 
-    def _build_entity_id(self, entity_type: str, suffix: str) -> str:
+        # Store discovered entity IDs from the device
+        # We discover these from the device instead of constructing them,
+        # making the sensor resilient to entity renames
+        self._last_injection_entity_id: str | None = None
+        self._fertiliser_switch_entity_id: str | None = None
+        self._fertiliser_schedule_entity_id: str | None = None
+        self._discover_device_entities()
+
+    def _discover_device_entities(self) -> None:
         """
-        Build a Home Assistant entity ID for configuration entities.
+        Discover all required entities for this zone's fertiliser monitoring.
 
-        Args:
-            entity_type: The entity type
-                (input_boolean, input_number, sensor, switch).
-            suffix: The entity suffix
-                (e.g., 'front_garden_irrigation_zone_fertiliser_injection').
+        This queries the device registry and entity registry to find the entities
+        associated with this zone's device, rather than constructing entity IDs.
+        This makes the sensor resilient to entity renames.
 
-        Returns:
-            The full entity ID
-            (e.g., 'input_boolean.front_garden_irrigation_zone_fertiliser_injection').
-
+        Entities discovered:
+        - last_fertiliser_injection (sensor)
+        - allow_fertiliser_injection (switch)
+        - fertiliser_injection_days (number)
         """
-        return f"{entity_type}.{suffix}"
+        try:
+            # Get the device ID (not the identifier tuple)
+            dev_reg = dr.async_get(self.hass)
+
+            # Find the device by identifier
+            device = None
+            for dev in dev_reg.devices.values():
+                if self.zone_device_id in dev.identifiers:
+                    device = dev
+                    break
+
+            if not device:
+                _LOGGER.debug(
+                    "Could not find device for zone %s (identifier: %s)",
+                    self.zone_name,
+                    self.zone_device_id,
+                )
+                return
+
+            # Find sensor entities on this device
+            sensor_entities = find_device_entities_by_pattern(
+                self.hass,
+                device.id,
+                "sensor",
+                ["last_fertiliser_injection"],
+            )
+
+            if "last_fertiliser_injection" in sensor_entities:
+                entity_id, unique_id = sensor_entities["last_fertiliser_injection"]
+                self._last_injection_entity_id = entity_id
+                _LOGGER.debug(
+                    "Discovered last fertiliser injection sensor for %s: %s "
+                    "(unique_id: %s)",
+                    self.zone_name,
+                    entity_id,
+                    unique_id,
+                )
+            else:
+                _LOGGER.debug(
+                    "Could not find last fertiliser injection sensor for %s "
+                    "on device %s",
+                    self.zone_name,
+                    device.id,
+                )
+
+            # Find switch entities on this device
+            switch_entities = find_device_entities_by_pattern(
+                self.hass,
+                device.id,
+                "switch",
+                ["allow_fertiliser_injection"],
+            )
+
+            if "allow_fertiliser_injection" in switch_entities:
+                entity_id, unique_id = switch_entities["allow_fertiliser_injection"]
+                self._fertiliser_switch_entity_id = entity_id
+                _LOGGER.debug(
+                    "Discovered fertiliser injection switch for %s: %s (unique_id: %s)",
+                    self.zone_name,
+                    entity_id,
+                    unique_id,
+                )
+            else:
+                _LOGGER.debug(
+                    "Could not find fertiliser injection switch for %s on device %s",
+                    self.zone_name,
+                    device.id,
+                )
+
+            # Find number entities on this device
+            number_entities = find_device_entities_by_pattern(
+                self.hass,
+                device.id,
+                "number",
+                ["fertiliser_injection_days"],
+            )
+
+            if "fertiliser_injection_days" in number_entities:
+                entity_id, unique_id = number_entities["fertiliser_injection_days"]
+                self._fertiliser_schedule_entity_id = entity_id
+                _LOGGER.debug(
+                    "Discovered fertiliser injection schedule for %s: %s "
+                    "(unique_id: %s)",
+                    self.zone_name,
+                    entity_id,
+                    unique_id,
+                )
+            else:
+                _LOGGER.debug(
+                    "Could not find fertiliser injection schedule for %s on device %s",
+                    self.zone_name,
+                    device.id,
+                )
+
+        except (AttributeError, KeyError, ValueError, TypeError) as exc:
+            _LOGGER.debug(
+                "Error discovering fertiliser entities for %s: %s",
+                self.zone_name,
+                exc,
+            )
 
     def _get_entity_state(self, entity_id: str) -> str | None:
         """
@@ -6663,33 +7168,41 @@ class IrrigationZoneFertiliserDueSensor(SensorEntity, RestoreEntity):
 
         """
         # 1. Check if zone fertiliser injection is enabled
-        # Device switch: {DOMAIN}_{entry_id}_{zone_device_id}_allow_fertiliser_injection
-        zone_fertiliser_switch_entity = (
-            f"switch.{DOMAIN}_{self.entry_id}_esphome_{self.zone_device_id[1]}_"
-            "allow_fertiliser_injection"
+        # Use the discovered entity ID instead of constructing it
+        if not self._fertiliser_switch_entity_id:
+            _LOGGER.debug(
+                "Fertiliser due %s: Fertiliser injection switch not discovered",
+                self.zone_name,
+            )
+            return False
+
+        zone_fertiliser_enabled = self._get_entity_state(
+            self._fertiliser_switch_entity_id
         )
-        zone_fertiliser_enabled = self._get_entity_state(zone_fertiliser_switch_entity)
         if zone_fertiliser_enabled != "on":
             _LOGGER.debug(
                 "Fertiliser due %s: Zone fertiliser enabled is %s (from %s)",
                 self.zone_name,
                 zone_fertiliser_enabled,
-                zone_fertiliser_switch_entity,
+                self._fertiliser_switch_entity_id,
             )
             return False
 
         # 2. Check if fertiliser schedule is configured (> 0 days)
-        # Device number: {DOMAIN}_{entry_id}_{zone_device_id}_fertiliser_injection_days
-        schedule_number_entity = (
-            f"number.{DOMAIN}_{self.entry_id}_esphome_{self.zone_device_id[1]}_"
-            "fertiliser_injection_days"
-        )
-        schedule_str = self._get_entity_state(schedule_number_entity)
+        # Use the discovered entity ID instead of constructing it
+        if not self._fertiliser_schedule_entity_id:
+            _LOGGER.debug(
+                "Fertiliser due %s: Fertiliser schedule entity not discovered",
+                self.zone_name,
+            )
+            return False
+
+        schedule_str = self._get_entity_state(self._fertiliser_schedule_entity_id)
         if not schedule_str:
             _LOGGER.debug(
                 "Fertiliser due %s: Schedule not available from %s",
                 self.zone_name,
-                schedule_number_entity,
+                self._fertiliser_schedule_entity_id,
             )
             return False
 
@@ -6722,11 +7235,15 @@ class IrrigationZoneFertiliserDueSensor(SensorEntity, RestoreEntity):
             return False
 
         # 4. Get last fertiliser injection date
-        # Normalize zone ID from 'zone-1' format to 'zone_1' for entity IDs
-        zone_suffix = self.zone_id.replace("-", "_")
-        last_injection_str = self._get_entity_state(
-            self._build_entity_id("sensor", f"{zone_suffix}_last_fertiliser_injection")
-        )
+        # Use the discovered entity ID instead of constructing it
+        if not self._last_injection_entity_id:
+            _LOGGER.debug(
+                "Fertiliser due %s: Last fertiliser injection sensor not discovered",
+                self.zone_name,
+            )
+            return True  # If we can't find the sensor, assume fertiliser is due
+
+        last_injection_str = self._get_entity_state(self._last_injection_entity_id)
 
         # If never injected before, fertiliser is due
         if not last_injection_str:

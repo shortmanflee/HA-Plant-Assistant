@@ -99,7 +99,11 @@ class TestEntityMonitor:
         self, mock_hass, mock_entity_registry
     ):
         """Test finding mirror entities when registry is available."""
-        # Mock entity registry entry
+        # Mock source entity entry to provide unique_id
+        mock_source_entry = MagicMock()
+        mock_source_entry.unique_id = "original_humidity_unique_id"
+
+        # Mock mirror entity registry entry
         mock_entity_entry = MagicMock()
         mock_entity_entry.domain = "sensor"
         mock_entity_entry.unique_id = f"{DOMAIN}_test_humidity_mirror"
@@ -109,9 +113,15 @@ class TestEntityMonitor:
             "sensor.test_humidity_mirror": mock_entity_entry
         }
 
-        # Mock state with source entity reference
+        # Mock async_get to return source entity entry
+        mock_entity_registry.async_get.return_value = mock_source_entry
+
+        # Mock state with source entity reference and source_unique_id
         mock_state = MagicMock()
-        mock_state.attributes = {"source_entity": "sensor.original_humidity"}
+        mock_state.attributes = {
+            "source_entity": "sensor.original_humidity",
+            "source_unique_id": "original_humidity_unique_id",
+        }
         mock_hass.states.get.return_value = mock_state
 
         with patch(

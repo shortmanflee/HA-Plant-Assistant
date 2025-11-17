@@ -28,6 +28,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .sensor import _resolve_entity_id, find_device_entities_by_pattern
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -54,6 +55,7 @@ class SoilMoistureLowMonitorConfig:
     irrigation_zone_name: str
     soil_moisture_entity_id: str
     location_device_id: str | None = None
+    soil_moisture_entity_unique_id: str | None = None
 
 
 @dataclass
@@ -66,6 +68,7 @@ class SoilMoistureHighMonitorConfig:
     irrigation_zone_name: str
     soil_moisture_entity_id: str
     location_device_id: str | None = None
+    soil_moisture_entity_unique_id: str | None = None
 
 
 @dataclass
@@ -114,6 +117,7 @@ class SoilConductivityStatusMonitorConfig:
     location_name: str
     irrigation_zone_name: str
     soil_conductivity_entity_id: str
+    soil_conductivity_entity_unique_id: str | None = None
     location_device_id: str | None = None
 
 
@@ -126,6 +130,7 @@ class SoilMoistureStatusMonitorConfig:
     location_name: str
     irrigation_zone_name: str
     soil_moisture_entity_id: str
+    soil_moisture_entity_unique_id: str | None = None
     location_device_id: str | None = None
 
 
@@ -138,6 +143,7 @@ class TemperatureStatusMonitorConfig:
     location_name: str
     irrigation_zone_name: str
     temperature_entity_id: str
+    temperature_entity_unique_id: str | None = None
     location_device_id: str | None = None
 
 
@@ -150,6 +156,7 @@ class HumidityStatusMonitorConfig:
     location_name: str
     irrigation_zone_name: str
     humidity_entity_id: str
+    humidity_entity_unique_id: str | None = None
     location_device_id: str | None = None
 
 
@@ -174,6 +181,7 @@ class BatteryLevelStatusMonitorConfig:
     location_name: str
     irrigation_zone_name: str
     battery_entity_id: str
+    battery_entity_unique_id: str | None = None
     location_device_id: str | None = None
 
 
@@ -232,6 +240,7 @@ class MasterScheduleStatusMonitorConfig:
     irrigation_zone_name: str
     master_schedule_switch_entity_id: str
     zone_device_identifier: tuple[str, str]
+    master_schedule_switch_unique_id: str | None = None
 
 
 @dataclass
@@ -247,6 +256,10 @@ class ScheduleMisconfigurationStatusMonitorConfig:
     afternoon_switch_entity_id: str
     sunset_switch_entity_id: str
     zone_device_identifier: tuple[str, str]
+    master_schedule_switch_unique_id: str | None = None
+    sunrise_switch_unique_id: str | None = None
+    afternoon_switch_unique_id: str | None = None
+    sunset_switch_unique_id: str | None = None
 
 
 @dataclass
@@ -261,6 +274,9 @@ class WaterDeliveryPreferenceStatusMonitorConfig:
     allow_rain_water_delivery_switch_entity_id: str
     allow_water_main_delivery_switch_entity_id: str
     zone_device_identifier: tuple[str, str]
+    master_schedule_switch_unique_id: str | None = None
+    allow_rain_water_delivery_switch_unique_id: str | None = None
+    allow_water_main_delivery_switch_unique_id: str | None = None
 
 
 @dataclass
@@ -273,6 +289,7 @@ class ErrorStatusMonitorConfig:
     irrigation_zone_name: str
     error_count_entity_id: str
     zone_device_identifier: tuple[str, str]
+    error_count_entity_unique_id: str | None = None
 
 
 @dataclass
@@ -476,9 +493,24 @@ class IgnoredStatusesMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
         self._state: bool | None = None
         self._ignored_count: int = 0
-        # List of ignore_until entity IDs to track
+        # List of ignore_until entity IDs and unique_ids to track
         self._ignore_until_entity_ids: list[str] = []
+        self._ignore_until_entity_unique_ids: dict[
+            str, str
+        ] = {}  # entity_id -> unique_id mapping
         self._unsubscribe_handlers: list[Any] = []
+
+    def _get_entity_unique_id(self, entity_id: str) -> str | None:
+        """Get unique_id for an entity_id."""
+        try:
+            entity_reg = er.async_get(self.hass)
+            if entity_reg is not None:
+                entity_entry = entity_reg.async_get(entity_id)
+                if entity_entry and entity_entry.unique_id:
+                    return entity_entry.unique_id
+        except (TypeError, AttributeError, ValueError):
+            pass
+        return None
 
     async def _find_ignore_until_entities(self) -> list[str]:
         """
@@ -499,10 +531,15 @@ class IgnoredStatusesMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                     and self.entry_id in entity.unique_id
                 ):
                     ignore_until_entities.append(entity.entity_id)
+                    # Store unique_id mapping for resilient tracking
+                    self._ignore_until_entity_unique_ids[entity.entity_id] = (
+                        entity.unique_id
+                    )
                     _LOGGER.debug(
-                        "Found ignore_until datetime entity for %s: %s",
+                        "Found ignore_until datetime entity for %s: %s (unique_id: %s)",
                         self.location_name,
                         entity.entity_id,
+                        entity.unique_id,
                     )
 
         except (AttributeError, KeyError, ValueError) as exc:
@@ -624,6 +661,31 @@ class IgnoredStatusesMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         # Find all ignore_until entities
         self._ignore_until_entity_ids = await self._find_ignore_until_entities()
 
+        # Resolve all entity IDs with fallback to unique_id for resilience
+        resolved_entity_ids = []
+        for entity_id in self._ignore_until_entity_ids:
+            unique_id = self._ignore_until_entity_unique_ids.get(entity_id)
+            resolved_entity_id = _resolve_entity_id(self.hass, entity_id, unique_id)
+            if resolved_entity_id:
+                if resolved_entity_id != entity_id:
+                    _LOGGER.debug(
+                        "Resolved ignore_until entity ID: %s -> %s",
+                        entity_id,
+                        resolved_entity_id,
+                    )
+                    # Update mapping if entity was renamed
+                    if unique_id:
+                        self._ignore_until_entity_unique_ids[resolved_entity_id] = (
+                            unique_id
+                        )
+                        del self._ignore_until_entity_unique_ids[entity_id]
+                resolved_entity_ids.append(resolved_entity_id)
+            else:
+                resolved_entity_ids.append(
+                    entity_id
+                )  # Keep original if resolution failed
+        self._ignore_until_entity_ids = resolved_entity_ids
+
         # Subscribe to state changes for all ignore_until entities
         for entity_id in self._ignore_until_entity_ids:
             unsubscribe = async_track_state_change_event(
@@ -683,7 +745,22 @@ class StatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self._state: bool | None = None
         self._status_sensors: dict[str, bool | None] = {}
         self._status_entity_ids: dict[str, str] = {}
+        self._status_entity_unique_ids: dict[
+            str, str
+        ] = {}  # entity_id -> unique_id mapping
         self._unsubscribe_handlers: list[Any] = []
+
+    def _get_entity_unique_id(self, entity_id: str) -> str | None:
+        """Get unique_id for an entity_id."""
+        try:
+            entity_reg = er.async_get(self.hass)
+            if entity_reg is not None:
+                entity_entry = entity_reg.async_get(entity_id)
+                if entity_entry and entity_entry.unique_id:
+                    return entity_entry.unique_id
+        except (TypeError, AttributeError, ValueError):
+            pass
+        return None
 
     async def _find_status_sensors(self) -> dict[str, str]:
         """
@@ -746,11 +823,14 @@ class StatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                     # Exclude ignored statuses sensor
                     if is_status_sensor and "ignored_statuses" not in unique_id:
                         status_sensors[sensor_name] = entity.entity_id
+                        # Store unique_id mapping for resilient tracking
+                        self._status_entity_unique_ids[entity.entity_id] = unique_id
                         _LOGGER.debug(
-                            "Found status sensor for %s: %s -> %s",
+                            "Found status sensor for %s: %s -> %s (unique_id: %s)",
                             self.location_name,
                             sensor_name,
                             entity.entity_id,
+                            unique_id,
                         )
 
         except (AttributeError, KeyError, ValueError) as exc:
@@ -865,6 +945,27 @@ class StatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         # Find all status sensor entities
         self._status_entity_ids = await self._find_status_sensors()
 
+        # Resolve all entity IDs with fallback to unique_id for resilience
+        resolved_status_entity_ids = {}
+        for sensor_name, entity_id in self._status_entity_ids.items():
+            unique_id = self._status_entity_unique_ids.get(entity_id)
+            resolved_entity_id = _resolve_entity_id(self.hass, entity_id, unique_id)
+            if resolved_entity_id:
+                if resolved_entity_id != entity_id:
+                    _LOGGER.debug(
+                        "Resolved status sensor entity ID: %s -> %s",
+                        entity_id,
+                        resolved_entity_id,
+                    )
+                    # Update mapping if entity was renamed
+                    if unique_id:
+                        self._status_entity_unique_ids[resolved_entity_id] = unique_id
+                        del self._status_entity_unique_ids[entity_id]
+                resolved_status_entity_ids[sensor_name] = resolved_entity_id
+            else:
+                resolved_status_entity_ids[sensor_name] = entity_id  # Keep original
+        self._status_entity_ids = resolved_status_entity_ids
+
         # Initialize status tracking dictionary
         for sensor_name in self._status_entity_ids:
             self._status_sensors[sensor_name] = None
@@ -919,6 +1020,7 @@ class MasterScheduleStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
         self.location_name = config.location_name
         self.irrigation_zone_name = config.irrigation_zone_name
         self.master_schedule_switch_entity_id = config.master_schedule_switch_entity_id
+        self._master_schedule_switch_unique_id = config.master_schedule_switch_unique_id
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Schedule Status"
@@ -1143,6 +1245,18 @@ class MasterScheduleStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
 
     async def _setup_master_schedule_subscription(self) -> None:
         """Subscribe to master schedule switch entity state changes."""
+        # Re-resolve entity_id immediately before subscription to handle any
+        # renames that occurred during initialization
+        from .sensor import _resolve_entity_id  # noqa: PLC0415
+
+        self.master_schedule_switch_entity_id = (
+            _resolve_entity_id(
+                self.hass,
+                self.master_schedule_switch_entity_id,
+                self._master_schedule_switch_unique_id,
+            )
+            or self.master_schedule_switch_entity_id
+        )
         try:
             self._unsubscribe_switch = async_track_state_change_event(
                 self.hass,
@@ -1160,11 +1274,37 @@ class MasterScheduleStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
                 exc,
             )
 
+    async def _resolve_entity_references(self) -> None:
+        """Resolve entity references using unique_id if entity_id not found."""
+        # Import helper at runtime to avoid circular imports
+        from .sensor import _resolve_entity_id  # noqa: PLC0415
+
+        # Resolve master schedule switch
+        resolved_entity_id = _resolve_entity_id(
+            self.hass,
+            self.master_schedule_switch_entity_id,
+            self._master_schedule_switch_unique_id,
+        )
+        if (
+            resolved_entity_id
+            and resolved_entity_id != self.master_schedule_switch_entity_id
+        ):
+            _LOGGER.info(
+                "Resolved master_schedule_switch for %s: %s -> %s",
+                self.location_name,
+                self.master_schedule_switch_entity_id,
+                resolved_entity_id,
+            )
+            self.master_schedule_switch_entity_id = resolved_entity_id
+
     async def async_added_to_hass(self) -> None:
         """Add entity to hass and subscribe to state changes."""
         # Restore previous state if available
         await super().async_added_to_hass()
         await self._restore_previous_state()
+
+        # Resolve entity references before subscriptions
+        await self._resolve_entity_references()
 
         # Set up subscriptions
         await self._setup_schedule_ignore_until_subscription()
@@ -1215,6 +1355,10 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
         self.sunrise_switch_entity_id = config.sunrise_switch_entity_id
         self.afternoon_switch_entity_id = config.afternoon_switch_entity_id
         self.sunset_switch_entity_id = config.sunset_switch_entity_id
+        self._master_schedule_switch_unique_id = config.master_schedule_switch_unique_id
+        self._sunrise_switch_unique_id = config.sunrise_switch_unique_id
+        self._afternoon_switch_unique_id = config.afternoon_switch_unique_id
+        self._sunset_switch_unique_id = config.sunset_switch_unique_id
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Schedule Misconfiguration Status"
@@ -1544,6 +1688,18 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
 
     async def _setup_sunrise_subscription(self) -> None:
         """Subscribe to sunrise switch entity state changes."""
+        # Re-resolve entity_id immediately before subscription to handle any
+        # renames that occurred during initialization
+        from .sensor import _resolve_entity_id  # noqa: PLC0415
+
+        self.sunrise_switch_entity_id = (
+            _resolve_entity_id(
+                self.hass,
+                self.sunrise_switch_entity_id,
+                self._sunrise_switch_unique_id,
+            )
+            or self.sunrise_switch_entity_id
+        )
         try:
             self._unsubscribe_sunrise = async_track_state_change_event(
                 self.hass,
@@ -1563,6 +1719,18 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
 
     async def _setup_afternoon_subscription(self) -> None:
         """Subscribe to afternoon switch entity state changes."""
+        # Re-resolve entity_id immediately before subscription to handle any
+        # renames that occurred during initialization
+        from .sensor import _resolve_entity_id  # noqa: PLC0415
+
+        self.afternoon_switch_entity_id = (
+            _resolve_entity_id(
+                self.hass,
+                self.afternoon_switch_entity_id,
+                self._afternoon_switch_unique_id,
+            )
+            or self.afternoon_switch_entity_id
+        )
         try:
             self._unsubscribe_afternoon = async_track_state_change_event(
                 self.hass,
@@ -1582,6 +1750,18 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
 
     async def _setup_sunset_subscription(self) -> None:
         """Subscribe to sunset switch entity state changes."""
+        # Re-resolve entity_id immediately before subscription to handle any
+        # renames that occurred during initialization
+        from .sensor import _resolve_entity_id  # noqa: PLC0415
+
+        self.sunset_switch_entity_id = (
+            _resolve_entity_id(
+                self.hass,
+                self.sunset_switch_entity_id,
+                self._sunset_switch_unique_id,
+            )
+            or self.sunset_switch_entity_id
+        )
         try:
             self._unsubscribe_sunset = async_track_state_change_event(
                 self.hass,
@@ -1599,11 +1779,76 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
                 exc,
             )
 
+    async def _resolve_entity_references(self) -> None:
+        """Resolve entity references using unique_id if entity_id not found."""
+        # Import helper at runtime to avoid circular imports
+        from .sensor import _resolve_entity_id  # noqa: PLC0415
+
+        # Resolve master schedule switch
+        resolved_entity_id = _resolve_entity_id(
+            self.hass,
+            self.master_schedule_switch_entity_id,
+            self._master_schedule_switch_unique_id,
+        )
+        if (
+            resolved_entity_id
+            and resolved_entity_id != self.master_schedule_switch_entity_id
+        ):
+            _LOGGER.info(
+                "Resolved master_schedule_switch for %s: %s -> %s",
+                self.location_name,
+                self.master_schedule_switch_entity_id,
+                resolved_entity_id,
+            )
+            self.master_schedule_switch_entity_id = resolved_entity_id
+
+        # Resolve sunrise switch
+        resolved_entity_id = _resolve_entity_id(
+            self.hass, self.sunrise_switch_entity_id, self._sunrise_switch_unique_id
+        )
+        if resolved_entity_id and resolved_entity_id != self.sunrise_switch_entity_id:
+            _LOGGER.info(
+                "Resolved sunrise_switch for %s: %s -> %s",
+                self.location_name,
+                self.sunrise_switch_entity_id,
+                resolved_entity_id,
+            )
+            self.sunrise_switch_entity_id = resolved_entity_id
+
+        # Resolve afternoon switch
+        resolved_entity_id = _resolve_entity_id(
+            self.hass, self.afternoon_switch_entity_id, self._afternoon_switch_unique_id
+        )
+        if resolved_entity_id and resolved_entity_id != self.afternoon_switch_entity_id:
+            _LOGGER.info(
+                "Resolved afternoon_switch for %s: %s -> %s",
+                self.location_name,
+                self.afternoon_switch_entity_id,
+                resolved_entity_id,
+            )
+            self.afternoon_switch_entity_id = resolved_entity_id
+
+        # Resolve sunset switch
+        resolved_entity_id = _resolve_entity_id(
+            self.hass, self.sunset_switch_entity_id, self._sunset_switch_unique_id
+        )
+        if resolved_entity_id and resolved_entity_id != self.sunset_switch_entity_id:
+            _LOGGER.info(
+                "Resolved sunset_switch for %s: %s -> %s",
+                self.location_name,
+                self.sunset_switch_entity_id,
+                resolved_entity_id,
+            )
+            self.sunset_switch_entity_id = resolved_entity_id
+
     async def async_added_to_hass(self) -> None:
         """Add entity to hass and subscribe to state changes."""
         # Restore previous state if available
         await super().async_added_to_hass()
         await self._restore_previous_state()
+
+        # Resolve entity references before subscriptions
+        await self._resolve_entity_references()
 
         # Set up subscriptions
         await self._setup_schedule_misconfiguration_ignore_until_subscription()
@@ -1665,6 +1910,13 @@ class WaterDeliveryPreferenceStatusMonitorBinarySensor(
         )
         self.allow_water_main_delivery_switch_entity_id = (
             config.allow_water_main_delivery_switch_entity_id
+        )
+        self._master_schedule_switch_unique_id = config.master_schedule_switch_unique_id
+        self._allow_rain_water_delivery_switch_unique_id = (
+            config.allow_rain_water_delivery_switch_unique_id
+        )
+        self._allow_water_main_delivery_switch_unique_id = (
+            config.allow_water_main_delivery_switch_unique_id
         )
 
         # Set entity attributes
@@ -1998,6 +2250,18 @@ class WaterDeliveryPreferenceStatusMonitorBinarySensor(
 
     async def _setup_allow_rain_water_delivery_subscription(self) -> None:
         """Subscribe to allow rain water delivery switch entity state changes."""
+        # Re-resolve entity_id immediately before subscription to handle any
+        # renames that occurred during initialization
+        from .sensor import _resolve_entity_id  # noqa: PLC0415
+
+        self.allow_rain_water_delivery_switch_entity_id = (
+            _resolve_entity_id(
+                self.hass,
+                self.allow_rain_water_delivery_switch_entity_id,
+                self._allow_rain_water_delivery_switch_unique_id,
+            )
+            or self.allow_rain_water_delivery_switch_entity_id
+        )
         try:
             self._unsubscribe_rain_delivery = async_track_state_change_event(
                 self.hass,
@@ -2017,6 +2281,18 @@ class WaterDeliveryPreferenceStatusMonitorBinarySensor(
 
     async def _setup_allow_water_main_delivery_subscription(self) -> None:
         """Subscribe to allow water main delivery switch entity state changes."""
+        # Re-resolve entity_id immediately before subscription to handle any
+        # renames that occurred during initialization
+        from .sensor import _resolve_entity_id  # noqa: PLC0415
+
+        self.allow_water_main_delivery_switch_entity_id = (
+            _resolve_entity_id(
+                self.hass,
+                self.allow_water_main_delivery_switch_entity_id,
+                self._allow_water_main_delivery_switch_unique_id,
+            )
+            or self.allow_water_main_delivery_switch_entity_id
+        )
         try:
             self._unsubscribe_main_delivery = async_track_state_change_event(
                 self.hass,
@@ -2034,11 +2310,73 @@ class WaterDeliveryPreferenceStatusMonitorBinarySensor(
                 exc,
             )
 
+    async def _resolve_entity_references(self) -> None:
+        """Resolve entity references using unique_id if entity_id not found."""
+        # Import helper at runtime to avoid circular imports
+        from .sensor import _resolve_entity_id  # noqa: PLC0415
+
+        # Resolve master schedule switch
+        resolved_entity_id = _resolve_entity_id(
+            self.hass,
+            self.master_schedule_switch_entity_id,
+            self._master_schedule_switch_unique_id,
+        )
+        if (
+            resolved_entity_id
+            and resolved_entity_id != self.master_schedule_switch_entity_id
+        ):
+            _LOGGER.info(
+                "Resolved master_schedule_switch for %s: %s -> %s",
+                self.location_name,
+                self.master_schedule_switch_entity_id,
+                resolved_entity_id,
+            )
+            self.master_schedule_switch_entity_id = resolved_entity_id
+
+        # Resolve allow rain water delivery switch
+        resolved_entity_id = _resolve_entity_id(
+            self.hass,
+            self.allow_rain_water_delivery_switch_entity_id,
+            self._allow_rain_water_delivery_switch_unique_id,
+        )
+        if (
+            resolved_entity_id
+            and resolved_entity_id != self.allow_rain_water_delivery_switch_entity_id
+        ):
+            _LOGGER.info(
+                "Resolved allow_rain_water_delivery_switch for %s: %s -> %s",
+                self.location_name,
+                self.allow_rain_water_delivery_switch_entity_id,
+                resolved_entity_id,
+            )
+            self.allow_rain_water_delivery_switch_entity_id = resolved_entity_id
+
+        # Resolve allow water main delivery switch
+        resolved_entity_id = _resolve_entity_id(
+            self.hass,
+            self.allow_water_main_delivery_switch_entity_id,
+            self._allow_water_main_delivery_switch_unique_id,
+        )
+        if (
+            resolved_entity_id
+            and resolved_entity_id != self.allow_water_main_delivery_switch_entity_id
+        ):
+            _LOGGER.info(
+                "Resolved allow_water_main_delivery_switch for %s: %s -> %s",
+                self.location_name,
+                self.allow_water_main_delivery_switch_entity_id,
+                resolved_entity_id,
+            )
+            self.allow_water_main_delivery_switch_entity_id = resolved_entity_id
+
     async def async_added_to_hass(self) -> None:
         """Add entity to hass and subscribe to state changes."""
         # Restore previous state if available
         await super().async_added_to_hass()
         await self._restore_previous_state()
+
+        # Resolve entity references before subscriptions
+        await self._resolve_entity_references()
 
         # Set up subscriptions
         await self._setup_water_delivery_preference_ignore_until_subscription()
@@ -2087,6 +2425,7 @@ class ErrorStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self.location_name = config.location_name
         self.irrigation_zone_name = config.irrigation_zone_name
         self.error_count_entity_id = config.error_count_entity_id
+        self.error_count_entity_unique_id = config.error_count_entity_unique_id
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Error Status"
@@ -2115,12 +2454,42 @@ class ErrorStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self._error_count: int = 0
         self._unsubscribe = None
 
+        # Resolve error count entity ID using resilient lookup
+        resolved_entity_id = _resolve_entity_id(
+            self.hass, self.error_count_entity_id, self.error_count_entity_unique_id
+        )
+        if resolved_entity_id and resolved_entity_id != self.error_count_entity_id:
+            _LOGGER.debug(
+                "Resolved error count entity ID: %s -> %s",
+                self.error_count_entity_id,
+                resolved_entity_id,
+            )
+            self.error_count_entity_id = resolved_entity_id
+
+        # Capture unique_id if not already stored
+        if not self.error_count_entity_unique_id:
+            self.error_count_entity_unique_id = self._get_entity_unique_id(
+                self.error_count_entity_id
+            )
+
         # Initialize with current state of error count entity
         if error_count_state := self.hass.states.get(self.error_count_entity_id):
             try:
                 self._error_count = int(error_count_state.state)
             except (ValueError, TypeError):
                 self._error_count = 0
+
+    def _get_entity_unique_id(self, entity_id: str) -> str | None:
+        """Get unique_id for an entity_id."""
+        try:
+            entity_reg = er.async_get(self.hass)
+            if entity_reg is not None:
+                entity_entry = entity_reg.async_get(entity_id)
+                if entity_entry and entity_entry.unique_id:
+                    return entity_entry.unique_id
+        except (TypeError, AttributeError, ValueError):
+            pass
+        return None
 
     def _update_state(self) -> None:
         """Update binary sensor state based on error count."""
@@ -2200,10 +2569,74 @@ class ErrorStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             except (AttributeError, ValueError):
                 pass
 
+    async def async_update_source_entity(self, new_entity_id: str) -> None:
+        """Update the error count entity ID when it is renamed."""
+        _LOGGER.info(
+            "Updating ErrorStatusMonitor %s error count entity from %s to %s",
+            self.entity_id,
+            self.error_count_entity_id,
+            new_entity_id,
+        )
+
+        # Unsubscribe from old entity
+        if self._unsubscribe:
+            self._unsubscribe()
+            self._unsubscribe = None
+
+        # Update the entity ID
+        self.error_count_entity_id = new_entity_id
+
+        # Capture new unique_id
+        self.error_count_entity_unique_id = self._get_entity_unique_id(new_entity_id)
+
+        # Re-subscribe to new entity
+        try:
+            self._unsubscribe = async_track_state_change_event(
+                self.hass,
+                self.error_count_entity_id,
+                self._error_count_state_changed,
+            )
+            _LOGGER.debug(
+                "Re-subscribed to error count sensor: %s",
+                self.error_count_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to re-subscribe to error count entity %s: %s",
+                self.error_count_entity_id,
+                exc,
+            )
+
+        # Update state from new entity
+        if error_count_state := self.hass.states.get(self.error_count_entity_id):
+            try:
+                self._error_count = int(error_count_state.state)
+            except (ValueError, TypeError):
+                self._error_count = 0
+        else:
+            self._error_count = 0
+
+        self._update_state()
+        self.async_write_ha_state()
+
     async def async_added_to_hass(self) -> None:
         """Add entity to hass and subscribe to state changes."""
         await super().async_added_to_hass()
         await self._restore_previous_state()
+
+        # Resolve error count entity ID with fallback to unique_id
+        resolved_entity_id = _resolve_entity_id(
+            self.hass,
+            self.error_count_entity_id,
+            self.error_count_entity_unique_id,
+        )
+        if resolved_entity_id and resolved_entity_id != self.error_count_entity_id:
+            _LOGGER.debug(
+                "Resolved error count entity ID: %s -> %s",
+                self.error_count_entity_id,
+                resolved_entity_id,
+            )
+            self.error_count_entity_id = resolved_entity_id
 
         # Subscribe to error count sensor state changes
         try:
@@ -2282,7 +2715,20 @@ class ESPHomeRunningStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
 
         self._state: bool | None = None
         self._running_sensor_entity_id: str | None = None
+        self._running_sensor_entity_unique_id: str | None = None
         self._unsubscribe = None
+
+    def _get_entity_unique_id(self, entity_id: str) -> str | None:
+        """Get unique_id for an entity_id."""
+        try:
+            entity_reg = er.async_get(self.hass)
+            if entity_reg is not None:
+                entity_entry = entity_reg.async_get(entity_id)
+                if entity_entry and entity_entry.unique_id:
+                    return entity_entry.unique_id
+        except (TypeError, AttributeError, ValueError):
+            pass
+        return None
 
     def _find_running_binary_sensor(self) -> str | None:
         """
@@ -2364,6 +2810,8 @@ class ESPHomeRunningStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
             ],
             "device_id": self.monitoring_device_id,
             "running_sensor_entity": self._running_sensor_entity_id,
+            "source_entity": self._running_sensor_entity_id,
+            "source_unique_id": self._running_sensor_entity_unique_id,
         }
 
     @property
@@ -2391,6 +2839,50 @@ class ESPHomeRunningStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
             except (AttributeError, ValueError):
                 pass
 
+    async def async_update_source_entity(self, new_entity_id: str) -> None:
+        """Update the running sensor entity ID when it is renamed."""
+        _LOGGER.info(
+            "Updating ESPHomeRunningStatusMonitor %s running sensor from %s to %s",
+            self.entity_id,
+            self._running_sensor_entity_id,
+            new_entity_id,
+        )
+
+        # Unsubscribe from old entity
+        if self._unsubscribe:
+            self._unsubscribe()
+            self._unsubscribe = None
+
+        # Update the entity ID
+        self._running_sensor_entity_id = new_entity_id
+
+        # Capture new unique_id
+        self._running_sensor_entity_unique_id = self._get_entity_unique_id(
+            new_entity_id
+        )
+
+        # Re-subscribe to new entity
+        try:
+            self._unsubscribe = async_track_state_change_event(
+                self.hass,
+                self._running_sensor_entity_id,
+                self._running_sensor_state_changed,
+            )
+            _LOGGER.debug(
+                "Re-subscribed to running sensor: %s",
+                self._running_sensor_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to re-subscribe to running sensor %s: %s",
+                self._running_sensor_entity_id,
+                exc,
+            )
+
+        # Update state from new entity
+        self._update_state()
+        self.async_write_ha_state()
+
     async def async_added_to_hass(self) -> None:
         """Add entity to hass and subscribe to running sensor state changes."""
         await super().async_added_to_hass()
@@ -2398,6 +2890,29 @@ class ESPHomeRunningStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
 
         # Find the running binary sensor
         self._running_sensor_entity_id = self._find_running_binary_sensor()
+
+        # Capture unique_id for resilient tracking
+        if self._running_sensor_entity_id:
+            self._running_sensor_entity_unique_id = self._get_entity_unique_id(
+                self._running_sensor_entity_id
+            )
+
+            # Resolve entity ID with fallback to unique_id
+            resolved_entity_id = _resolve_entity_id(
+                self.hass,
+                self._running_sensor_entity_id,
+                self._running_sensor_entity_unique_id,
+            )
+            if (
+                resolved_entity_id
+                and resolved_entity_id != self._running_sensor_entity_id
+            ):
+                _LOGGER.debug(
+                    "Resolved running sensor entity ID: %s -> %s",
+                    self._running_sensor_entity_id,
+                    resolved_entity_id,
+                )
+                self._running_sensor_entity_id = resolved_entity_id
 
         if self._running_sensor_entity_id:
             # Subscribe to running sensor state changes
@@ -2455,6 +2970,7 @@ class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self.location_name = config.location_name
         self.irrigation_zone_name = config.irrigation_zone_name
         self.soil_moisture_entity_id = config.soil_moisture_entity_id
+        self._soil_moisture_entity_unique_id = config.soil_moisture_entity_unique_id
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Soil Moisture Low Monitor"
@@ -2761,6 +3277,18 @@ class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     async def _setup_soil_moisture_subscription(self) -> None:
         """Subscribe to soil moisture entity state changes."""
+        # Re-resolve entity_id immediately before subscription to handle any
+        # renames that occurred during initialization
+        from .sensor import _resolve_entity_id  # noqa: PLC0415
+
+        self.soil_moisture_entity_id = (
+            _resolve_entity_id(
+                self.hass,
+                self.soil_moisture_entity_id,
+                self._soil_moisture_entity_unique_id,
+            )
+            or self.soil_moisture_entity_id
+        )
         try:
             self._unsubscribe = async_track_state_change_event(
                 self.hass,
@@ -2778,11 +3306,34 @@ class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 exc,
             )
 
+    async def _resolve_entity_references(self) -> None:
+        """Resolve entity references using unique_id if entity_id not found."""
+        # Import helper at runtime to avoid circular imports
+        from .sensor import _resolve_entity_id  # noqa: PLC0415
+
+        # Resolve soil moisture entity
+        resolved_entity_id = _resolve_entity_id(
+            self.hass,
+            self.soil_moisture_entity_id,
+            self._soil_moisture_entity_unique_id,
+        )
+        if resolved_entity_id and resolved_entity_id != self.soil_moisture_entity_id:
+            _LOGGER.info(
+                "Resolved soil_moisture_entity for %s: %s -> %s",
+                self.location_name,
+                self.soil_moisture_entity_id,
+                resolved_entity_id,
+            )
+            self.soil_moisture_entity_id = resolved_entity_id
+
     async def async_added_to_hass(self) -> None:
         """Add entity to hass and subscribe to state changes."""
         # Restore previous state if available
         await super().async_added_to_hass()
         await self._restore_previous_state()
+
+        # Resolve entity references before subscriptions
+        await self._resolve_entity_references()
 
         # Set up subscriptions
         await self._setup_min_soil_moisture_subscription()
@@ -2829,6 +3380,7 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self.location_name = config.location_name
         self.irrigation_zone_name = config.irrigation_zone_name
         self.soil_moisture_entity_id = config.soil_moisture_entity_id
+        self._soil_moisture_entity_unique_id = config.soil_moisture_entity_unique_id
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Soil Moisture High Monitor"
@@ -3138,6 +3690,18 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     async def _setup_soil_moisture_subscription(self) -> None:
         """Subscribe to soil moisture entity state changes."""
+        # Re-resolve entity_id immediately before subscription to handle any
+        # renames that occurred during initialization
+        from .sensor import _resolve_entity_id  # noqa: PLC0415
+
+        self.soil_moisture_entity_id = (
+            _resolve_entity_id(
+                self.hass,
+                self.soil_moisture_entity_id,
+                self._soil_moisture_entity_unique_id,
+            )
+            or self.soil_moisture_entity_id
+        )
         try:
             self._unsubscribe = async_track_state_change_event(
                 self.hass,
@@ -3155,11 +3719,34 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 exc,
             )
 
+    async def _resolve_entity_references(self) -> None:
+        """Resolve entity references using unique_id if entity_id not found."""
+        # Import helper at runtime to avoid circular imports
+        from .sensor import _resolve_entity_id  # noqa: PLC0415
+
+        # Resolve soil moisture entity
+        resolved_entity_id = _resolve_entity_id(
+            self.hass,
+            self.soil_moisture_entity_id,
+            self._soil_moisture_entity_unique_id,
+        )
+        if resolved_entity_id and resolved_entity_id != self.soil_moisture_entity_id:
+            _LOGGER.info(
+                "Resolved soil_moisture_entity for %s: %s -> %s",
+                self.location_name,
+                self.soil_moisture_entity_id,
+                resolved_entity_id,
+            )
+            self.soil_moisture_entity_id = resolved_entity_id
+
     async def async_added_to_hass(self) -> None:
         """Add entity to hass and subscribe to state changes."""
         # Restore previous state if available
         await super().async_added_to_hass()
         await self._restore_previous_state()
+
+        # Resolve entity references before subscriptions
+        await self._resolve_entity_references()
 
         # Set up subscriptions
         await self._setup_max_soil_moisture_subscription()
@@ -4150,6 +4737,9 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
         self.location_name = config.location_name
         self.irrigation_zone_name = config.irrigation_zone_name
         self.soil_conductivity_entity_id = config.soil_conductivity_entity_id
+        self.soil_conductivity_entity_unique_id = (
+            config.soil_conductivity_entity_unique_id
+        )
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Soil Conductivity Status"
@@ -4344,7 +4934,15 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        conductivity_state = self.hass.states.get(self.soil_conductivity_entity_id)
+        # Try resolved entity ID first, fallback to stored ID
+        resolved_conductivity_entity_id = _resolve_entity_id(
+            self.hass,
+            self.soil_conductivity_entity_id,
+            self.soil_conductivity_entity_unique_id,
+        )
+        if not resolved_conductivity_entity_id:
+            return False
+        conductivity_state = self.hass.states.get(resolved_conductivity_entity_id)
         return conductivity_state is not None
 
     @property
@@ -4520,6 +5118,7 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self.location_name = config.location_name
         self.irrigation_zone_name = config.irrigation_zone_name
         self.soil_moisture_entity_id = config.soil_moisture_entity_id
+        self.soil_moisture_entity_unique_id = config.soil_moisture_entity_unique_id
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Soil Moisture Status"
@@ -4814,7 +5413,13 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        soil_moisture_state = self.hass.states.get(self.soil_moisture_entity_id)
+        # Try resolved entity ID first, fallback to stored ID
+        resolved_soil_moisture_entity_id = _resolve_entity_id(
+            self.hass, self.soil_moisture_entity_id, self.soil_moisture_entity_unique_id
+        )
+        if not resolved_soil_moisture_entity_id:
+            return False
+        soil_moisture_state = self.hass.states.get(resolved_soil_moisture_entity_id)
         return soil_moisture_state is not None
 
     @property
@@ -5027,6 +5632,7 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self.location_name = config.location_name
         self.irrigation_zone_name = config.irrigation_zone_name
         self.temperature_entity_id = config.temperature_entity_id
+        self.temperature_entity_unique_id = config.temperature_entity_unique_id
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Temperature Status"
@@ -5117,16 +5723,16 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         try:
             ent_reg = er.async_get(self.hass)
             location_name_safe = self.location_name.lower().replace(" ", "_")
+            expected_unique_id = (
+                f"{DOMAIN}_{self.entry_id}_{location_name_safe}_"
+                "temperature_above_threshold_weekly_duration"
+            )
 
             for entity in ent_reg.entities.values():
                 if (
                     entity.platform == DOMAIN
                     and entity.domain == "sensor"
-                    and entity.unique_id
-                    and (
-                        f"{location_name_safe}_temperature_above_threshold_weekly_duration"
-                        in entity.unique_id
-                    )
+                    and entity.unique_id == expected_unique_id
                 ):
                     _LOGGER.debug(
                         "Found temperature above threshold sensor: %s", entity.entity_id
@@ -5147,16 +5753,16 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         try:
             ent_reg = er.async_get(self.hass)
             location_name_safe = self.location_name.lower().replace(" ", "_")
+            expected_unique_id = (
+                f"{DOMAIN}_{self.entry_id}_{location_name_safe}_"
+                "temperature_below_threshold_weekly_duration"
+            )
 
             for entity in ent_reg.entities.values():
                 if (
                     entity.platform == DOMAIN
                     and entity.domain == "sensor"
-                    and entity.unique_id
-                    and (
-                        f"{location_name_safe}_temperature_below_threshold_weekly_duration"
-                        in entity.unique_id
-                    )
+                    and entity.unique_id == expected_unique_id
                 ):
                     _LOGGER.debug(
                         "Found temperature below threshold sensor: %s", entity.entity_id
@@ -5378,7 +5984,13 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        temperature_state = self.hass.states.get(self.temperature_entity_id)
+        # Try resolved entity ID first, fallback to stored ID
+        resolved_temperature_entity_id = _resolve_entity_id(
+            self.hass, self.temperature_entity_id, self.temperature_entity_unique_id
+        )
+        if not resolved_temperature_entity_id:
+            return False
+        temperature_state = self.hass.states.get(resolved_temperature_entity_id)
         return temperature_state is not None
 
     @property
@@ -5624,6 +6236,7 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self.location_name = config.location_name
         self.irrigation_zone_name = config.irrigation_zone_name
         self.humidity_entity_id = config.humidity_entity_id
+        self.humidity_entity_unique_id = config.humidity_entity_unique_id
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Humidity Status"
@@ -5714,16 +6327,16 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         try:
             ent_reg = er.async_get(self.hass)
             location_name_safe = self.location_name.lower().replace(" ", "_")
+            expected_unique_id = (
+                f"{DOMAIN}_{self.entry_id}_{location_name_safe}_"
+                "humidity_above_threshold_weekly_duration"
+            )
 
             for entity in ent_reg.entities.values():
                 if (
                     entity.platform == DOMAIN
                     and entity.domain == "sensor"
-                    and entity.unique_id
-                    and (
-                        f"{location_name_safe}_humidity_above_threshold_weekly_duration"
-                        in entity.unique_id
-                    )
+                    and entity.unique_id == expected_unique_id
                 ):
                     _LOGGER.debug(
                         "Found humidity above threshold sensor: %s", entity.entity_id
@@ -5744,16 +6357,16 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         try:
             ent_reg = er.async_get(self.hass)
             location_name_safe = self.location_name.lower().replace(" ", "_")
+            expected_unique_id = (
+                f"{DOMAIN}_{self.entry_id}_{location_name_safe}_"
+                "humidity_below_threshold_weekly_duration"
+            )
 
             for entity in ent_reg.entities.values():
                 if (
                     entity.platform == DOMAIN
                     and entity.domain == "sensor"
-                    and entity.unique_id
-                    and (
-                        f"{location_name_safe}_humidity_below_threshold_weekly_duration"
-                        in entity.unique_id
-                    )
+                    and entity.unique_id == expected_unique_id
                 ):
                     _LOGGER.debug(
                         "Found humidity below threshold sensor: %s", entity.entity_id
@@ -5974,7 +6587,13 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        humidity_state = self.hass.states.get(self.humidity_entity_id)
+        # Try resolved entity ID first, fallback to stored ID
+        resolved_humidity_entity_id = _resolve_entity_id(
+            self.hass, self.humidity_entity_id, self.humidity_entity_unique_id
+        )
+        if not resolved_humidity_entity_id:
+            return False
+        humidity_state = self.hass.states.get(resolved_humidity_entity_id)
         return humidity_state is not None
 
     @property
@@ -6215,6 +6834,7 @@ class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self.location_name = config.location_name
         self.irrigation_zone_name = config.irrigation_zone_name
         self.battery_entity_id = config.battery_entity_id
+        self.battery_entity_unique_id = config.battery_entity_unique_id
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Monitor Battery Level Status"
@@ -6382,7 +7002,13 @@ class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        battery_state = self.hass.states.get(self.battery_entity_id)
+        # Try resolved entity ID first, fallback to stored ID
+        resolved_battery_entity_id = _resolve_entity_id(
+            self.hass, self.battery_entity_id, self.battery_entity_unique_id
+        )
+        if not resolved_battery_entity_id:
+            return False
+        battery_state = self.hass.states.get(resolved_battery_entity_id)
         return battery_state is not None
 
     @property
@@ -7869,10 +8495,19 @@ class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEnt
             self._unsubscribe_low_threshold_ignore_until()
 
 
-def _find_soil_moisture_entity(hass: HomeAssistant, location_name: str) -> str | None:
-    """Find soil moisture entity from mirrored sensors."""
+def _find_soil_moisture_entity(
+    hass: HomeAssistant, location_name: str
+) -> tuple[str, str | None] | None:
+    """
+    Find soil moisture entity from mirrored sensors.
+
+    Returns:
+        Tuple of (entity_id, unique_id) if found, None otherwise.
+
+    """
     ent_reg = er.async_get(hass)
     soil_moisture_entity_id = None
+    soil_moisture_unique_id = None
 
     for entity in ent_reg.entities.values():
         if (
@@ -7883,18 +8518,28 @@ def _find_soil_moisture_entity(hass: HomeAssistant, location_name: str) -> str |
             and location_name.lower().replace(" ", "_") in entity.unique_id.lower()
         ):
             soil_moisture_entity_id = entity.entity_id
+            soil_moisture_unique_id = entity.unique_id
             _LOGGER.debug("Found soil moisture sensor: %s", soil_moisture_entity_id)
             break
 
-    return soil_moisture_entity_id
+    if soil_moisture_entity_id:
+        return (soil_moisture_entity_id, soil_moisture_unique_id)
+    return None
 
 
 def _find_soil_conductivity_entity(
     hass: HomeAssistant, location_name: str
-) -> str | None:
-    """Find soil conductivity entity from mirrored sensors."""
+) -> tuple[str, str | None] | None:
+    """
+    Find soil conductivity entity from mirrored sensors.
+
+    Returns:
+        Tuple of (entity_id, unique_id) if found, None otherwise.
+
+    """
     ent_reg = er.async_get(hass)
     soil_conductivity_entity_id = None
+    soil_conductivity_unique_id = None
 
     for entity in ent_reg.entities.values():
         if (
@@ -7905,18 +8550,30 @@ def _find_soil_conductivity_entity(
             and location_name.lower().replace(" ", "_") in entity.unique_id.lower()
         ):
             soil_conductivity_entity_id = entity.entity_id
+            soil_conductivity_unique_id = entity.unique_id
             _LOGGER.debug(
                 "Found soil conductivity sensor: %s", soil_conductivity_entity_id
             )
             break
 
-    return soil_conductivity_entity_id
+    if soil_conductivity_entity_id:
+        return (soil_conductivity_entity_id, soil_conductivity_unique_id)
+    return None
 
 
-def _find_temperature_entity(hass: HomeAssistant, location_name: str) -> str | None:
-    """Find temperature entity from mirrored sensors."""
+def _find_temperature_entity(
+    hass: HomeAssistant, location_name: str
+) -> tuple[str, str | None] | None:
+    """
+    Find temperature entity from mirrored sensors.
+
+    Returns:
+        Tuple of (entity_id, unique_id) if found, None otherwise.
+
+    """
     ent_reg = er.async_get(hass)
     temperature_entity_id = None
+    temperature_unique_id = None
 
     for entity in ent_reg.entities.values():
         if (
@@ -7927,16 +8584,28 @@ def _find_temperature_entity(hass: HomeAssistant, location_name: str) -> str | N
             and location_name.lower().replace(" ", "_") in entity.unique_id.lower()
         ):
             temperature_entity_id = entity.entity_id
+            temperature_unique_id = entity.unique_id
             _LOGGER.debug("Found temperature sensor: %s", temperature_entity_id)
             break
 
-    return temperature_entity_id
+    if temperature_entity_id:
+        return (temperature_entity_id, temperature_unique_id)
+    return None
 
 
-def _find_humidity_entity(hass: HomeAssistant, location_name: str) -> str | None:
-    """Find humidity entity from linked humidity sensors."""
+def _find_humidity_entity(
+    hass: HomeAssistant, location_name: str
+) -> tuple[str, str | None] | None:
+    """
+    Find humidity entity from linked humidity sensors.
+
+    Returns:
+        Tuple of (entity_id, unique_id) if found, None otherwise.
+
+    """
     ent_reg = er.async_get(hass)
     humidity_entity_id = None
+    humidity_unique_id = None
 
     for entity in ent_reg.entities.values():
         if (
@@ -7947,22 +8616,32 @@ def _find_humidity_entity(hass: HomeAssistant, location_name: str) -> str | None
             and location_name.lower().replace(" ", "_") in entity.unique_id.lower()
         ):
             humidity_entity_id = entity.entity_id
+            humidity_unique_id = entity.unique_id
             _LOGGER.debug("Found humidity sensor: %s", humidity_entity_id)
             break
 
-    return humidity_entity_id
+    if humidity_entity_id:
+        return (humidity_entity_id, humidity_unique_id)
+    return None
 
 
-def _find_battery_entity(hass: HomeAssistant, location_name: str) -> str | None:
+def _find_battery_entity(
+    hass: HomeAssistant, location_name: str
+) -> tuple[str, str | None] | None:
     """
     Find battery entity from monitoring device sensors.
 
     Searches for the MonitoringSensor that mirrors the battery level from
     the monitoring device. The unique_id pattern is:
     plant_assistant_<entry_id>_<location_name>_monitor_battery_level
+
+    Returns:
+        Tuple of (entity_id, unique_id) if found, None otherwise.
+
     """
     ent_reg = er.async_get(hass)
     battery_entity_id = None
+    battery_unique_id = None
 
     for entity in ent_reg.entities.values():
         if (
@@ -7973,10 +8652,13 @@ def _find_battery_entity(hass: HomeAssistant, location_name: str) -> str | None:
             and location_name.lower().replace(" ", "_") in entity.unique_id.lower()
         ):
             battery_entity_id = entity.entity_id
+            battery_unique_id = entity.unique_id
             _LOGGER.debug("Found battery sensor: %s", battery_entity_id)
             break
 
-    return battery_entity_id
+    if battery_entity_id:
+        return (battery_entity_id, battery_unique_id)
+    return None
 
 
 def _get_irrigation_zone_name(entry: ConfigEntry[Any], subentry: Any) -> str:
@@ -8002,17 +8684,19 @@ async def _create_soil_moisture_sensor(
     location_device_id: str | None,
 ) -> BinarySensorEntity | None:
     """Create soil moisture status monitor sensor."""
-    soil_moisture_entity_id = _find_soil_moisture_entity(hass, location_name)
-    if not soil_moisture_entity_id:
+    soil_moisture_result = _find_soil_moisture_entity(hass, location_name)
+    if not soil_moisture_result:
         _LOGGER.debug("No soil moisture sensor found for location %s", location_name)
         return None
 
+    soil_moisture_entity_id, soil_moisture_unique_id = soil_moisture_result
     moisture_status_config = SoilMoistureStatusMonitorConfig(
         hass=hass,
         entry_id=subentry_id,
         location_name=location_name,
         irrigation_zone_name=irrigation_zone_name,
         soil_moisture_entity_id=soil_moisture_entity_id,
+        soil_moisture_entity_unique_id=soil_moisture_unique_id,
         location_device_id=location_device_id,
     )
     sensor = SoilMoistureStatusMonitorBinarySensor(moisture_status_config)
@@ -8031,19 +8715,21 @@ async def _create_soil_conductivity_sensor(
     location_device_id: str | None,
 ) -> BinarySensorEntity | None:
     """Create soil conductivity status monitor sensor."""
-    soil_conductivity_entity_id = _find_soil_conductivity_entity(hass, location_name)
-    if not soil_conductivity_entity_id:
+    soil_conductivity_result = _find_soil_conductivity_entity(hass, location_name)
+    if not soil_conductivity_result:
         _LOGGER.debug(
             "No soil conductivity sensor found for location %s", location_name
         )
         return None
 
+    soil_conductivity_entity_id, soil_conductivity_unique_id = soil_conductivity_result
     conductivity_status_config = SoilConductivityStatusMonitorConfig(
         hass=hass,
         entry_id=subentry_id,
         location_name=location_name,
         irrigation_zone_name=irrigation_zone_name,
         soil_conductivity_entity_id=soil_conductivity_entity_id,
+        soil_conductivity_entity_unique_id=soil_conductivity_unique_id,
         location_device_id=location_device_id,
     )
     sensor = SoilConductivityStatusMonitorBinarySensor(conductivity_status_config)
@@ -8062,17 +8748,19 @@ async def _create_temperature_sensor(
     location_device_id: str | None,
 ) -> BinarySensorEntity | None:
     """Create temperature status monitor sensor."""
-    temperature_entity_id = _find_temperature_entity(hass, location_name)
-    if not temperature_entity_id:
+    temperature_result = _find_temperature_entity(hass, location_name)
+    if not temperature_result:
         _LOGGER.debug("No temperature sensor found for location %s", location_name)
         return None
 
+    temperature_entity_id, temperature_unique_id = temperature_result
     temperature_status_config = TemperatureStatusMonitorConfig(
         hass=hass,
         entry_id=subentry_id,
         location_name=location_name,
         irrigation_zone_name=irrigation_zone_name,
         temperature_entity_id=temperature_entity_id,
+        temperature_entity_unique_id=temperature_unique_id,
         location_device_id=location_device_id,
     )
     sensor = TemperatureStatusMonitorBinarySensor(temperature_status_config)
@@ -8091,17 +8779,19 @@ async def _create_humidity_sensor(
     location_device_id: str | None,
 ) -> BinarySensorEntity | None:
     """Create humidity status monitor sensor."""
-    humidity_entity_id = _find_humidity_entity(hass, location_name)
-    if not humidity_entity_id:
+    humidity_result = _find_humidity_entity(hass, location_name)
+    if not humidity_result:
         _LOGGER.debug("No humidity sensor found for location %s", location_name)
         return None
 
+    humidity_entity_id, humidity_entity_unique_id = humidity_result
     humidity_status_config = HumidityStatusMonitorConfig(
         hass=hass,
         entry_id=subentry_id,
         location_name=location_name,
         irrigation_zone_name=irrigation_zone_name,
         humidity_entity_id=humidity_entity_id,
+        humidity_entity_unique_id=humidity_entity_unique_id,
         location_device_id=location_device_id,
     )
     sensor = HumidityStatusMonitorBinarySensor(humidity_status_config)
@@ -8120,17 +8810,19 @@ async def _create_battery_sensor(
     location_device_id: str | None,
 ) -> BinarySensorEntity | None:
     """Create battery level status monitor sensor."""
-    battery_entity_id = _find_battery_entity(hass, location_name)
-    if not battery_entity_id:
+    battery_result = _find_battery_entity(hass, location_name)
+    if not battery_result:
         _LOGGER.debug("No battery sensor found for location %s", location_name)
         return None
 
+    battery_entity_id, battery_entity_unique_id = battery_result
     battery_status_config = BatteryLevelStatusMonitorConfig(
         hass=hass,
         entry_id=subentry_id,
         location_name=location_name,
         irrigation_zone_name=irrigation_zone_name,
         battery_entity_id=battery_entity_id,
+        battery_entity_unique_id=battery_entity_unique_id,
         location_device_id=location_device_id,
     )
     sensor = BatteryLevelStatusMonitorBinarySensor(battery_status_config)
@@ -8428,11 +9120,11 @@ async def async_setup_platform(
     async_add_entities: AddEntitiesCallback,
     _discovery_info: Any = None,
 ) -> None:
-    """Set up the binary_sensor platform (legacy)."""
-    # Binary sensors are set up via config entries, not legacy platform
+    """Set up the binary_sensor platform."""
+    # Binary sensors are set up via config entries
 
 
-async def _create_zone_sensors(
+async def _create_zone_sensors(  # noqa: PLR0912, PLR0915
     hass: HomeAssistant,
     entry: ConfigEntry[Any],
     zone_name: str,
@@ -8441,10 +9133,92 @@ async def _create_zone_sensors(
 ) -> list[BinarySensorEntity]:
     """Create all sensors for a single irrigation zone."""
     zone_sensors: list[BinarySensorEntity] = []
-    zone_name_safe = zone_name.lower().replace(" ", "_")
 
-    # Get the master schedule switch entity ID
-    master_schedule_switch_entity_id = f"switch.{zone_name_safe}_schedule"
+    # Discover switch entities for this device instead of constructing entity IDs
+    # This is more resilient to entity renames and doesn't assume naming patterns
+    # Get all switch entities for this device to find them by unique_id patterns
+    switch_entities = find_device_entities_by_pattern(
+        hass,
+        linked_device_id,
+        "switch",
+        None,  # Get all switches, we'll filter by unique_id
+    )
+
+    _LOGGER.debug(
+        "Found switch entities for zone %s (device %s): %s",
+        zone_name,
+        linked_device_id,
+        switch_entities,
+    )
+
+    # Discover sensor entities for error count
+    sensor_entities = find_device_entities_by_pattern(
+        hass,
+        linked_device_id,
+        "sensor",
+        None,  # Get all sensors, we'll filter by unique_id
+    )
+
+    _LOGGER.debug(
+        "Found sensor entities for zone %s (device %s): %s",
+        zone_name,
+        linked_device_id,
+        sensor_entities,
+    )
+
+    # Filter switches by unique_id patterns
+    master_schedule_entity_id = None
+    master_schedule_unique_id = None
+    sunrise_entity_id = None
+    sunrise_unique_id = None
+    afternoon_entity_id = None
+    afternoon_unique_id = None
+    sunset_entity_id = None
+    sunset_unique_id = None
+    rain_delivery_entity_id = None
+    rain_delivery_unique_id = None
+    main_delivery_entity_id = None
+    main_delivery_unique_id = None
+
+    for entity_id, unique_id in switch_entities.values():
+        if unique_id:
+            if "master_schedule" in unique_id:
+                master_schedule_entity_id = entity_id
+                master_schedule_unique_id = unique_id
+            elif "sunrise_schedule" in unique_id:
+                sunrise_entity_id = entity_id
+                sunrise_unique_id = unique_id
+            elif "afternoon_schedule" in unique_id:
+                afternoon_entity_id = entity_id
+                afternoon_unique_id = unique_id
+            elif "sunset_schedule" in unique_id:
+                sunset_entity_id = entity_id
+                sunset_unique_id = unique_id
+            elif "allow_rain_water_delivery" in unique_id:
+                rain_delivery_entity_id = entity_id
+                rain_delivery_unique_id = unique_id
+            elif "allow_water_main_delivery" in unique_id:
+                main_delivery_entity_id = entity_id
+                main_delivery_unique_id = unique_id
+
+    # Filter sensors by unique_id patterns
+    error_count_entity_id = None
+    error_count_unique_id = None
+
+    for entity_id, unique_id in sensor_entities.values():
+        if unique_id and "error_count" in unique_id:
+            error_count_entity_id = entity_id
+            error_count_unique_id = unique_id
+            break
+
+    if not master_schedule_entity_id:
+        _LOGGER.warning(
+            "Could not find master schedule switch for zone %s (device %s)",
+            zone_name,
+            linked_device_id,
+        )
+        # Don't create sensors if we can't find the master schedule switch
+        return zone_sensors
 
     # Create master schedule status sensor
     master_schedule_config = MasterScheduleStatusMonitorConfig(
@@ -8452,7 +9226,8 @@ async def _create_zone_sensors(
         entry_id=entry.entry_id,
         location_name=zone_name,
         irrigation_zone_name=zone_name,
-        master_schedule_switch_entity_id=master_schedule_switch_entity_id,
+        master_schedule_switch_entity_id=master_schedule_entity_id,
+        master_schedule_switch_unique_id=master_schedule_unique_id,
         zone_device_identifier=zone_device_identifier,
     )
     master_schedule_sensor = await _create_master_schedule_status_sensor(
@@ -8461,88 +9236,107 @@ async def _create_zone_sensors(
     if master_schedule_sensor:
         zone_sensors.append(master_schedule_sensor)
         _LOGGER.debug(
-            "Created master schedule status sensor for irrigation zone %s",
+            "Created master schedule status sensor for irrigation zone %s "
+            "(entity: %s, unique_id: %s)",
+            zone_name,
+            master_schedule_entity_id,
+            master_schedule_unique_id,
+        )
+
+    # Create schedule misconfiguration status sensor if we have all required switches
+    if all([sunrise_entity_id, afternoon_entity_id, sunset_entity_id]):
+        schedule_misconfiguration_config = ScheduleMisconfigurationStatusMonitorConfig(
+            hass=hass,
+            entry_id=entry.entry_id,
+            location_name=zone_name,
+            irrigation_zone_name=zone_name,
+            master_schedule_switch_entity_id=master_schedule_entity_id,
+            master_schedule_switch_unique_id=master_schedule_unique_id,
+            sunrise_switch_entity_id=sunrise_entity_id,
+            sunrise_switch_unique_id=sunrise_unique_id,
+            afternoon_switch_entity_id=afternoon_entity_id,
+            afternoon_switch_unique_id=afternoon_unique_id,
+            sunset_switch_entity_id=sunset_entity_id,
+            sunset_switch_unique_id=sunset_unique_id,
+            zone_device_identifier=zone_device_identifier,
+        )
+        schedule_misconfiguration_sensor = (
+            await _create_schedule_misconfiguration_status_sensor(
+                schedule_misconfiguration_config
+            )
+        )
+        if schedule_misconfiguration_sensor:
+            zone_sensors.append(schedule_misconfiguration_sensor)
+            _LOGGER.debug(
+                "Created schedule misconfiguration status sensor for irrigation "
+                "zone %s",
+                zone_name,
+            )
+    else:
+        _LOGGER.debug(
+            "Skipping schedule misconfiguration sensor for zone %s - "
+            "not all time schedule switches found",
             zone_name,
         )
 
-    # Create schedule misconfiguration status sensor
-    sunrise_switch_entity_id = f"switch.{zone_name_safe}_sunrise_schedule"
-    afternoon_switch_entity_id = f"switch.{zone_name_safe}_afternoon_schedule"
-    sunset_switch_entity_id = f"switch.{zone_name_safe}_sunset_schedule"
-
-    schedule_misconfiguration_config = ScheduleMisconfigurationStatusMonitorConfig(
-        hass=hass,
-        entry_id=entry.entry_id,
-        location_name=zone_name,
-        irrigation_zone_name=zone_name,
-        master_schedule_switch_entity_id=master_schedule_switch_entity_id,
-        sunrise_switch_entity_id=sunrise_switch_entity_id,
-        afternoon_switch_entity_id=afternoon_switch_entity_id,
-        sunset_switch_entity_id=sunset_switch_entity_id,
-        zone_device_identifier=zone_device_identifier,
-    )
-    schedule_misconfiguration_sensor = (
-        await _create_schedule_misconfiguration_status_sensor(
-            schedule_misconfiguration_config
+    # Create water delivery preference status sensor if we have both switches
+    if rain_delivery_entity_id and main_delivery_entity_id:
+        water_delivery_preference_config = WaterDeliveryPreferenceStatusMonitorConfig(
+            hass=hass,
+            entry_id=entry.entry_id,
+            location_name=zone_name,
+            irrigation_zone_name=zone_name,
+            master_schedule_switch_entity_id=master_schedule_entity_id,
+            master_schedule_switch_unique_id=master_schedule_unique_id,
+            allow_rain_water_delivery_switch_entity_id=rain_delivery_entity_id,
+            allow_rain_water_delivery_switch_unique_id=rain_delivery_unique_id,
+            allow_water_main_delivery_switch_entity_id=main_delivery_entity_id,
+            allow_water_main_delivery_switch_unique_id=main_delivery_unique_id,
+            zone_device_identifier=zone_device_identifier,
         )
-    )
-    if schedule_misconfiguration_sensor:
-        zone_sensors.append(schedule_misconfiguration_sensor)
+        water_delivery_preference_sensor = (
+            await _create_water_delivery_preference_status_sensor(
+                water_delivery_preference_config
+            )
+        )
+        if water_delivery_preference_sensor:
+            zone_sensors.append(water_delivery_preference_sensor)
+            _LOGGER.debug(
+                "Created water delivery preference status sensor for irrigation "
+                "zone %s",
+                zone_name,
+            )
+    else:
         _LOGGER.debug(
-            "Created schedule misconfiguration status sensor for irrigation zone %s",
+            "Skipping water delivery preference sensor for zone %s - "
+            "not all delivery switches found",
             zone_name,
         )
 
-    # Create water delivery preference status sensor
-    allow_rain_water_delivery_switch_entity_id = (
-        f"switch.{zone_name_safe}_allow_rain_water_delivery"
-    )
-    allow_water_main_delivery_switch_entity_id = (
-        f"switch.{zone_name_safe}_allow_water_main_delivery"
-    )
-
-    water_delivery_preference_config = WaterDeliveryPreferenceStatusMonitorConfig(
-        hass=hass,
-        entry_id=entry.entry_id,
-        location_name=zone_name,
-        irrigation_zone_name=zone_name,
-        master_schedule_switch_entity_id=master_schedule_switch_entity_id,
-        allow_rain_water_delivery_switch_entity_id=(
-            allow_rain_water_delivery_switch_entity_id
-        ),
-        allow_water_main_delivery_switch_entity_id=(
-            allow_water_main_delivery_switch_entity_id
-        ),
-        zone_device_identifier=zone_device_identifier,
-    )
-    water_delivery_preference_sensor = (
-        await _create_water_delivery_preference_status_sensor(
-            water_delivery_preference_config
+    # Create error status sensor if we have the error count sensor
+    if error_count_entity_id:
+        error_status_config = ErrorStatusMonitorConfig(
+            hass=hass,
+            entry_id=entry.entry_id,
+            location_name=zone_name,
+            irrigation_zone_name=zone_name,
+            error_count_entity_id=error_count_entity_id,
+            error_count_entity_unique_id=error_count_unique_id,
+            zone_device_identifier=zone_device_identifier,
         )
-    )
-    if water_delivery_preference_sensor:
-        zone_sensors.append(water_delivery_preference_sensor)
+        error_status_sensor = await _create_error_status_sensor(error_status_config)
+        if error_status_sensor:
+            zone_sensors.append(error_status_sensor)
+            _LOGGER.debug(
+                "Created error status sensor for irrigation zone %s "
+                "(entity: %s, unique_id: %s)",
+                zone_name,
+                error_count_entity_id,
+                error_count_unique_id,
+            )
+    else:
         _LOGGER.debug(
-            "Created water delivery preference status sensor for irrigation zone %s",
-            zone_name,
-        )
-
-    # Create error status sensor
-    error_count_entity_id = f"sensor.{zone_name_safe}_error_count"
-
-    error_status_config = ErrorStatusMonitorConfig(
-        hass=hass,
-        entry_id=entry.entry_id,
-        location_name=zone_name,
-        irrigation_zone_name=zone_name,
-        error_count_entity_id=error_count_entity_id,
-        zone_device_identifier=zone_device_identifier,
-    )
-    error_status_sensor = await _create_error_status_sensor(error_status_config)
-    if error_status_sensor:
-        zone_sensors.append(error_status_sensor)
-        _LOGGER.debug(
-            "Created error status sensor for irrigation zone %s",
+            "Skipping error status sensor for zone %s - error count sensor not found",
             zone_name,
         )
 

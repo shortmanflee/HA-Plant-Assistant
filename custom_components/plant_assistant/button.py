@@ -137,33 +137,61 @@ class IrrigationZoneErrorCountResetButton(ButtonEntity, RestoreEntity):
     async def async_press(self) -> None:
         """Handle button press - reset the error count to 0."""
         try:
-            # Construct the error count sensor entity_id
-            zone_name_safe = self.zone_name.lower().replace(" ", "_")
-            error_count_entity_id = f"sensor.{zone_name_safe}_error_count"
+            # Build the expected unique_id for the error count sensor
+            error_count_unique_id = "_".join(
+                (
+                    DOMAIN,
+                    self.entry_id,
+                    self.zone_device_id[0],
+                    self.zone_device_id[1],
+                    "error_count",
+                )
+            )
 
-            # Try to find and reset the sensor entity using the entity registry
+            # Look up the sensor by unique_id (resilient to entity renames)
             entity_registry = async_get(self.hass)
-            entity_entry = entity_registry.async_get(error_count_entity_id)
+            error_count_entity_id = None
 
-            if entity_entry and (
-                platform := self.hass.data.get("entity_components", {}).get("sensor")
-            ):
+            # Find entity_id by unique_id
+            for entity_entry in entity_registry.entities.values():
+                if entity_entry.unique_id == error_count_unique_id:
+                    error_count_entity_id = entity_entry.entity_id
+                    break
+
+            if not error_count_entity_id:
+                _LOGGER.warning(
+                    "Could not find error count sensor by unique_id %s for zone %s",
+                    error_count_unique_id,
+                    self.zone_name,
+                )
+                return
+
+            # Find and reset the sensor entity using unique_id for reliable matching
+            if platform := self.hass.data.get("entity_components", {}).get("sensor"):
                 for entity in platform.entities:
-                    if entity.entity_id == error_count_entity_id and hasattr(
-                        entity, "reset_error_count"
+                    # Match by unique_id (most reliable, immune to entity_id changes)
+                    if (
+                        hasattr(entity, "unique_id")
+                        and entity.unique_id == error_count_unique_id
+                        and hasattr(entity, "reset_error_count")
                     ):
                         entity.reset_error_count()
                         _LOGGER.debug(
-                            "Reset error count for zone %s (entity: %s)",
+                            "Reset error count for zone %s (entity: %s, unique_id: %s)",
                             self.zone_name,
-                            error_count_entity_id,
+                            entity.entity_id
+                            if hasattr(entity, "entity_id")
+                            else "unknown",
+                            error_count_unique_id,
                         )
                         return
 
-            # Fallback: if entity not found, log a warning
+            # Fallback: if entity not found in platform, log a warning
             _LOGGER.warning(
-                "Could not find sensor entity %s to reset error count",
-                error_count_entity_id,
+                "Could not find sensor entity with unique_id %s in platform "
+                "for zone %s",
+                error_count_unique_id,
+                self.zone_name,
             )
         except Exception as exc:  # noqa: BLE001 - Defensive
             _LOGGER.warning(

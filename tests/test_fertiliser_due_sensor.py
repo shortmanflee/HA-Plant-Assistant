@@ -43,7 +43,10 @@ def create_device_registry_mock() -> Mock:
         "parent123": parent_device,
         "tank123": tank_device,
     }
-    registry.devices = devices
+    # Create a mock devices dict that returns the correct device
+    mock_devices = Mock()
+    mock_devices.values = Mock(return_value=devices.values())
+    registry.devices = mock_devices
     registry.async_get = Mock(side_effect=lambda device_id: devices.get(device_id))
 
     return registry
@@ -59,11 +62,19 @@ def create_entity_registry_mock() -> Mock:
     fertiliser_switch.domain = "switch"
     fertiliser_switch.name = "Fertiliser Enabled"
     fertiliser_switch.entity_id = "switch.esp32dev_fertiliser_enabled"
+    fertiliser_switch.unique_id = "esp32dev_fertiliser_enabled"
 
-    registry.entities = {
-        "switch.esp32dev_fertiliser_enabled": fertiliser_switch,
-    }
-    registry.entities.values = Mock(return_value=[fertiliser_switch])
+    # Create mock last fertiliser injection sensor entity
+    last_injection_sensor = Mock()
+    last_injection_sensor.device_id = "abc123"
+    last_injection_sensor.domain = "sensor"
+    last_injection_sensor.name = "Last Fertiliser Injection"
+    last_injection_sensor.entity_id = "sensor.zone_1_last_fertiliser_injection"
+    last_injection_sensor.unique_id = "zone_1_last_fertiliser_injection"
+
+    entities = [fertiliser_switch, last_injection_sensor]
+    registry.entities = {e.entity_id: e for e in entities}
+    registry.entities.values = Mock(return_value=entities)
 
     return registry
 
@@ -77,13 +88,49 @@ def hass_mock() -> Mock:
 @pytest.fixture
 def sensor(hass_mock: Mock) -> IrrigationZoneFertiliserDueSensor:
     """Create a fertiliser due sensor instance."""
-    return IrrigationZoneFertiliserDueSensor(
-        hass=hass_mock,
-        entry_id="test_entry",
-        zone_device_id=("esphome", "abc123"),
-        zone_name="Front Garden",
-        zone_id="zone-1",
-    )
+    # Mock the registries for device discovery
+    with (
+        patch("custom_components.plant_assistant.sensor.dr.async_get") as mock_dr,
+        patch(
+            "custom_components.plant_assistant.sensor.find_device_entities_by_pattern"
+        ) as mock_find,
+    ):
+        mock_dr.return_value = create_device_registry_mock()
+
+        # Mock the entity discovery to return different entities based on domain
+        def find_entities_side_effect(_hass, _device_id, domain, pattern_keywords):
+            if domain == "sensor" and "last_fertiliser_injection" in pattern_keywords:
+                return {
+                    "last_fertiliser_injection": (
+                        "sensor.zone_1_last_fertiliser_injection",
+                        "zone_1_last_fertiliser_injection",
+                    )
+                }
+            if domain == "switch" and "allow_fertiliser_injection" in pattern_keywords:
+                return {
+                    "allow_fertiliser_injection": (
+                        "switch.zone_1_allow_fertiliser_injection",
+                        "zone_1_allow_fertiliser_injection",
+                    )
+                }
+            if domain == "number" and "fertiliser_injection_days" in pattern_keywords:
+                return {
+                    "fertiliser_injection_days": (
+                        "number.zone_1_fertiliser_injection_days",
+                        "zone_1_fertiliser_injection_days",
+                    )
+                }
+            return {}
+
+        mock_find.side_effect = find_entities_side_effect
+
+        return IrrigationZoneFertiliserDueSensor(
+            hass=hass_mock,
+            entry_id="test_entry",
+            zone_device_id=("esphome", "abc123"),
+            zone_name="Front Garden",
+            zone_id="zone-1",
+        )
 
 
 class MockState:
@@ -115,11 +162,6 @@ class TestIrrigationZoneFertiliserDueSensor:
         assert sensor.native_value == "off"
         sensor._state = "on"
         assert sensor.native_value == "on"
-
-    def test_build_entity_id(self, sensor: IrrigationZoneFertiliserDueSensor) -> None:
-        """Test entity ID building."""
-        entity_id = sensor._build_entity_id("input_boolean", "zone_1_fertiliser")
-        assert entity_id == "input_boolean.zone_1_fertiliser"
 
     def test_get_entity_state_available(
         self, hass_mock: Mock, sensor: IrrigationZoneFertiliserDueSensor
