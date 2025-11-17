@@ -241,6 +241,50 @@ def _get_monitoring_device_sensors(
     return device_sensors
 
 
+def _resolve_entity_id(
+    hass: HomeAssistant, entity_id: str | None, unique_id: str | None
+) -> str | None:
+    """
+    Resolve an entity ID, using unique_id as fallback if entity was renamed.
+
+    This helper provides resilience to entity renames by preferring entity_id
+    but falling back to unique_id lookup if the entity_id no longer exists.
+
+    Args:
+        hass: The Home Assistant instance.
+        entity_id: The entity ID to use (preferred if available).
+        unique_id: The unique ID to use as fallback.
+
+    Returns:
+        The resolved entity_id, or None if neither could be resolved.
+
+    """
+    # First try the entity_id
+    if entity_id:
+        if hass.states.get(entity_id) is not None:
+            return entity_id
+        # Try to validate it exists in the registry
+        # (entity might be disabled/unavailable but still exists)
+        try:
+            entity_reg = er.async_get(hass)
+            if entity_reg.async_get(entity_id):
+                return entity_id
+        except (TypeError, AttributeError, ValueError):
+            pass
+
+    # Fall back to unique_id lookup
+    if unique_id:
+        try:
+            entity_reg = er.async_get(hass)
+            for entity_entry in entity_reg.entities.values():
+                if entity_entry.unique_id == unique_id:
+                    return entity_entry.entity_id
+        except (TypeError, AttributeError, ValueError):
+            pass
+
+    return None
+
+
 def _expected_entities_for_subentry(  # noqa: PLR0912
     hass: HomeAssistant, subentry: Any
 ) -> tuple[set[str], set[str], set[str], set[str]]:
@@ -828,20 +872,27 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
 
             # Create humidity linked sensor if humidity entity is configured
             humidity_entity_id = subentry.data.get("humidity_entity_id")
-            if humidity_entity_id:
+            humidity_entity_unique_id = subentry.data.get("humidity_entity_unique_id")
+            # Resolve entity ID with fallback to unique ID for resilience
+            resolved_humidity_entity_id = _resolve_entity_id(
+                hass, humidity_entity_id, humidity_entity_unique_id
+            )
+            if resolved_humidity_entity_id:
                 humidity_sensor = HumidityLinkedSensor(
                     hass=hass,
                     entry_id=subentry.subentry_id,
                     location_device_id=location_device_id,
                     location_name=location_name,
-                    humidity_entity_id=humidity_entity_id,
+                    humidity_entity_id=resolved_humidity_entity_id,
                 )
                 subentry_entities.append(humidity_sensor)
                 _LOGGER.debug(
                     "Added humidity linked sensor for entity %s at location %s",
-                    humidity_entity_id,
+                    resolved_humidity_entity_id,
                     location_name,
                 )
+                # Update humidity_entity_id for downstream use
+                humidity_entity_id = resolved_humidity_entity_id
 
             # Create aggregated location sensors if plant slots are configured
             if _has_plants_in_slots(subentry.data):
@@ -3770,6 +3821,9 @@ class MonitoringSensor(SensorEntity):
             self._attributes = dict(source_state.attributes)
             self._attributes["source_entity"] = self.source_entity_id
 
+            # Capture source entity unique_id for resilient tracking
+            self._capture_source_unique_id()
+
             # If no unit was set from mapping, try to get it from source entity
             if not hasattr(self, "_attr_native_unit_of_measurement"):
                 source_unit = source_state.attributes.get("unit_of_measurement")
@@ -3788,6 +3842,18 @@ class MonitoringSensor(SensorEntity):
                 exc,
             )
 
+    def _capture_source_unique_id(self) -> None:
+        """Capture the source entity's unique_id for resilient tracking."""
+        try:
+            entity_reg = er.async_get(self.hass)
+            if entity_reg is not None:
+                source_entry = entity_reg.async_get(self.source_entity_id)
+                if source_entry and source_entry.unique_id:
+                    self._attributes["source_unique_id"] = source_entry.unique_id
+        except (TypeError, AttributeError, ValueError):
+            # Entity registry not available or lookup failed
+            pass
+
     @callback
     def _source_state_changed(self, event: Event) -> None:
         """Handle source entity state changes."""
@@ -3800,6 +3866,9 @@ class MonitoringSensor(SensorEntity):
             self._attributes = dict(new_state.attributes)
             # Add reference to source
             self._attributes["source_entity"] = self.source_entity_id
+            # Preserve source_unique_id if already captured
+            if "source_unique_id" not in self._attributes:
+                self._capture_source_unique_id()
 
         self.async_write_ha_state()
 
@@ -3891,6 +3960,9 @@ class HumidityLinkedSensor(SensorEntity):
             self._attributes = dict(humidity_state.attributes)
             self._attributes["source_entity"] = self.humidity_entity_id
 
+            # Capture source entity unique_id for resilient tracking
+            self._capture_humidity_unique_id()
+
             # Use unit from source entity if available
             source_unit = humidity_state.attributes.get("unit_of_measurement")
             if source_unit:
@@ -3908,6 +3980,18 @@ class HumidityLinkedSensor(SensorEntity):
                 exc,
             )
 
+    def _capture_humidity_unique_id(self) -> None:
+        """Capture the humidity entity's unique_id for resilient tracking."""
+        try:
+            entity_reg = er.async_get(self.hass)
+            if entity_reg is not None:
+                source_entry = entity_reg.async_get(self.humidity_entity_id)
+                if source_entry and source_entry.unique_id:
+                    self._attributes["source_unique_id"] = source_entry.unique_id
+        except (TypeError, AttributeError, ValueError):
+            # Entity registry not available or lookup failed
+            pass
+
     @callback
     def _humidity_state_changed(self, event: Event) -> None:
         """Handle humidity entity state changes."""
@@ -3920,6 +4004,9 @@ class HumidityLinkedSensor(SensorEntity):
             self._attributes = dict(new_state.attributes)
             # Add reference to source
             self._attributes["source_entity"] = self.humidity_entity_id
+            # Preserve source_unique_id if already captured
+            if "source_unique_id" not in self._attributes:
+                self._capture_humidity_unique_id()
 
         self.async_write_ha_state()
 

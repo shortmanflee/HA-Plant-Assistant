@@ -114,6 +114,43 @@ class EntityMonitor:
                 new_entity_id,
             )
 
+    def _get_entity_id_from_unique_id(self, unique_id: str) -> str | None:
+        """
+        Look up the current entity_id for a given unique_id.
+
+        This helps handle cases where the source entity was renamed but we only
+        have its unique_id stored. Returns the current entity_id if found.
+        """
+        if not self._entity_registry or not unique_id:
+            return None
+
+        try:
+            for entity_entry in self._entity_registry.entities.values():
+                if entity_entry.unique_id == unique_id:
+                    return entity_entry.entity_id
+        except (TypeError, AttributeError, ValueError):
+            pass
+
+        return None
+
+    def _get_unique_id_from_entity_id(self, entity_id: str) -> str | None:
+        """
+        Look up the unique_id for a given entity_id.
+
+        Used to capture and store unique_ids when updating configurations.
+        """
+        if not self._entity_registry or not entity_id:
+            return None
+
+        try:
+            entity_entry = self._entity_registry.async_get(entity_id)
+            if entity_entry and entity_entry.unique_id:
+                return entity_entry.unique_id
+        except (TypeError, AttributeError, ValueError):
+            pass
+
+        return None
+
     async def _find_mirror_entities_for_source(
         self, source_entity_id: str
     ) -> list[str]:
@@ -149,16 +186,35 @@ class EntityMonitor:
                 ):
                     # Get the entity state to check source_entity attribute
                     state = self.hass.states.get(entity_entry.entity_id)
-                    if (
-                        state
-                        and state.attributes.get("source_entity") == source_entity_id
-                    ):
-                        mirror_entities.append(entity_entry.entity_id)
-                        _LOGGER.debug(
-                            "Found mirror entity %s referencing source %s",
-                            entity_entry.entity_id,
-                            source_entity_id,
+                    if state:
+                        # Match by entity_id (original method)
+                        entity_id_match = (
+                            state.attributes.get("source_entity") == source_entity_id
                         )
+                        # Also match by source_unique_id for resilience to renames
+                        source_unique_id_match = False
+                        try:
+                            source_entry = self._entity_registry.async_get(
+                                source_entity_id
+                            )
+                            if source_entry and source_entry.unique_id:
+                                source_unique_id_match = (
+                                    state.attributes.get("source_unique_id")
+                                    == source_entry.unique_id
+                                )
+                        except (TypeError, AttributeError, ValueError):
+                            pass
+
+                        if entity_id_match or source_unique_id_match:
+                            mirror_entities.append(entity_entry.entity_id)
+                            _LOGGER.debug(
+                                "Found mirror entity %s referencing source %s"
+                                " (entity_id_match=%s, unique_id_match=%s)",
+                                entity_entry.entity_id,
+                                source_entity_id,
+                                entity_id_match,
+                                source_unique_id_match,
+                            )
         except Exception:
             _LOGGER.exception("Error finding mirror entities")
 
@@ -234,6 +290,9 @@ class EntityMonitor:
             data = dict(config_entry.data)
             updated = False
 
+            # Capture the unique_id of the new source entity for resilient tracking
+            new_unique_id = self._get_unique_id_from_entity_id(new_source_entity_id)
+
             # Check if this is a main Plant Assistant entry with locations
             if "irrigation_zones" in options:
                 zones = dict(options["irrigation_zones"])
@@ -252,14 +311,20 @@ class EntityMonitor:
                                 location_data["humidity_entity_id"] = (
                                     new_source_entity_id
                                 )
+                                # Also store unique_id for resilience
+                                if new_unique_id:
+                                    location_data["humidity_entity_unique_id"] = (
+                                        new_unique_id
+                                    )
                                 updated = True
                                 _LOGGER.info(
                                     "Updated humidity_entity_id in zone %s,"
-                                    " location %s: %s -> %s",
+                                    " location %s: %s -> %s (unique_id: %s)",
                                     zone_id,
                                     location_id,
                                     old_source_entity_id,
                                     new_source_entity_id,
+                                    new_unique_id or "unknown",
                                 )
 
                             locations[location_id] = location_data
@@ -272,11 +337,16 @@ class EntityMonitor:
                 if data["humidity_entity_id"] == old_source_entity_id:
                     # Update the data (not options for subentries)
                     data["humidity_entity_id"] = new_source_entity_id
+                    # Also store unique_id for resilience
+                    if new_unique_id:
+                        data["humidity_entity_unique_id"] = new_unique_id
                     updated = True
                     _LOGGER.info(
-                        "Updated subentry data humidity_entity_id: %s -> %s",
+                        "Updated subentry data humidity_entity_id: %s -> %s"
+                        " (unique_id: %s)",
                         old_source_entity_id,
                         new_source_entity_id,
+                        new_unique_id or "unknown",
                     )
 
             # Check if the renamed entity belongs to a monitoring device

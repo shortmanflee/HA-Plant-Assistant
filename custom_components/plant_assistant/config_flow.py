@@ -287,6 +287,19 @@ class LocationSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                     "plant_slots": plant_slots,
                 }
 
+                # Capture unique_id for humidity entity if present
+                if humidity_entity_id := user_input.get(CONF_HUMIDITY_ENTITY_ID):
+                    try:
+                        entity_registry = er.async_get(self.hass)
+                        if entity_registry is not None:
+                            entity = entity_registry.async_get(humidity_entity_id)
+                            if entity and entity.unique_id:
+                                location_data["humidity_entity_unique_id"] = (
+                                    entity.unique_id
+                                )
+                    except (TypeError, AttributeError, ValueError):
+                        pass
+
                 # Generate unique device ID for this location
                 device_id = (
                     f"plant_location_{parent_entry.entry_id}_{zone_id}_"
@@ -422,6 +435,20 @@ class LocationSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 "humidity_entity_id": humidity_entity_id,
             }
         )
+
+        # Capture unique_id for humidity entity if present
+        if humidity_entity_id:
+            try:
+                entity_registry = er.async_get(self.hass)
+                if entity_registry is not None:
+                    entity = entity_registry.async_get(humidity_entity_id)
+                    if entity and entity.unique_id:
+                        new_data["humidity_entity_unique_id"] = entity.unique_id
+            except (TypeError, AttributeError, ValueError):
+                pass
+        else:
+            # Clear unique_id if entity was removed
+            new_data.pop("humidity_entity_unique_id", None)
 
         # Update title if name changed
         parent_entry = self._get_entry()
