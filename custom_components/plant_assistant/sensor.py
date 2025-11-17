@@ -1954,7 +1954,7 @@ class IrrigationZoneLastRunExpectedDurationSensor(SensorEntity, RestoreEntity):
         # Set entity attributes
         self._attr_name = f"{zone_name} Last Run Expected Duration"
         self._attr_device_class = SensorDeviceClass.DURATION
-        self._attr_native_unit_of_measurement = "minutes"
+        self._attr_native_unit_of_measurement = "min"
         self._attr_state_class = "measurement"
         self._attr_icon = "mdi:timer-star"
 
@@ -2141,7 +2141,7 @@ class IrrigationZoneLastRunActualDurationSensor(SensorEntity, RestoreEntity):
         # Set entity attributes
         self._attr_name = f"{zone_name} Last Run Actual Duration"
         self._attr_device_class = SensorDeviceClass.DURATION
-        self._attr_native_unit_of_measurement = "minutes"
+        self._attr_native_unit_of_measurement = "min"
         self._attr_state_class = "measurement"
         self._attr_icon = "mdi:timer"
 
@@ -2339,8 +2339,8 @@ class IrrigationZoneLastRunWaterMainUsageSensor(SensorEntity, RestoreEntity):
         # Set entity attributes
         self._attr_name = f"{zone_name} Last Run Water Main Usage"
         self._attr_device_class = SensorDeviceClass.WATER
-        self._attr_native_unit_of_measurement = "l"
-        self._attr_state_class = "measurement"
+        self._attr_native_unit_of_measurement = "L"
+        self._attr_state_class = "total_increasing"
         self._attr_icon = "mdi:water-pump"
 
         # Create unique ID from zone device identifier tuple
@@ -2528,8 +2528,8 @@ class IrrigationZoneLastRunRainWaterUsageSensor(SensorEntity, RestoreEntity):
         # Set entity attributes
         self._attr_name = f"{zone_name} Last Run Rain Water Usage"
         self._attr_device_class = SensorDeviceClass.WATER
-        self._attr_native_unit_of_measurement = "l"
-        self._attr_state_class = "measurement"
+        self._attr_native_unit_of_measurement = "L"
+        self._attr_state_class = "total_increasing"
         self._attr_icon = "mdi:weather-pouring"
 
         # Create unique ID from zone device identifier tuple
@@ -2717,8 +2717,8 @@ class IrrigationZoneLastRunFertiliserUsageSensor(SensorEntity, RestoreEntity):
         # Set entity attributes
         self._attr_name = f"{zone_name} Last Run Fertiliser Usage"
         self._attr_device_class = SensorDeviceClass.WATER
-        self._attr_native_unit_of_measurement = "l"
-        self._attr_state_class = "measurement"
+        self._attr_native_unit_of_measurement = "L"
+        self._attr_state_class = "total_increasing"
         self._attr_icon = "mdi:water-pump"
 
         # Create unique ID from zone device identifier tuple

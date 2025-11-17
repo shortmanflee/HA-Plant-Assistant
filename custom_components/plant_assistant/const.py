@@ -147,24 +147,28 @@ MONITORING_SENSOR_MAPPINGS = {
         "suffix": "temperature_mirror",
         "icon": "mdi:thermometer",
         "name": "Temperature",
+        "unit": "°C",
     },
     "illuminance": {
         "device_class": "illuminance",
         "suffix": "illuminance_mirror",
         "icon": "mdi:brightness-6",
         "name": "Illuminance",
+        "unit": "lx",
     },
     "soil_moisture": {
         "device_class": "moisture",
         "suffix": "soil_moisture_mirror",
         "icon": "mdi:water-percent",
         "name": "Soil Moisture",
+        "unit": "%",
     },
     "soil_conductivity": {
         "device_class": "conductivity",
         "suffix": "soil_conductivity_mirror",
         "icon": "mdi:flash",
         "name": "Soil Conductivity",
+        "unit": "µS/cm",
         "unit_pattern": [
             "µS/cm",
             "μS/cm",
@@ -177,12 +181,14 @@ MONITORING_SENSOR_MAPPINGS = {
         "suffix": "monitor_battery_level",
         "icon": "mdi:battery",
         "name": "Monitor Battery Level",
+        "unit": "%",
     },
     "signal_strength": {
         "device_class": "signal_strength",
         "suffix": "monitor_signal_strength",
         "icon": "mdi:wifi",
         "name": "Monitor Signal Strength",
+        "unit": "dBm",
     },
 }
 
