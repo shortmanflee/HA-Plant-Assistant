@@ -277,11 +277,21 @@ async def _migrate_subentry_unique_ids(
     Migrate subentry config to include unique_ids for entity references.
 
     This provides backward compatibility by capturing unique_ids for existing
-    entity_id references, allowing the system to handle entity renames.
+    entity_id references, allowing the system to handle entity renames gracefully.
+
+    Migration covers:
+    - humidity_entity_id -> humidity_entity_unique_id
+
+    This ensures that if users rename their source entities, the system can still
+    find them via unique_id lookup as a fallback.
     """
     try:
         entity_registry = er.async_get(hass)
         if entity_registry is None:
+            _LOGGER.debug(
+                "Entity registry not available for migration of entry %s",
+                entry.entry_id,
+            )
             return
 
         data = dict(entry.data)
@@ -290,22 +300,46 @@ async def _migrate_subentry_unique_ids(
         # Migrate humidity_entity_id to include unique_id
         if (humidity_entity_id := data.get("humidity_entity_id")) and (
             "humidity_entity_unique_id" not in data
-        ):  # Only if not already migrated
+        ):
             try:
                 entity_entry = entity_registry.async_get(humidity_entity_id)
                 if entity_entry and entity_entry.unique_id:
                     data["humidity_entity_unique_id"] = entity_entry.unique_id
                     updated = True
-                    _LOGGER.debug(
-                        "Migrated humidity_entity_unique_id for entry %s: %s",
+                    _LOGGER.info(
+                        "Migrated humidity_entity_unique_id for entry %s: "
+                        "entity_id=%s, unique_id=%s",
                         entry.entry_id,
+                        humidity_entity_id,
                         entity_entry.unique_id,
                     )
-            except (AttributeError, KeyError, ValueError):
-                pass
+                else:
+                    _LOGGER.warning(
+                        "Could not find entity_entry or unique_id for "
+                        "humidity_entity_id %s in entry %s - entity may have "
+                        "been deleted",
+                        humidity_entity_id,
+                        entry.entry_id,
+                    )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Error looking up humidity_entity_id %s for entry %s: %s",
+                    humidity_entity_id,
+                    entry.entry_id,
+                    exc,
+                )
 
         if updated:
             hass.config_entries.async_update_entry(entry, data=data)
+            _LOGGER.debug(
+                "Updated entry %s with unique_id migrations",
+                entry.entry_id,
+            )
+        else:
+            _LOGGER.debug(
+                "No unique_id migrations needed for entry %s",
+                entry.entry_id,
+            )
 
     except Exception:
         _LOGGER.exception(

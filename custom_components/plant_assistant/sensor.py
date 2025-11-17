@@ -168,9 +168,13 @@ def _has_plants_in_slots(data: Mapping[str, Any]) -> bool:
 
 def _get_monitoring_device_sensors(
     hass: HomeAssistant, monitoring_device_id: str
-) -> dict[str, str]:
+) -> dict[str, tuple[str, str | None]]:
     """
-    Get sensor entity IDs for a monitoring device.
+    Get sensor entity IDs and unique IDs for a monitoring device.
+
+    Provides resilient sensor discovery by returning both entity_id and unique_id
+    for each sensor. This allows callers to use entity_id for immediate access
+    while falling back to unique_id if the entity has been renamed.
 
     Args:
         hass: The Home Assistant instance.
@@ -178,10 +182,11 @@ def _get_monitoring_device_sensors(
 
     Returns:
         A dict mapping sensor type names (e.g., 'illuminance', 'soil_conductivity')
-        to their entity IDs. Returns empty dict if device not found.
+        to tuples of (entity_id, unique_id). Returns empty dict if device not found.
+        unique_id may be None if not available from the entity registry.
 
     """
-    device_sensors: dict[str, str] = {}
+    device_sensors: dict[str, tuple[str, str | None]] = {}
 
     # Get device and entity registries
     dev_reg = dr.async_get(hass)
@@ -213,19 +218,20 @@ def _get_monitoring_device_sensors(
 
             ent_id = entity.entity_id
             ent_id_lower = ent_id.lower()
+            unique_id = getattr(entity, "unique_id", None)
 
             if device_class == "illuminance" or "illuminance" in ent_id_lower:
-                device_sensors["illuminance"] = ent_id
+                device_sensors["illuminance"] = (ent_id, unique_id)
             elif device_class == "soil_conductivity" or "conductivity" in ent_id_lower:
-                device_sensors["soil_conductivity"] = ent_id
+                device_sensors["soil_conductivity"] = (ent_id, unique_id)
             elif device_class == "battery" or "battery" in ent_id_lower:
-                device_sensors["battery"] = ent_id
+                device_sensors["battery"] = (ent_id, unique_id)
             elif (
                 device_class == "signal_strength"
                 or "signal" in ent_id_lower
                 or "rssi" in ent_id_lower
             ):
-                device_sensors["signal_strength"] = ent_id
+                device_sensors["signal_strength"] = (ent_id, unique_id)
         except (
             AttributeError,
             KeyError,
@@ -247,45 +253,86 @@ def _resolve_entity_id(
     """
     Resolve an entity ID, using unique_id as fallback if entity was renamed.
 
-    This helper provides resilience to entity renames by preferring entity_id
-    but falling back to unique_id lookup if the entity_id no longer exists.
+    This is the canonical helper for resilient entity ID resolution. It handles
+    entity renames gracefully by falling back to unique_id lookup when the
+    stored entity_id no longer exists or has been renamed.
+
+    Resolution strategy:
+    1. If entity_id provided: Check if it exists in state or registry
+    2. If not found or no entity_id: Try to resolve via unique_id
+    3. If both fail: Return None
+
+    This approach supports:
+    - Entities that have been renamed (falls back to unique_id)
+    - Disabled entities (still exist in registry)
+    - Entities from external integrations (validates in registry)
+    - Missing registries during testing (defensive handling)
 
     Args:
         hass: The Home Assistant instance.
-        entity_id: The entity ID to use (preferred if available).
-        unique_id: The unique ID to use as fallback.
+        entity_id: The entity ID to use (preferred if available and valid).
+        unique_id: The unique ID to use as fallback if entity_id not found.
 
     Returns:
-        The resolved entity_id, or None if neither could be resolved.
+        The resolved entity_id if found, or None if resolution failed.
+
+    Raises:
+        No exceptions - all errors are caught and handled gracefully.
 
     """
-    # First try the entity_id
-    if entity_id:
-        if hass.states.get(entity_id) is not None:
-            return entity_id
-        # Try to validate it exists in the registry
-        # (entity might be disabled/unavailable but still exists)
-        try:
-            entity_reg = er.async_get(hass)
-            if entity_reg.async_get(entity_id):
-                return entity_id
-        except (TypeError, AttributeError, ValueError):
-            pass
+    # Try to get entity registry once, with defensive handling
+    entity_reg = None
+    with contextlib.suppress(TypeError, AttributeError, ValueError):
+        entity_reg = er.async_get(hass)
 
-    # Fall back to unique_id lookup
-    if unique_id:
+    # First try the entity_id if provided
+    if entity_id and entity_id.strip():
+        # Check if entity exists in live state (most common case)
+        if hass.states.get(entity_id) is not None:
+            _LOGGER.debug("Resolved entity_id %s from live state", entity_id)
+            return entity_id
+
+        # Try to validate in registry (handles disabled/unavailable entities)
+        if entity_reg is not None:
+            try:
+                if entity_reg.async_get(entity_id):
+                    _LOGGER.debug("Resolved entity_id %s from registry", entity_id)
+                    return entity_id
+            except (TypeError, AttributeError, ValueError):
+                pass
+
+        _LOGGER.debug(
+            "Entity ID %s not found in state or registry, trying unique_id fallback",
+            entity_id,
+        )
+
+    # Fall back to unique_id lookup if entity_id failed or wasn't provided
+    if unique_id and unique_id.strip() and entity_reg is not None:
         try:
-            entity_reg = er.async_get(hass)
             for entity_entry in entity_reg.entities.values():
                 if entity_entry.unique_id == unique_id:
+                    _LOGGER.debug(
+                        "Resolved entity_id from unique_id %s -> %s",
+                        unique_id,
+                        entity_entry.entity_id,
+                    )
                     return entity_entry.entity_id
+            _LOGGER.debug("No entity found with unique_id %s", unique_id)
         except (TypeError, AttributeError, ValueError):
-            pass
+            _LOGGER.debug(
+                "Error resolving unique_id %s - registry may not be available",
+                unique_id,
+            )
 
+    _LOGGER.debug(
+        "Could not resolve entity: entity_id=%s, unique_id=%s",
+        entity_id,
+        unique_id,
+    )
     return None
 
 
-def _expected_entities_for_subentry(  # noqa: PLR0912
+def _expected_entities_for_subentry(  # noqa: PLR0912, PLR0915
     hass: HomeAssistant, subentry: Any
 ) -> tuple[set[str], set[str], set[str], set[str]]:
     """
@@ -321,7 +368,9 @@ def _expected_entities_for_subentry(  # noqa: PLR0912
     if monitoring_device_id:
         try:
             device_sensors = _get_monitoring_device_sensors(hass, monitoring_device_id)
-            for mapped_type, source_entity_id in device_sensors.items():
+            # Extract entity_id from tuple (entity_id, unique_id)
+            for mapped_type, sensor_tuple in device_sensors.items():
+                source_entity_id = sensor_tuple[0]  # Get entity_id from tuple
                 detected_type = _detect_sensor_type_from_entity(hass, source_entity_id)
                 sensor_type = detected_type if detected_type else mapped_type
 
@@ -882,7 +931,6 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                     hass=hass,
                     entry_id=subentry.subentry_id,
                     location_device_id=location_device_id,
-                    location_name=location_name,
                     humidity_entity_id=resolved_humidity_entity_id,
                 )
                 subentry_entities.append(humidity_sensor)
@@ -3772,6 +3820,7 @@ class MonitoringSensor(SensorEntity):
         self.hass = hass
         self.entry_id = config["entry_id"]
         self.source_entity_id = config["source_entity_id"]
+        self.source_entity_unique_id = config.get("source_entity_unique_id")
         self.location_device_id = location_device_id
         device_name = config["device_name"]
         entity_name = config["entity_name"]
@@ -3814,6 +3863,18 @@ class MonitoringSensor(SensorEntity):
             unit = mapping_config.get("unit")
             if unit:
                 self._attr_native_unit_of_measurement = unit
+
+        # Resolve source entity ID using resilient lookup
+        resolved_entity_id = _resolve_entity_id(
+            hass, self.source_entity_id, self.source_entity_unique_id
+        )
+        if resolved_entity_id != self.source_entity_id:
+            _LOGGER.debug(
+                "Resolved source entity ID: %s -> %s",
+                self.source_entity_id,
+                resolved_entity_id,
+            )
+            self.source_entity_id = resolved_entity_id
 
         # Initialize with current state of source entity
         if source_state := hass.states.get(self.source_entity_id):
@@ -3915,8 +3976,8 @@ class HumidityLinkedSensor(SensorEntity):
         hass: HomeAssistant,
         entry_id: str,
         location_device_id: str,
-        location_name: str,
         humidity_entity_id: str,
+        humidity_entity_unique_id: str | None = None,
     ) -> None:
         """
         Initialize the humidity linked sensor.
@@ -3925,14 +3986,20 @@ class HumidityLinkedSensor(SensorEntity):
             hass: The Home Assistant instance.
             entry_id: The subentry ID.
             location_device_id: The device ID of the location.
-            location_name: The name of the location.
             humidity_entity_id: The entity ID of the humidity sensor to mirror.
+            humidity_entity_unique_id: The unique ID for resilient lookup.
 
         """
         self.hass = hass
         self.entry_id = entry_id
         self.location_device_id = location_device_id
         self.humidity_entity_id = humidity_entity_id
+        self.humidity_entity_unique_id = humidity_entity_unique_id
+
+        # Get location name from device registry
+        device_registry = dr.async_get(hass)
+        device = device_registry.async_get(location_device_id)
+        location_name = device.name if device and device.name else "Unknown Location"
 
         # Set entity name to include location name for better entity_id formatting
         self._attr_name = f"{location_name} Humidity"
@@ -3953,6 +4020,18 @@ class HumidityLinkedSensor(SensorEntity):
         self._state = None
         self._attributes: dict[str, Any] = {}
         self._unsubscribe = None
+
+        # Resolve humidity entity ID using resilient lookup
+        resolved_entity_id = _resolve_entity_id(
+            hass, self.humidity_entity_id, self.humidity_entity_unique_id
+        )
+        if resolved_entity_id != self.humidity_entity_id:
+            _LOGGER.debug(
+                "Resolved humidity entity ID: %s -> %s",
+                self.humidity_entity_id,
+                resolved_entity_id,
+            )
+            self.humidity_entity_id = resolved_entity_id
 
         # Initialize with current state of humidity entity
         if humidity_state := hass.states.get(self.humidity_entity_id):

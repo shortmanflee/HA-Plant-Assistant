@@ -164,6 +164,15 @@ class EntityMonitor:
             return mirror_entities
 
         try:
+            # First, get the unique_id of the source entity for reliable matching
+            source_unique_id = None
+            try:
+                source_entry = self._entity_registry.async_get(source_entity_id)
+                if source_entry and source_entry.unique_id:
+                    source_unique_id = source_entry.unique_id
+            except (TypeError, AttributeError, ValueError):
+                pass
+
             # Get all entities for our domain
             for entity_entry in self._entity_registry.entities.values():
                 if (
@@ -182,39 +191,45 @@ class EntityMonitor:
                         "_soil_moisture_mirror",
                         "_soil_conductivity_mirror",
                         "_soil_conductivity_status",
+                        "_humidity_linked",  # Humidity linked sensors
+                        "_temperature_mirror",  # Monitoring sensors
+                        "_illuminance_mirror",
+                        "_soil_moisture_mirror",
+                        "_soil_conductivity_mirror",
+                        "_monitor_",  # Fallback for generic monitoring sensors
                     ]
                 ):
-                    # Get the entity state to check source_entity attribute
+                    # Get the entity state to check source attributes
                     state = self.hass.states.get(entity_entry.entity_id)
                     if state:
-                        # Match by entity_id (original method)
-                        entity_id_match = (
-                            state.attributes.get("source_entity") == source_entity_id
+                        # Primary: Match by source_unique_id (most reliable)
+                        source_unique_id_match = (
+                            source_unique_id is not None
+                            and state.attributes.get("source_unique_id")
+                            == source_unique_id
                         )
-                        # Also match by source_unique_id for resilience to renames
-                        source_unique_id_match = False
-                        try:
-                            source_entry = self._entity_registry.async_get(
-                                source_entity_id
-                            )
-                            if source_entry and source_entry.unique_id:
-                                source_unique_id_match = (
-                                    state.attributes.get("source_unique_id")
-                                    == source_entry.unique_id
-                                )
-                        except (TypeError, AttributeError, ValueError):
-                            pass
+                        # Secondary: Match by entity_id (for backward compatibility)
+                        entity_id_match = (
+                            not source_unique_id_match  # Only if unique_id didn't match
+                            and state.attributes.get("source_entity")
+                            == source_entity_id
+                        )
 
-                        if entity_id_match or source_unique_id_match:
+                        if source_unique_id_match or entity_id_match:
                             mirror_entities.append(entity_entry.entity_id)
                             _LOGGER.debug(
-                                "Found mirror entity %s referencing source %s"
-                                " (entity_id_match=%s, unique_id_match=%s)",
+                                "Found mirror entity %s referencing source %s "
+                                "(unique_id_match=%s, entity_id_match=%s)",
                                 entity_entry.entity_id,
                                 source_entity_id,
-                                entity_id_match,
                                 source_unique_id_match,
+                                entity_id_match,
                             )
+                    else:
+                        _LOGGER.debug(
+                            "Mirror entity %s not found in states",
+                            entity_entry.entity_id,
+                        )
         except Exception:
             _LOGGER.exception("Error finding mirror entities")
 

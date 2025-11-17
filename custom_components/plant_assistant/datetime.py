@@ -109,10 +109,20 @@ async def _cleanup_orphaned_datetime_entities(  # noqa: PLR0912
                             device_sensors = _get_monitoring_device_sensors(
                                 hass, monitoring_device_id
                             )
-                            soil_conductivity_entity_id = device_sensors.get(
+                            # Extract entity_id from tuple (entity_id, unique_id)
+                            soil_conductivity_sensor = device_sensors.get(
                                 "soil_conductivity"
                             )
-                            illuminance_entity_id = device_sensors.get("illuminance")
+                            illuminance_sensor = device_sensors.get("illuminance")
+
+                            soil_conductivity_entity_id = (
+                                soil_conductivity_sensor[0]
+                                if soil_conductivity_sensor
+                                else None
+                            )
+                            illuminance_entity_id = (
+                                illuminance_sensor[0] if illuminance_sensor else None
+                            )
 
                             if soil_conductivity_entity_id:
                                 expected_datetime_entities.add(
@@ -258,7 +268,7 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
                     has_plant_slots,
                 )
 
-                device_sensors: dict[str, str] = {}
+                device_sensors: dict[str, tuple[str, str | None]] = {}
                 illuminance_entity_id: str | None = None
                 soil_conductivity_entity_id: str | None = None
                 if has_monitoring_device:
@@ -266,9 +276,18 @@ async def async_setup_entry(  # noqa: PLR0912,PLR0915
                         device_sensors = _get_monitoring_device_sensors(
                             hass, monitoring_device_id
                         )
-                        illuminance_entity_id = device_sensors.get("illuminance")
-                        soil_conductivity_entity_id = device_sensors.get(
+                        # Extract entity_id from tuple (entity_id, unique_id)
+                        illuminance_sensor = device_sensors.get("illuminance")
+                        soil_conductivity_sensor = device_sensors.get(
                             "soil_conductivity"
+                        )
+                        illuminance_entity_id = (
+                            illuminance_sensor[0] if illuminance_sensor else None
+                        )
+                        soil_conductivity_entity_id = (
+                            soil_conductivity_sensor[0]
+                            if soil_conductivity_sensor
+                            else None
                         )
 
                         if illuminance_entity_id:
