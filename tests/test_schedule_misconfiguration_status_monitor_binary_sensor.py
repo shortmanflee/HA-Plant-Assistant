@@ -5,13 +5,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 
 from custom_components.plant_assistant.binary_sensor import (
     ScheduleMisconfigurationStatusMonitorBinarySensor,
     ScheduleMisconfigurationStatusMonitorConfig,
 )
 from custom_components.plant_assistant.const import DOMAIN
+
+
+def create_state_changed_event(new_state):
+    """Create an Event object for state changed callbacks."""
+    event_data = EventStateChangedData(
+        entity_id="sensor.test",
+        old_state=None,
+        new_state=new_state,
+    )
+    return Event("state_changed", event_data)
 
 
 @pytest.fixture
@@ -368,7 +378,8 @@ class TestScheduleMisconfigurationStatusMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "on"
 
-        sensor._master_schedule_state_changed("entity_id", None, new_state)
+        event = create_state_changed_event(new_state)
+        sensor._master_schedule_state_changed(event)
 
         assert sensor._master_schedule_on is True
 
@@ -381,7 +392,8 @@ class TestScheduleMisconfigurationStatusMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "on"
 
-        sensor._sunrise_state_changed("entity_id", None, new_state)
+        event = create_state_changed_event(new_state)
+        sensor._sunrise_state_changed(event)
 
         assert sensor._sunrise_on is True
 
@@ -394,7 +406,8 @@ class TestScheduleMisconfigurationStatusMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "on"
 
-        sensor._afternoon_state_changed("entity_id", None, new_state)
+        event = create_state_changed_event(new_state)
+        sensor._afternoon_state_changed(event)
 
         assert sensor._afternoon_on is True
 
@@ -407,7 +420,8 @@ class TestScheduleMisconfigurationStatusMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "on"
 
-        sensor._sunset_state_changed("entity_id", None, new_state)
+        event = create_state_changed_event(new_state)
+        sensor._sunset_state_changed(event)
 
         assert sensor._sunset_on is True
 
@@ -425,9 +439,8 @@ class TestScheduleMisconfigurationStatusMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = future_time
 
-        sensor._schedule_misconfiguration_ignore_until_state_changed(
-            "entity_id", None, new_state
-        )
+        event = create_state_changed_event(new_state)
+        sensor._schedule_misconfiguration_ignore_until_state_changed(event)
 
         # State should be False (not a problem while ignoring)
         assert sensor._ignore_until_datetime is not None
@@ -448,9 +461,8 @@ class TestScheduleMisconfigurationStatusMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = STATE_UNAVAILABLE
 
-        sensor._schedule_misconfiguration_ignore_until_state_changed(
-            "entity_id", None, new_state
-        )
+        event = create_state_changed_event(new_state)
+        sensor._schedule_misconfiguration_ignore_until_state_changed(event)
 
         # Ignore until should be cleared
         assert sensor._ignore_until_datetime is None
@@ -480,7 +492,7 @@ class TestScheduleMisconfigurationStatusMonitorBinarySensorAsyncOperations:
                 return_value=mock_registry,
             ),
             patch(
-                "custom_components.plant_assistant.binary_sensor.async_track_state_change"
+                "custom_components.plant_assistant.binary_sensor.async_track_state_change_event"
             ) as mock_track,
         ):
             mock_track.return_value = lambda: None

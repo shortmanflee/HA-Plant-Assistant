@@ -4,13 +4,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 
 from custom_components.plant_assistant.binary_sensor import (
     SoilMoistureWaterSoonMonitorBinarySensor,
     SoilMoistureWaterSoonMonitorConfig,
 )
 from custom_components.plant_assistant.const import DOMAIN
+
+
+def create_state_changed_event(new_state):
+    """Create an Event object for state changed callbacks."""
+    event_data = EventStateChangedData(
+        entity_id="sensor.test",
+        old_state=None,
+        new_state=new_state,
+    )
+    return Event("state_changed", event_data)
 
 
 @pytest.fixture
@@ -455,11 +465,8 @@ class TestSoilMoistureWaterSoonMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "12"
 
-        sensor._soil_moisture_state_changed(
-            "sensor.test_moisture",
-            old_state,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._soil_moisture_state_changed(event)
 
         assert sensor._current_soil_moisture == 12.0
         assert sensor._state is True
@@ -488,11 +495,8 @@ class TestSoilMoistureWaterSoonMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "8"
 
-        sensor._min_soil_moisture_state_changed(
-            "sensor.min_soil_moisture",
-            old_state,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._min_soil_moisture_state_changed(event)
 
         assert sensor._min_soil_moisture == 8.0
         # 12 is now between 8 and 13 (8+5), so state should be True
@@ -522,11 +526,8 @@ class TestSoilMoistureWaterSoonMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "8"
 
-        sensor._soil_moisture_state_changed(
-            "sensor.test_moisture",
-            old_state,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._soil_moisture_state_changed(event)
 
         assert sensor._current_soil_moisture == 8.0
         # 8 is below 10 (low threshold), so state should be False

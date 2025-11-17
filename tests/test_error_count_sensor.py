@@ -4,8 +4,19 @@ import unittest
 from unittest.mock import Mock, patch
 
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import Event, EventStateChangedData
 
 from custom_components.plant_assistant.sensor import IrrigationZoneErrorCountSensor
+
+
+def create_state_changed_event(new_state):
+    """Create an Event object for state changed callbacks."""
+    event_data = EventStateChangedData(
+        entity_id="sensor.test",
+        old_state=None,
+        new_state=new_state,
+    )
+    return Event("state_changed", event_data)
 
 
 class TestIrrigationZoneErrorCountSensor(unittest.TestCase):
@@ -42,9 +53,8 @@ class TestIrrigationZoneErrorCountSensor(unittest.TestCase):
 
         # Call the handler
         with patch.object(sensor, "async_write_ha_state"):
-            sensor._handle_last_error_state_change(
-                "sensor.test_zone_last_error", None, new_state
-            )
+            event = create_state_changed_event(new_state)
+            sensor._handle_last_error_state_change(event)
 
         # Error count should increment
         assert sensor._state == 1
@@ -62,9 +72,8 @@ class TestIrrigationZoneErrorCountSensor(unittest.TestCase):
 
         # Call the handler
         with patch.object(sensor, "async_write_ha_state"):
-            sensor._handle_last_error_state_change(
-                "sensor.test_zone_last_error", None, new_state
-            )
+            event = create_state_changed_event(new_state)
+            sensor._handle_last_error_state_change(event)
 
         # Error count should NOT increment
         assert sensor._state == 1
@@ -82,9 +91,8 @@ class TestIrrigationZoneErrorCountSensor(unittest.TestCase):
 
         # Call the handler
         with patch.object(sensor, "async_write_ha_state"):
-            sensor._handle_last_error_state_change(
-                "sensor.test_zone_last_error", None, new_state
-            )
+            event = create_state_changed_event(new_state)
+            sensor._handle_last_error_state_change(event)
 
         # Error count should remain 0
         assert sensor._state == 0
@@ -102,9 +110,8 @@ class TestIrrigationZoneErrorCountSensor(unittest.TestCase):
 
         # Call the handler
         with patch.object(sensor, "async_write_ha_state"):
-            sensor._handle_last_error_state_change(
-                "sensor.test_zone_last_error", None, new_state
-            )
+            event = create_state_changed_event(new_state)
+            sensor._handle_last_error_state_change(event)
 
         # Error count should remain 0
         assert sensor._state == 0
@@ -122,9 +129,8 @@ class TestIrrigationZoneErrorCountSensor(unittest.TestCase):
 
         # Call the handler
         with patch.object(sensor, "async_write_ha_state"):
-            sensor._handle_last_error_state_change(
-                "sensor.test_zone_last_error", None, new_state
-            )
+            event = create_state_changed_event(new_state)
+            sensor._handle_last_error_state_change(event)
 
         # Error count should remain 0
         assert sensor._state == 0
@@ -154,27 +160,24 @@ class TestIrrigationZoneErrorCountSensor(unittest.TestCase):
         state1 = Mock()
         state1.state = "2025-11-15T10:00:00"
         with patch.object(sensor, "async_write_ha_state"):
-            sensor._handle_last_error_state_change(
-                "sensor.test_zone_last_error", None, state1
-            )
+            event = create_state_changed_event(state1)
+            sensor._handle_last_error_state_change(event)
         assert sensor._state == 1
 
         # Second error (different time)
         state2 = Mock()
         state2.state = "2025-11-15T11:00:00"
         with patch.object(sensor, "async_write_ha_state"):
-            sensor._handle_last_error_state_change(
-                "sensor.test_zone_last_error", state1, state2
-            )
+            event = create_state_changed_event(state2)
+            sensor._handle_last_error_state_change(event)
         assert sensor._state == 2
 
         # Same time again (should not increment)
         state3 = Mock()
         state3.state = "2025-11-15T11:00:00"
         with patch.object(sensor, "async_write_ha_state"):
-            sensor._handle_last_error_state_change(
-                "sensor.test_zone_last_error", state2, state3
-            )
+            event = create_state_changed_event(state3)
+            sensor._handle_last_error_state_change(event)
         assert sensor._state == 2
 
 

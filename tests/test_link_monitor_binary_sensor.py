@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 
 from custom_components.plant_assistant.binary_sensor import (
     LinkMonitorBinarySensor,
@@ -12,6 +12,16 @@ from custom_components.plant_assistant.binary_sensor import (
     LinkStatusBinarySensor,
 )
 from custom_components.plant_assistant.const import DOMAIN
+
+
+def create_state_changed_event(new_state):
+    """Create an Event object for state changed callbacks."""
+    event_data = EventStateChangedData(
+        entity_id="sensor.test",
+        old_state=None,
+        new_state=new_state,
+    )
+    return Event("state_changed", event_data)
 
 
 @pytest.fixture
@@ -584,9 +594,8 @@ class TestLinkStatusBinarySensorIgnoreUntil:
         new_state.state = (dt_util.now() + timedelta(hours=1)).isoformat()
 
         # Call the state changed callback
-        sensor._monitor_link_ignore_until_state_changed(
-            "datetime.monitor_link_ignore_until", None, new_state
-        )
+        event = create_state_changed_event(new_state)
+        sensor._monitor_link_ignore_until_state_changed(event)
 
         # Should parse datetime and update state
         assert sensor._ignore_until_datetime is not None
@@ -603,9 +612,8 @@ class TestLinkStatusBinarySensorIgnoreUntil:
         new_state.state = "unavailable"
 
         # Call the state changed callback
-        sensor._monitor_link_ignore_until_state_changed(
-            "datetime.monitor_link_ignore_until", None, new_state
-        )
+        event = create_state_changed_event(new_state)
+        sensor._monitor_link_ignore_until_state_changed(event)
 
         # Should clear ignore until
         assert sensor._ignore_until_datetime is None

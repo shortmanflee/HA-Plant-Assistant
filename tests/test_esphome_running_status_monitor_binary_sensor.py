@@ -3,13 +3,23 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 
 from custom_components.plant_assistant.binary_sensor import (
     ESPHomeRunningStatusMonitorBinarySensor,
     ESPHomeRunningStatusMonitorConfig,
 )
 from custom_components.plant_assistant.const import DOMAIN
+
+
+def create_state_changed_event(new_state):
+    """Create an Event object for state changed callbacks."""
+    event_data = EventStateChangedData(
+        entity_id="sensor.test",
+        old_state=None,
+        new_state=new_state,
+    )
+    return Event("state_changed", event_data)
 
 
 @pytest.fixture
@@ -368,9 +378,8 @@ class TestESPHomeRunningStatusMonitorBinarySensorStateChanges:
         new_state.state = "on"
         sensor_config.hass.states.get.return_value = new_state
 
-        sensor._running_sensor_state_changed(
-            "binary_sensor.device_running", None, new_state
-        )
+        event = create_state_changed_event(new_state)
+        sensor._running_sensor_state_changed(event)
 
         assert sensor._state is True
         sensor.async_write_ha_state.assert_called_once()
@@ -386,9 +395,8 @@ class TestESPHomeRunningStatusMonitorBinarySensorStateChanges:
         new_state.state = "off"
         sensor_config.hass.states.get.return_value = new_state
 
-        sensor._running_sensor_state_changed(
-            "binary_sensor.device_running", None, new_state
-        )
+        event = create_state_changed_event(new_state)
+        sensor._running_sensor_state_changed(event)
 
         assert sensor._state is False
         sensor.async_write_ha_state.assert_called_once()
@@ -402,7 +410,8 @@ class TestESPHomeRunningStatusMonitorBinarySensorStateChanges:
 
         sensor_config.hass.states.get.return_value = None
 
-        sensor._running_sensor_state_changed("binary_sensor.device_running", None, None)
+        event = create_state_changed_event(None)
+        sensor._running_sensor_state_changed(event)
 
         assert sensor._state is None
         sensor.async_write_ha_state.assert_called_once()
@@ -447,7 +456,7 @@ class TestESPHomeRunningStatusMonitorBinarySensorAsyncMethods:
                 return_value=mock_entity_registry,
             ),
             patch(
-                "custom_components.plant_assistant.binary_sensor.async_track_state_change",
+                "custom_components.plant_assistant.binary_sensor.async_track_state_change_event",
                 return_value=MagicMock(),
             ),
         ):
@@ -475,7 +484,7 @@ class TestESPHomeRunningStatusMonitorBinarySensorAsyncMethods:
                 return_value=mock_entity_registry,
             ),
             patch(
-                "custom_components.plant_assistant.binary_sensor.async_track_state_change",
+                "custom_components.plant_assistant.binary_sensor.async_track_state_change_event",
                 return_value=MagicMock(),
             ),
         ):

@@ -16,11 +16,14 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
 )
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.event import async_track_state_change
+from homeassistant.helpers.event import (
+    EventStateChangedData,
+    async_track_state_change_event,
+)
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
@@ -550,9 +553,7 @@ class IgnoredStatusesMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self._state = self._ignored_count > 0
 
     @callback
-    def _ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, _new_state: Any
-    ) -> None:
+    def _ignore_until_state_changed(self, _event: Event[EventStateChangedData]) -> None:
         """Handle ignore_until datetime changes."""
         self._update_state()
         self.async_write_ha_state()
@@ -625,7 +626,7 @@ class IgnoredStatusesMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
         # Subscribe to state changes for all ignore_until entities
         for entity_id in self._ignore_until_entity_ids:
-            unsubscribe = async_track_state_change(
+            unsubscribe = async_track_state_change_event(
                 self.hass,
                 entity_id,
                 self._ignore_until_state_changed,
@@ -771,10 +772,10 @@ class StatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self._state = any_problem
 
     @callback
-    def _status_sensor_state_changed(
-        self, entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _status_sensor_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle status sensor state changes."""
+        entity_id = event.data.get("entity_id")
+        new_state = event.data.get("new_state")
         # Find which sensor this is
         for sensor_name, sensor_entity_id in self._status_entity_ids.items():
             if sensor_entity_id == entity_id:
@@ -875,7 +876,7 @@ class StatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self._status_sensors[sensor_name] = state.state == "on"
 
             # Subscribe to changes
-            unsubscribe = async_track_state_change(
+            unsubscribe = async_track_state_change_event(
                 self.hass,
                 entity_id,
                 self._status_sensor_state_changed,
@@ -1002,9 +1003,10 @@ class MasterScheduleStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
 
     @callback
     def _master_schedule_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle master schedule switch state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._master_schedule_on = None
         else:
@@ -1015,9 +1017,10 @@ class MasterScheduleStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
 
     @callback
     def _schedule_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle schedule ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._ignore_until_datetime = None
         else:
@@ -1117,7 +1120,7 @@ class MasterScheduleStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
                     )
 
             try:
-                self._unsubscribe_ignore_until = async_track_state_change(
+                self._unsubscribe_ignore_until = async_track_state_change_event(
                     self.hass,
                     ignore_until_entity_id,
                     self._schedule_ignore_until_state_changed,
@@ -1141,7 +1144,7 @@ class MasterScheduleStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
     async def _setup_master_schedule_subscription(self) -> None:
         """Subscribe to master schedule switch entity state changes."""
         try:
-            self._unsubscribe_switch = async_track_state_change(
+            self._unsubscribe_switch = async_track_state_change_event(
                 self.hass,
                 self.master_schedule_switch_entity_id,
                 self._master_schedule_state_changed,
@@ -1321,9 +1324,10 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
 
     @callback
     def _master_schedule_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle master schedule switch state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._master_schedule_on = None
         else:
@@ -1333,10 +1337,9 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
         self.async_write_ha_state()
 
     @callback
-    def _sunrise_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _sunrise_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle sunrise switch state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._sunrise_on = None
         else:
@@ -1346,10 +1349,9 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
         self.async_write_ha_state()
 
     @callback
-    def _afternoon_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _afternoon_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle afternoon switch state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._afternoon_on = None
         else:
@@ -1359,10 +1361,9 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
         self.async_write_ha_state()
 
     @callback
-    def _sunset_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _sunset_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle sunset switch state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._sunset_on = None
         else:
@@ -1373,9 +1374,10 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
 
     @callback
     def _schedule_misconfiguration_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle schedule misconfiguration ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._ignore_until_datetime = None
         else:
@@ -1499,7 +1501,7 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
                     )
 
             try:
-                self._unsubscribe_ignore_until = async_track_state_change(
+                self._unsubscribe_ignore_until = async_track_state_change_event(
                     self.hass,
                     ignore_until_entity_id,
                     self._schedule_misconfiguration_ignore_until_state_changed,
@@ -1524,7 +1526,7 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
     async def _setup_master_schedule_subscription(self) -> None:
         """Subscribe to master schedule switch entity state changes."""
         try:
-            self._unsubscribe_master = async_track_state_change(
+            self._unsubscribe_master = async_track_state_change_event(
                 self.hass,
                 self.master_schedule_switch_entity_id,
                 self._master_schedule_state_changed,
@@ -1543,7 +1545,7 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
     async def _setup_sunrise_subscription(self) -> None:
         """Subscribe to sunrise switch entity state changes."""
         try:
-            self._unsubscribe_sunrise = async_track_state_change(
+            self._unsubscribe_sunrise = async_track_state_change_event(
                 self.hass,
                 self.sunrise_switch_entity_id,
                 self._sunrise_state_changed,
@@ -1562,7 +1564,7 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
     async def _setup_afternoon_subscription(self) -> None:
         """Subscribe to afternoon switch entity state changes."""
         try:
-            self._unsubscribe_afternoon = async_track_state_change(
+            self._unsubscribe_afternoon = async_track_state_change_event(
                 self.hass,
                 self.afternoon_switch_entity_id,
                 self._afternoon_state_changed,
@@ -1581,7 +1583,7 @@ class ScheduleMisconfigurationStatusMonitorBinarySensor(
     async def _setup_sunset_subscription(self) -> None:
         """Subscribe to sunset switch entity state changes."""
         try:
-            self._unsubscribe_sunset = async_track_state_change(
+            self._unsubscribe_sunset = async_track_state_change_event(
                 self.hass,
                 self.sunset_switch_entity_id,
                 self._sunset_state_changed,
@@ -1775,9 +1777,10 @@ class WaterDeliveryPreferenceStatusMonitorBinarySensor(
 
     @callback
     def _master_schedule_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle master schedule switch state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._master_schedule_on = None
         else:
@@ -1788,9 +1791,10 @@ class WaterDeliveryPreferenceStatusMonitorBinarySensor(
 
     @callback
     def _allow_rain_water_delivery_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle allow rain water delivery switch state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._allow_rain_water_delivery_on = None
         else:
@@ -1801,9 +1805,10 @@ class WaterDeliveryPreferenceStatusMonitorBinarySensor(
 
     @callback
     def _allow_water_main_delivery_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle allow water main delivery switch state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._allow_water_main_delivery_on = None
         else:
@@ -1814,9 +1819,10 @@ class WaterDeliveryPreferenceStatusMonitorBinarySensor(
 
     @callback
     def _water_delivery_preference_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle water delivery preference ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._ignore_until_datetime = None
         else:
@@ -1949,7 +1955,7 @@ class WaterDeliveryPreferenceStatusMonitorBinarySensor(
                     )
 
             try:
-                self._unsubscribe_ignore_until = async_track_state_change(
+                self._unsubscribe_ignore_until = async_track_state_change_event(
                     self.hass,
                     ignore_until_entity_id,
                     self._water_delivery_preference_ignore_until_state_changed,
@@ -1974,7 +1980,7 @@ class WaterDeliveryPreferenceStatusMonitorBinarySensor(
     async def _setup_master_schedule_subscription(self) -> None:
         """Subscribe to master schedule switch entity state changes."""
         try:
-            self._unsubscribe_master = async_track_state_change(
+            self._unsubscribe_master = async_track_state_change_event(
                 self.hass,
                 self.master_schedule_switch_entity_id,
                 self._master_schedule_state_changed,
@@ -1993,7 +1999,7 @@ class WaterDeliveryPreferenceStatusMonitorBinarySensor(
     async def _setup_allow_rain_water_delivery_subscription(self) -> None:
         """Subscribe to allow rain water delivery switch entity state changes."""
         try:
-            self._unsubscribe_rain_delivery = async_track_state_change(
+            self._unsubscribe_rain_delivery = async_track_state_change_event(
                 self.hass,
                 self.allow_rain_water_delivery_switch_entity_id,
                 self._allow_rain_water_delivery_state_changed,
@@ -2012,7 +2018,7 @@ class WaterDeliveryPreferenceStatusMonitorBinarySensor(
     async def _setup_allow_water_main_delivery_subscription(self) -> None:
         """Subscribe to allow water main delivery switch entity state changes."""
         try:
-            self._unsubscribe_main_delivery = async_track_state_change(
+            self._unsubscribe_main_delivery = async_track_state_change_event(
                 self.hass,
                 self.allow_water_main_delivery_switch_entity_id,
                 self._allow_water_main_delivery_state_changed,
@@ -2122,10 +2128,9 @@ class ErrorStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self._state = self._error_count >= ERROR_COUNT_THRESHOLD
 
     @callback
-    def _error_count_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _error_count_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle error count sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._error_count = 0
         else:
@@ -2202,7 +2207,7 @@ class ErrorStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
         # Subscribe to error count sensor state changes
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass,
                 self.error_count_entity_id,
                 self._error_count_state_changed,
@@ -2329,7 +2334,7 @@ class ESPHomeRunningStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
 
     @callback
     def _running_sensor_state_changed(
-        self, _entity_id: str, _old_state: Any, _new_state: Any
+        self, _event: Event[EventStateChangedData]
     ) -> None:
         """Handle running sensor state changes."""
         self._update_state()
@@ -2397,7 +2402,7 @@ class ESPHomeRunningStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
         if self._running_sensor_entity_id:
             # Subscribe to running sensor state changes
             try:
-                self._unsubscribe = async_track_state_change(
+                self._unsubscribe = async_track_state_change_event(
                     self.hass,
                     self._running_sensor_entity_id,
                     self._running_sensor_state_changed,
@@ -2561,10 +2566,9 @@ class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         return None
 
     @callback
-    def _soil_moisture_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _soil_moisture_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle soil moisture sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._current_soil_moisture = None
         else:
@@ -2575,9 +2579,10 @@ class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _min_soil_moisture_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle minimum soil moisture threshold changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._min_soil_moisture = None
         else:
@@ -2588,9 +2593,10 @@ class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _soil_moisture_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle soil moisture ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._ignore_until_datetime = None
         else:
@@ -2692,7 +2698,7 @@ class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self._min_soil_moisture = self._parse_float(min_moisture_state.state)
 
             try:
-                self._unsubscribe_min = async_track_state_change(
+                self._unsubscribe_min = async_track_state_change_event(
                     self.hass,
                     min_moisture_entity_id,
                     self._min_soil_moisture_state_changed,
@@ -2732,7 +2738,7 @@ class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                     )
 
             try:
-                self._unsubscribe_ignore_until = async_track_state_change(
+                self._unsubscribe_ignore_until = async_track_state_change_event(
                     self.hass,
                     ignore_until_entity_id,
                     self._soil_moisture_ignore_until_state_changed,
@@ -2756,7 +2762,7 @@ class SoilMoistureLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     async def _setup_soil_moisture_subscription(self) -> None:
         """Subscribe to soil moisture entity state changes."""
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass,
                 self.soil_moisture_entity_id,
                 self._soil_moisture_state_changed,
@@ -2936,10 +2942,9 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         return None
 
     @callback
-    def _soil_moisture_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _soil_moisture_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle soil moisture sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._current_soil_moisture = None
         else:
@@ -2950,9 +2955,10 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _max_soil_moisture_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle maximum soil moisture threshold changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._max_soil_moisture = None
         else:
@@ -2963,9 +2969,10 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _soil_moisture_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle soil moisture ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._ignore_until_datetime = None
         else:
@@ -3067,7 +3074,7 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self._max_soil_moisture = self._parse_float(max_moisture_state.state)
 
             try:
-                self._unsubscribe_max = async_track_state_change(
+                self._unsubscribe_max = async_track_state_change_event(
                     self.hass,
                     max_moisture_entity_id,
                     self._max_soil_moisture_state_changed,
@@ -3107,7 +3114,7 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                     )
 
             try:
-                self._unsubscribe_ignore_until = async_track_state_change(
+                self._unsubscribe_ignore_until = async_track_state_change_event(
                     self.hass,
                     ignore_until_entity_id,
                     self._soil_moisture_ignore_until_state_changed,
@@ -3132,7 +3139,7 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     async def _setup_soil_moisture_subscription(self) -> None:
         """Subscribe to soil moisture entity state changes."""
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass,
                 self.soil_moisture_entity_id,
                 self._soil_moisture_state_changed,
@@ -3279,10 +3286,9 @@ class SoilMoistureWaterSoonMonitorBinarySensor(BinarySensorEntity, RestoreEntity
         return None
 
     @callback
-    def _soil_moisture_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _soil_moisture_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle soil moisture sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._current_soil_moisture = None
         else:
@@ -3293,9 +3299,10 @@ class SoilMoistureWaterSoonMonitorBinarySensor(BinarySensorEntity, RestoreEntity
 
     @callback
     def _min_soil_moisture_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle minimum soil moisture threshold changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._min_soil_moisture = None
         else:
@@ -3381,7 +3388,7 @@ class SoilMoistureWaterSoonMonitorBinarySensor(BinarySensorEntity, RestoreEntity
                 self._min_soil_moisture = self._parse_float(min_moisture_state.state)
 
             try:
-                self._unsubscribe_min = async_track_state_change(
+                self._unsubscribe_min = async_track_state_change_event(
                     self.hass,
                     min_moisture_entity_id,
                     self._min_soil_moisture_state_changed,
@@ -3405,7 +3412,7 @@ class SoilMoistureWaterSoonMonitorBinarySensor(BinarySensorEntity, RestoreEntity
     async def _setup_soil_moisture_subscription(self) -> None:
         """Subscribe to soil moisture entity state changes."""
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass,
                 self.soil_moisture_entity_id,
                 self._soil_moisture_state_changed,
@@ -3593,9 +3600,10 @@ class SoilConductivityLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _soil_conductivity_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle soil conductivity sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._current_soil_conductivity = None
         else:
@@ -3606,9 +3614,10 @@ class SoilConductivityLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _min_soil_conductivity_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle minimum soil conductivity threshold changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._min_soil_conductivity = None
         else:
@@ -3618,10 +3627,9 @@ class SoilConductivityLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self.async_write_ha_state()
 
     @callback
-    def _soil_moisture_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _soil_moisture_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle soil moisture sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._current_soil_moisture = None
         else:
@@ -3632,9 +3640,10 @@ class SoilConductivityLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _min_soil_moisture_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle minimum soil moisture threshold changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._min_soil_moisture = None
         else:
@@ -3720,7 +3729,7 @@ class SoilConductivityLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     async def _setup_soil_conductivity_subscription(self) -> None:
         """Subscribe to soil conductivity entity state changes."""
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass,
                 self.soil_conductivity_entity_id,
                 self._soil_conductivity_state_changed,
@@ -3739,7 +3748,7 @@ class SoilConductivityLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     async def _setup_soil_moisture_subscription(self) -> None:
         """Subscribe to soil moisture entity state changes."""
         try:
-            self._unsubscribe_moisture = async_track_state_change(
+            self._unsubscribe_moisture = async_track_state_change_event(
                 self.hass,
                 self.soil_moisture_entity_id,
                 self._soil_moisture_state_changed,
@@ -3767,7 +3776,7 @@ class SoilConductivityLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 )
 
             try:
-                self._unsubscribe_conductivity_min = async_track_state_change(
+                self._unsubscribe_conductivity_min = async_track_state_change_event(
                     self.hass,
                     min_conductivity_entity_id,
                     self._min_soil_conductivity_state_changed,
@@ -3796,7 +3805,7 @@ class SoilConductivityLowMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self._min_soil_moisture = self._parse_float(min_moisture_state.state)
 
             try:
-                self._unsubscribe_moisture_min = async_track_state_change(
+                self._unsubscribe_moisture_min = async_track_state_change_event(
                     self.hass,
                     min_moisture_entity_id,
                     self._min_soil_moisture_state_changed,
@@ -3952,9 +3961,10 @@ class SoilConductivityHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
 
     @callback
     def _soil_conductivity_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle soil conductivity sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._current_soil_conductivity = None
         else:
@@ -3965,9 +3975,10 @@ class SoilConductivityHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
 
     @callback
     def _max_soil_conductivity_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle maximum soil conductivity threshold changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._max_soil_conductivity = None
         else:
@@ -4041,7 +4052,7 @@ class SoilConductivityHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
     async def _setup_soil_conductivity_subscription(self) -> None:
         """Subscribe to soil conductivity entity state changes."""
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass,
                 self.soil_conductivity_entity_id,
                 self._soil_conductivity_state_changed,
@@ -4069,7 +4080,7 @@ class SoilConductivityHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
                 )
 
             try:
-                self._unsubscribe_conductivity_max = async_track_state_change(
+                self._unsubscribe_conductivity_max = async_track_state_change_event(
                     self.hass,
                     max_conductivity_entity_id,
                     self._max_soil_conductivity_state_changed,
@@ -4257,9 +4268,10 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
 
     @callback
     def _soil_conductivity_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle soil conductivity sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._current_soil_conductivity = None
         else:
@@ -4270,9 +4282,10 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
 
     @callback
     def _min_soil_conductivity_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle minimum soil conductivity threshold changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._min_soil_conductivity = None
         else:
@@ -4283,9 +4296,10 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
 
     @callback
     def _max_soil_conductivity_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle maximum soil conductivity threshold changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._max_soil_conductivity = None
         else:
@@ -4368,7 +4382,7 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
     async def _setup_soil_conductivity_subscription(self) -> None:
         """Subscribe to soil conductivity entity state changes."""
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass,
                 self.soil_conductivity_entity_id,
                 self._soil_conductivity_state_changed,
@@ -4396,7 +4410,7 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
                 )
 
             try:
-                self._unsubscribe_conductivity_min = async_track_state_change(
+                self._unsubscribe_conductivity_min = async_track_state_change_event(
                     self.hass,
                     min_conductivity_entity_id,
                     self._min_soil_conductivity_state_changed,
@@ -4429,7 +4443,7 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
                 )
 
             try:
-                self._unsubscribe_conductivity_max = async_track_state_change(
+                self._unsubscribe_conductivity_max = async_track_state_change_event(
                     self.hass,
                     max_conductivity_entity_id,
                     self._max_soil_conductivity_state_changed,
@@ -4673,10 +4687,9 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         return None
 
     @callback
-    def _soil_moisture_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _soil_moisture_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle soil moisture sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._current_soil_moisture = None
         else:
@@ -4687,9 +4700,10 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _min_soil_moisture_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle minimum soil moisture threshold changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._min_soil_moisture = None
         else:
@@ -4700,9 +4714,10 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _max_soil_moisture_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle maximum soil moisture threshold changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._max_soil_moisture = None
         else:
@@ -4713,9 +4728,10 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _soil_moisture_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle soil moisture ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._ignore_until_datetime = None
         else:
@@ -4836,7 +4852,7 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     async def _setup_soil_moisture_subscription(self) -> None:
         """Subscribe to soil moisture entity state changes."""
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass,
                 self.soil_moisture_entity_id,
                 self._soil_moisture_state_changed,
@@ -4860,7 +4876,7 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self._min_soil_moisture = self._parse_float(min_moisture_state.state)
 
             try:
-                self._unsubscribe_moisture_min = async_track_state_change(
+                self._unsubscribe_moisture_min = async_track_state_change_event(
                     self.hass,
                     min_moisture_entity_id,
                     self._min_soil_moisture_state_changed,
@@ -4889,7 +4905,7 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self._max_soil_moisture = self._parse_float(max_moisture_state.state)
 
             try:
-                self._unsubscribe_moisture_max = async_track_state_change(
+                self._unsubscribe_moisture_max = async_track_state_change_event(
                     self.hass,
                     max_moisture_entity_id,
                     self._max_soil_moisture_state_changed,
@@ -4929,7 +4945,7 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                     )
 
             try:
-                self._unsubscribe_ignore_until = async_track_state_change(
+                self._unsubscribe_ignore_until = async_track_state_change_event(
                     self.hass,
                     ignore_until_entity_id,
                     self._soil_moisture_ignore_until_state_changed,
@@ -5214,9 +5230,10 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _above_threshold_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle temperature above threshold duration sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._above_threshold_hours = None
         else:
@@ -5227,9 +5244,10 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _below_threshold_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle temperature below threshold duration sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._below_threshold_hours = None
         else:
@@ -5240,9 +5258,10 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _high_threshold_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle temperature high threshold ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._high_threshold_ignore_until_datetime = None
         else:
@@ -5270,9 +5289,10 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _low_threshold_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle temperature low threshold ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._low_threshold_ignore_until_datetime = None
         else:
@@ -5401,7 +5421,7 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self._above_threshold_hours = self._parse_float(above_state.state)
 
             try:
-                self._unsubscribe_above = async_track_state_change(
+                self._unsubscribe_above = async_track_state_change_event(
                     self.hass,
                     above_threshold_entity_id,
                     self._above_threshold_state_changed,
@@ -5430,7 +5450,7 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self._below_threshold_hours = self._parse_float(below_state.state)
 
             try:
-                self._unsubscribe_below = async_track_state_change(
+                self._unsubscribe_below = async_track_state_change_event(
                     self.hass,
                     below_threshold_entity_id,
                     self._below_threshold_state_changed,
@@ -5473,7 +5493,7 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
             try:
                 self._unsubscribe_high_threshold_ignore_until = (
-                    async_track_state_change(
+                    async_track_state_change_event(
                         self.hass,
                         ignore_until_entity_id,
                         self._high_threshold_ignore_until_state_changed,
@@ -5519,10 +5539,12 @@ class TemperatureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                     )
 
             try:
-                self._unsubscribe_low_threshold_ignore_until = async_track_state_change(
-                    self.hass,
-                    ignore_until_entity_id,
-                    self._low_threshold_ignore_until_state_changed,
+                self._unsubscribe_low_threshold_ignore_until = (
+                    async_track_state_change_event(
+                        self.hass,
+                        ignore_until_entity_id,
+                        self._low_threshold_ignore_until_state_changed,
+                    )
                 )
                 _LOGGER.debug(
                     "Subscribed to temperature low threshold ignore until datetime: %s",
@@ -5805,9 +5827,10 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _above_threshold_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle humidity above threshold duration sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._above_threshold_hours = None
         else:
@@ -5818,9 +5841,10 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _below_threshold_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle humidity below threshold duration sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._below_threshold_hours = None
         else:
@@ -5831,9 +5855,10 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _high_threshold_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle humidity high threshold ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._high_threshold_ignore_until_datetime = None
         else:
@@ -5860,9 +5885,10 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _low_threshold_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle humidity low threshold ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._low_threshold_ignore_until_datetime = None
         else:
@@ -5991,7 +6017,7 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self._above_threshold_hours = self._parse_float(above_state.state)
 
             try:
-                self._unsubscribe_above = async_track_state_change(
+                self._unsubscribe_above = async_track_state_change_event(
                     self.hass,
                     above_threshold_entity_id,
                     self._above_threshold_state_changed,
@@ -6020,7 +6046,7 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self._below_threshold_hours = self._parse_float(below_state.state)
 
             try:
-                self._unsubscribe_below = async_track_state_change(
+                self._unsubscribe_below = async_track_state_change_event(
                     self.hass,
                     below_threshold_entity_id,
                     self._below_threshold_state_changed,
@@ -6062,7 +6088,7 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
             try:
                 self._unsubscribe_high_threshold_ignore_until = (
-                    async_track_state_change(
+                    async_track_state_change_event(
                         self.hass,
                         ignore_until_entity_id,
                         self._high_threshold_ignore_until_state_changed,
@@ -6106,10 +6132,12 @@ class HumidityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                     )
 
             try:
-                self._unsubscribe_low_threshold_ignore_until = async_track_state_change(
-                    self.hass,
-                    ignore_until_entity_id,
-                    self._low_threshold_ignore_until_state_changed,
+                self._unsubscribe_low_threshold_ignore_until = (
+                    async_track_state_change_event(
+                        self.hass,
+                        ignore_until_entity_id,
+                        self._low_threshold_ignore_until_state_changed,
+                    )
                 )
                 _LOGGER.debug(
                     "Subscribed to humidity low threshold ignore until datetime: %s",
@@ -6248,9 +6276,10 @@ class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _battery_low_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle battery low threshold ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._ignore_until_datetime = None
         else:
@@ -6297,10 +6326,9 @@ class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self._state = self._current_battery_level < BATTERY_LEVEL_THRESHOLD
 
     @callback
-    def _battery_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _battery_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle battery level sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._current_battery_level = None
         else:
@@ -6388,7 +6416,7 @@ class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     async def _setup_battery_subscription(self) -> None:
         """Subscribe to battery entity state changes."""
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass,
                 self.battery_entity_id,
                 self._battery_state_changed,
@@ -6409,7 +6437,7 @@ class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         ignore_until_entity_id = await self._find_battery_low_ignore_until_entity()
         if ignore_until_entity_id:
             try:
-                self._unsubscribe_ignore_until = async_track_state_change(
+                self._unsubscribe_ignore_until = async_track_state_change_event(
                     self.hass,
                     ignore_until_entity_id,
                     self._battery_low_ignore_until_state_changed,
@@ -6421,9 +6449,18 @@ class BatteryLevelStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
                 # Initialize with current state of ignore until entity
                 if ignore_until_state := self.hass.states.get(ignore_until_entity_id):
-                    self._battery_low_ignore_until_state_changed(
-                        ignore_until_entity_id, None, ignore_until_state
+                    synthetic_event = cast(
+                        "Event[EventStateChangedData]",
+                        Event(
+                            "state_changed",
+                            {
+                                "entity_id": ignore_until_entity_id,
+                                "old_state": None,
+                                "new_state": ignore_until_state,
+                            },
+                        ),
                     )
+                    self._battery_low_ignore_until_state_changed(synthetic_event)
             except (AttributeError, KeyError, ValueError) as exc:
                 _LOGGER.warning(
                     "Failed to subscribe to battery low threshold ignore until "
@@ -6692,9 +6729,7 @@ class LinkMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self.async_write_ha_state()
 
             @callback
-            def _entity_state_changed(
-                _entity_id: str, _old_state: Any, _new_state: Any
-            ) -> None:
+            def _entity_state_changed(_event: Event[EventStateChangedData]) -> None:
                 """Handle entity state changes for device's entities."""
                 # Re-check device availability when any of its entities change state
                 self._device_available = self._check_device_availability()
@@ -6719,7 +6754,7 @@ class LinkMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 ]
 
                 if device_entity_ids:
-                    self._unsubscribe_entities = async_track_state_change(
+                    self._unsubscribe_entities = async_track_state_change_event(
                         self.hass,
                         device_entity_ids,
                         _entity_state_changed,
@@ -6857,9 +6892,10 @@ class LinkStatusBinarySensor(BinarySensorEntity, RestoreEntity):
 
     @callback
     def _monitor_link_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle monitor link ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._ignore_until_datetime = None
         else:
@@ -7087,9 +7123,7 @@ class LinkStatusBinarySensor(BinarySensorEntity, RestoreEntity):
                 self.async_write_ha_state()
 
             @callback
-            def _entity_state_changed(
-                _entity_id: str, _old_state: Any, _new_state: Any
-            ) -> None:
+            def _entity_state_changed(_event: Event[EventStateChangedData]) -> None:
                 """Handle entity state changes for device's entities."""
                 # Re-check device availability when any of its entities change state
                 self._device_available = self._check_device_availability()
@@ -7114,7 +7148,7 @@ class LinkStatusBinarySensor(BinarySensorEntity, RestoreEntity):
                 ]
 
                 if device_entity_ids:
-                    self._unsubscribe_entities = async_track_state_change(
+                    self._unsubscribe_entities = async_track_state_change_event(
                         self.hass,
                         device_entity_ids,
                         _entity_state_changed,
@@ -7147,7 +7181,7 @@ class LinkStatusBinarySensor(BinarySensorEntity, RestoreEntity):
         try:
             ignore_until_entity_id = await self._find_monitor_link_ignore_until_entity()
             if ignore_until_entity_id:
-                self._unsubscribe_ignore_until = async_track_state_change(
+                self._unsubscribe_ignore_until = async_track_state_change_event(
                     self.hass,
                     ignore_until_entity_id,
                     self._monitor_link_ignore_until_state_changed,
@@ -7436,9 +7470,10 @@ class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEnt
 
     @callback
     def _weekly_average_dli_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle weekly average DLI sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._weekly_average_dli = None
         else:
@@ -7448,10 +7483,9 @@ class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEnt
         self.async_write_ha_state()
 
     @callback
-    def _min_dli_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _min_dli_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle minimum DLI threshold changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._min_dli = None
         else:
@@ -7461,10 +7495,9 @@ class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEnt
         self.async_write_ha_state()
 
     @callback
-    def _max_dli_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _max_dli_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle maximum DLI threshold changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._max_dli = None
         else:
@@ -7475,9 +7508,10 @@ class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEnt
 
     @callback
     def _high_threshold_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle DLI high threshold ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._high_threshold_ignore_until_datetime = None
         else:
@@ -7503,9 +7537,10 @@ class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEnt
 
     @callback
     def _low_threshold_ignore_until_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
+        self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle DLI low threshold ignore until datetime changes."""
+        new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             self._low_threshold_ignore_until_datetime = None
         else:
@@ -7631,7 +7666,7 @@ class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEnt
                 self._weekly_average_dli = self._parse_float(weekly_avg_state.state)
 
             try:
-                self._unsubscribe_weekly_avg = async_track_state_change(
+                self._unsubscribe_weekly_avg = async_track_state_change_event(
                     self.hass,
                     weekly_avg_dli_entity_id,
                     self._weekly_average_dli_state_changed,
@@ -7660,7 +7695,7 @@ class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEnt
                 self._min_dli = self._parse_float(min_dli_state.state)
 
             try:
-                self._unsubscribe_min_dli = async_track_state_change(
+                self._unsubscribe_min_dli = async_track_state_change_event(
                     self.hass,
                     min_dli_entity_id,
                     self._min_dli_state_changed,
@@ -7689,7 +7724,7 @@ class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEnt
                 self._max_dli = self._parse_float(max_dli_state.state)
 
             try:
-                self._unsubscribe_max_dli = async_track_state_change(
+                self._unsubscribe_max_dli = async_track_state_change_event(
                     self.hass,
                     max_dli_entity_id,
                     self._max_dli_state_changed,
@@ -7731,7 +7766,7 @@ class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEnt
 
             try:
                 self._unsubscribe_high_threshold_ignore_until = (
-                    async_track_state_change(
+                    async_track_state_change_event(
                         self.hass,
                         ignore_until_entity_id,
                         self._high_threshold_ignore_until_state_changed,
@@ -7773,10 +7808,12 @@ class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEnt
                     )
 
             try:
-                self._unsubscribe_low_threshold_ignore_until = async_track_state_change(
-                    self.hass,
-                    ignore_until_entity_id,
-                    self._low_threshold_ignore_until_state_changed,
+                self._unsubscribe_low_threshold_ignore_until = (
+                    async_track_state_change_event(
+                        self.hass,
+                        ignore_until_entity_id,
+                        self._low_threshold_ignore_until_state_changed,
+                    )
                 )
                 _LOGGER.debug(
                     "Subscribed to DLI low threshold ignore until datetime: %s",

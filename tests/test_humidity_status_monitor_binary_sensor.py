@@ -5,13 +5,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 
 from custom_components.plant_assistant.binary_sensor import (
     HumidityStatusMonitorBinarySensor,
     HumidityStatusMonitorConfig,
 )
 from custom_components.plant_assistant.const import DOMAIN
+
+
+def create_state_changed_event(new_state):
+    """Create an Event object for state changed callbacks."""
+    event_data = EventStateChangedData(
+        entity_id="sensor.test",
+        old_state=None,
+        new_state=new_state,
+    )
+    return Event("state_changed", event_data)
 
 
 @pytest.fixture
@@ -511,7 +521,8 @@ class TestHumidityStatusMonitorBinarySensorStateCallbacks:
         mock_new_state = MagicMock()
         mock_new_state.state = "3.5"
 
-        sensor._above_threshold_state_changed("entity_id", None, mock_new_state)
+        event = create_state_changed_event(mock_new_state)
+        sensor._above_threshold_state_changed(event)
 
         assert sensor._above_threshold_hours == 3.5
         assert sensor._state is True
@@ -536,7 +547,8 @@ class TestHumidityStatusMonitorBinarySensorStateCallbacks:
         mock_new_state = MagicMock()
         mock_new_state.state = "4.0"
 
-        sensor._below_threshold_state_changed("entity_id", None, mock_new_state)
+        event = create_state_changed_event(mock_new_state)
+        sensor._below_threshold_state_changed(event)
 
         assert sensor._below_threshold_hours == 4.0
         assert sensor._state is True
@@ -557,7 +569,8 @@ class TestHumidityStatusMonitorBinarySensorStateCallbacks:
         sensor._below_threshold_hours = 1.0
         sensor.async_write_ha_state = MagicMock()
 
-        sensor._above_threshold_state_changed("entity_id", None, None)
+        event = create_state_changed_event(None)
+        sensor._above_threshold_state_changed(event)
 
         assert sensor._above_threshold_hours is None
         assert sensor._state is None
@@ -704,11 +717,8 @@ class TestHumidityStatusMonitorBinarySensorIgnoreUntil:
         new_state = MagicMock()
         new_state.state = future_time_str
 
-        sensor._high_threshold_ignore_until_state_changed(
-            "datetime.ignore_until",
-            None,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._high_threshold_ignore_until_state_changed(event)
 
         # State should now be False (no problem)
         assert sensor._state is False
@@ -737,11 +747,8 @@ class TestHumidityStatusMonitorBinarySensorIgnoreUntil:
         new_state = MagicMock()
         new_state.state = future_time_str
 
-        sensor._low_threshold_ignore_until_state_changed(
-            "datetime.ignore_until",
-            None,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._low_threshold_ignore_until_state_changed(event)
 
         # State should now be False (no problem)
         assert sensor._state is False
@@ -777,11 +784,8 @@ class TestHumidityStatusMonitorBinarySensorIgnoreUntil:
         new_state = MagicMock()
         new_state.state = STATE_UNAVAILABLE
 
-        sensor._high_threshold_ignore_until_state_changed(
-            "datetime.ignore_until",
-            None,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._high_threshold_ignore_until_state_changed(event)
 
         # Ignore until should be cleared
         assert sensor._high_threshold_ignore_until_datetime is None
@@ -819,11 +823,8 @@ class TestHumidityStatusMonitorBinarySensorIgnoreUntil:
         new_state = MagicMock()
         new_state.state = STATE_UNAVAILABLE
 
-        sensor._low_threshold_ignore_until_state_changed(
-            "datetime.ignore_until",
-            None,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._low_threshold_ignore_until_state_changed(event)
 
         # Ignore until should be cleared
         assert sensor._low_threshold_ignore_until_datetime is None

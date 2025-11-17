@@ -5,13 +5,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 
 from custom_components.plant_assistant.binary_sensor import (
     SoilMoistureHighMonitorBinarySensor,
     SoilMoistureHighMonitorConfig,
 )
 from custom_components.plant_assistant.const import DOMAIN
+
+
+def create_state_changed_event(new_state):
+    """Create an Event object for state changed callbacks."""
+    event_data = EventStateChangedData(
+        entity_id="sensor.test",
+        old_state=None,
+        new_state=new_state,
+    )
+    return Event("state_changed", event_data)
 
 
 @pytest.fixture
@@ -363,11 +373,8 @@ class TestSoilMoistureHighMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "75"
 
-        sensor._soil_moisture_state_changed(
-            "sensor.test_moisture",
-            old_state,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._soil_moisture_state_changed(event)
 
         assert sensor._current_soil_moisture == 75.0
         assert sensor._state is True
@@ -396,11 +403,8 @@ class TestSoilMoistureHighMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "70"
 
-        sensor._max_soil_moisture_state_changed(
-            "sensor.max_soil_moisture",
-            old_state,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._max_soil_moisture_state_changed(event)
 
         assert sensor._max_soil_moisture == 70.0
         assert sensor._state is True  # Now above threshold
@@ -541,11 +545,8 @@ class TestSoilMoistureHighMonitorBinarySensorIgnoreUntil:
         new_state = MagicMock()
         new_state.state = future_time_str
 
-        sensor._soil_moisture_ignore_until_state_changed(
-            "datetime.ignore_until",
-            None,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._soil_moisture_ignore_until_state_changed(event)
 
         # State should now be False (no problem)
         assert sensor._state is False
@@ -583,11 +584,8 @@ class TestSoilMoistureHighMonitorBinarySensorIgnoreUntil:
         new_state = MagicMock()
         new_state.state = STATE_UNAVAILABLE
 
-        sensor._soil_moisture_ignore_until_state_changed(
-            "datetime.ignore_until",
-            None,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._soil_moisture_ignore_until_state_changed(event)
 
         # Ignore until should be cleared
         assert sensor._ignore_until_datetime is None

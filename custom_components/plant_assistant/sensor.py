@@ -30,12 +30,12 @@ from homeassistant.const import (
     EntityCategory,
     UnitOfTime,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import async_generate_entity_id
-from homeassistant.helpers.event import async_track_state_change
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.recorder import get_instance
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
@@ -3497,10 +3497,9 @@ class IrrigationZoneErrorCountSensor(SensorEntity, RestoreEntity):
         )
 
     @callback
-    def _handle_last_error_state_change(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _handle_last_error_state_change(self, event: Event) -> None:
         """Handle Last Error entity state changes."""
+        new_state = event.data.get("new_state")
         try:
             if not new_state:
                 return
@@ -3613,7 +3612,7 @@ class IrrigationZoneErrorCountSensor(SensorEntity, RestoreEntity):
         # Subscribe to Last Error entity state changes
         if self._last_error_entity_id:
             try:
-                self._unsubscribe_last_error = async_track_state_change(
+                self._unsubscribe_last_error = async_track_state_change_event(
                     self.hass,
                     self._last_error_entity_id,
                     self._handle_last_error_state_change,
@@ -3779,7 +3778,7 @@ class MonitoringSensor(SensorEntity):
 
         # Subscribe to source entity state changes
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 hass, self.source_entity_id, self._source_state_changed
             )
         except (AttributeError, KeyError, ValueError) as exc:
@@ -3790,10 +3789,9 @@ class MonitoringSensor(SensorEntity):
             )
 
     @callback
-    def _source_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _source_state_changed(self, event: Event) -> None:
         """Handle source entity state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._state = None
             self._attributes = {}
@@ -3900,7 +3898,7 @@ class HumidityLinkedSensor(SensorEntity):
 
         # Subscribe to humidity entity state changes
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 hass, self.humidity_entity_id, self._humidity_state_changed
             )
         except (AttributeError, KeyError, ValueError) as exc:
@@ -3911,10 +3909,9 @@ class HumidityLinkedSensor(SensorEntity):
             )
 
     @callback
-    def _humidity_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _humidity_state_changed(self, event: Event) -> None:
         """Handle humidity entity state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._state = None
             self._attributes = {}
@@ -4217,7 +4214,7 @@ class AggregatedLocationSensor(SensorEntity):
 
             if plant_entity_ids:
                 self._plant_entity_ids = plant_entity_ids
-                self._unsubscribe = async_track_state_change(
+                self._unsubscribe = async_track_state_change_event(
                     self.hass, plant_entity_ids, self._on_plant_entity_change
                 )
                 _LOGGER.info(
@@ -4350,7 +4347,7 @@ class AggregatedSensor(SensorEntity):
 
         if target_humidity_entity:
             try:
-                self._unsubscribe = async_track_state_change(
+                self._unsubscribe = async_track_state_change_event(
                     hass, target_humidity_entity, self._state_changed
                 )
             except (AttributeError, KeyError, ValueError):
@@ -4527,7 +4524,7 @@ class AggregatedSensor(SensorEntity):
 
         self._plant_entity_ids = plant_entity_ids
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass, plant_entity_ids, self._state_changed
             )
         except (AttributeError, KeyError, ValueError):
@@ -4642,10 +4639,9 @@ class PlantLocationPpfdSensor(SensorEntity):
         return None
 
     @callback
-    def _illuminance_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _illuminance_state_changed(self, event: Event) -> None:
         """Handle illuminance sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._state = None
         else:
@@ -4656,7 +4652,7 @@ class PlantLocationPpfdSensor(SensorEntity):
     async def async_added_to_hass(self) -> None:
         """Subscribe to illuminance sensor state changes."""
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass, self._illuminance_entity_id, self._illuminance_state_changed
             )
         except (AttributeError, KeyError, ValueError) as exc:
@@ -4869,10 +4865,9 @@ class DliPriorPeriodSensor(RestoreEntity, SensorEntity):
             )
 
     @callback
-    def _dli_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _dli_state_changed(self, event: Event) -> None:
         """Handle DLI sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._state = None
             self._attributes = {}
@@ -4926,7 +4921,7 @@ class DliPriorPeriodSensor(RestoreEntity, SensorEntity):
 
         # Subscribe to DLI sensor state changes
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass, self._dli_entity_id, self._dli_state_changed
             )
         except (AttributeError, KeyError, ValueError) as exc:
@@ -5087,10 +5082,9 @@ class WeeklyAverageDliSensor(SensorEntity):
         return None
 
     @callback
-    def _dli_prior_period_state_changed(
-        self, _entity_id: str, _old_state: Any, new_state: Any
-    ) -> None:
+    def _dli_prior_period_state_changed(self, event: Event) -> None:
         """Handle DLI prior_period sensor state changes."""
+        new_state = event.data.get("new_state")
         if new_state is None:
             self._state = None
             self._attributes = {}
@@ -5141,7 +5135,7 @@ class WeeklyAverageDliSensor(SensorEntity):
                 self._attributes["source_entity"] = self._dli_prior_period_entity_id
 
             # Subscribe to state changes
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass,
                 self._dli_prior_period_entity_id,
                 self._dli_prior_period_state_changed,
@@ -5377,9 +5371,7 @@ class TemperatureBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
         return hours_below
 
     @callback
-    def _temperature_state_changed(
-        self, _entity_id: str, _old_state: Any, _new_state: Any
-    ) -> None:
+    def _temperature_state_changed(self, _event: Event) -> None:
         """Handle temperature sensor state changes."""
         # Trigger recalculation when temperature changes
         self.hass.async_create_task(self._async_update_state())
@@ -5440,7 +5432,7 @@ class TemperatureBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
         # Subscribe to temperature sensor state changes
         # Update every hour or when temperature changes significantly
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass, self._temperature_entity_id, self._temperature_state_changed
             )
             _LOGGER.debug(
@@ -5678,9 +5670,7 @@ class TemperatureAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         return hours_above
 
     @callback
-    def _temperature_state_changed(
-        self, _entity_id: str, _old_state: Any, _new_state: Any
-    ) -> None:
+    def _temperature_state_changed(self, _event: Event) -> None:
         """Handle temperature sensor state changes."""
         # Trigger recalculation when temperature changes
         self.hass.async_create_task(self._async_update_state())
@@ -5741,7 +5731,7 @@ class TemperatureAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         # Subscribe to temperature sensor state changes
         # Update every hour or when temperature changes significantly
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass, self._temperature_entity_id, self._temperature_state_changed
             )
             _LOGGER.debug(
@@ -5981,9 +5971,7 @@ class HumidityBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
         return hours_below
 
     @callback
-    def _humidity_state_changed(
-        self, _entity_id: str, _old_state: Any, _new_state: Any
-    ) -> None:
+    def _humidity_state_changed(self, _event: Event) -> None:
         """Handle humidity sensor state changes."""
         # Trigger recalculation when humidity changes
         self.hass.async_create_task(self._async_update_state())
@@ -6044,7 +6032,7 @@ class HumidityBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
         # Subscribe to humidity sensor state changes
         # Update every hour or when humidity changes significantly
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass, self._humidity_entity_id, self._humidity_state_changed
             )
             _LOGGER.debug(
@@ -6284,9 +6272,7 @@ class HumidityAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         return hours_above
 
     @callback
-    def _humidity_state_changed(
-        self, _entity_id: str, _old_state: Any, _new_state: Any
-    ) -> None:
+    def _humidity_state_changed(self, _event: Event) -> None:
         """Handle humidity sensor state changes."""
         # Trigger recalculation when humidity changes
         self.hass.async_create_task(self._async_update_state())
@@ -6347,7 +6333,7 @@ class HumidityAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         # Subscribe to humidity sensor state changes
         # Update every hour or when humidity changes significantly
         try:
-            self._unsubscribe = async_track_state_change(
+            self._unsubscribe = async_track_state_change_event(
                 self.hass, self._humidity_entity_id, self._humidity_state_changed
             )
             _LOGGER.debug(

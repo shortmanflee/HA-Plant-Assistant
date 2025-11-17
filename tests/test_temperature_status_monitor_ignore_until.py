@@ -5,13 +5,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from custom_components.plant_assistant.binary_sensor import (
     TemperatureStatusMonitorBinarySensor,
     TemperatureStatusMonitorConfig,
 )
+
+
+def create_state_changed_event(new_state):
+    """Create an Event object for state changed callbacks."""
+    event_data = EventStateChangedData(
+        entity_id="sensor.test",
+        old_state=None,
+        new_state=new_state,
+    )
+    return Event("state_changed", event_data)
 
 
 @pytest.fixture
@@ -180,9 +190,8 @@ class TestTemperatureStatusMonitorIgnoreUntilFunctionality:
         mock_new_state = MagicMock()
         mock_new_state.state = future_time.isoformat()
 
-        sensor._high_threshold_ignore_until_state_changed(
-            "entity_id", None, mock_new_state
-        )
+        event = create_state_changed_event(mock_new_state)
+        sensor._high_threshold_ignore_until_state_changed(event)
 
         assert sensor._high_threshold_ignore_until_datetime is not None
         assert sensor._high_threshold_ignore_until_datetime.replace(
@@ -207,9 +216,8 @@ class TestTemperatureStatusMonitorIgnoreUntilFunctionality:
         mock_new_state = MagicMock()
         mock_new_state.state = future_time.isoformat()
 
-        sensor._low_threshold_ignore_until_state_changed(
-            "entity_id", None, mock_new_state
-        )
+        event = create_state_changed_event(mock_new_state)
+        sensor._low_threshold_ignore_until_state_changed(event)
 
         assert sensor._low_threshold_ignore_until_datetime is not None
         assert sensor._low_threshold_ignore_until_datetime.replace(
@@ -229,7 +237,8 @@ class TestTemperatureStatusMonitorIgnoreUntilFunctionality:
         sensor = TemperatureStatusMonitorBinarySensor(config)
         sensor.async_write_ha_state = MagicMock()
 
-        sensor._high_threshold_ignore_until_state_changed("entity_id", None, None)
+        event = create_state_changed_event(None)
+        sensor._high_threshold_ignore_until_state_changed(event)
 
         assert sensor._high_threshold_ignore_until_datetime is None
 
@@ -246,7 +255,8 @@ class TestTemperatureStatusMonitorIgnoreUntilFunctionality:
         sensor = TemperatureStatusMonitorBinarySensor(config)
         sensor.async_write_ha_state = MagicMock()
 
-        sensor._low_threshold_ignore_until_state_changed("entity_id", None, None)
+        event = create_state_changed_event(None)
+        sensor._low_threshold_ignore_until_state_changed(event)
 
         assert sensor._low_threshold_ignore_until_datetime is None
 
@@ -267,9 +277,8 @@ class TestTemperatureStatusMonitorIgnoreUntilFunctionality:
         mock_new_state = MagicMock()
         mock_new_state.state = STATE_UNAVAILABLE
 
-        sensor._high_threshold_ignore_until_state_changed(
-            "entity_id", None, mock_new_state
-        )
+        event = create_state_changed_event(mock_new_state)
+        sensor._high_threshold_ignore_until_state_changed(event)
 
         assert sensor._high_threshold_ignore_until_datetime is None
 

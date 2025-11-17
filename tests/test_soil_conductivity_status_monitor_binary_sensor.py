@@ -4,13 +4,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 
 from custom_components.plant_assistant.binary_sensor import (
     SoilConductivityStatusMonitorBinarySensor,
     SoilConductivityStatusMonitorConfig,
 )
 from custom_components.plant_assistant.const import DOMAIN
+
+
+def create_state_changed_event(new_state):
+    """Create an Event object for state changed callbacks."""
+    event_data = EventStateChangedData(
+        entity_id="sensor.test",
+        old_state=None,
+        new_state=new_state,
+    )
+    return Event("state_changed", event_data)
 
 
 @pytest.fixture
@@ -533,11 +543,8 @@ class TestSoilConductivityStatusMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "400"
 
-        sensor._soil_conductivity_state_changed(
-            "sensor.test_conductivity",
-            old_state,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._soil_conductivity_state_changed(event)
 
         assert sensor._current_soil_conductivity == 400.0
         assert sensor._state is True
@@ -568,11 +575,8 @@ class TestSoilConductivityStatusMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "400"
 
-        sensor._min_soil_conductivity_state_changed(
-            "sensor.min_soil_conductivity",
-            old_state,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._min_soil_conductivity_state_changed(event)
 
         assert sensor._min_soil_conductivity == 400.0
         assert sensor._state is False  # Now within range
@@ -603,11 +607,8 @@ class TestSoilConductivityStatusMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "1200"
 
-        sensor._max_soil_conductivity_state_changed(
-            "sensor.max_soil_conductivity",
-            old_state,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._max_soil_conductivity_state_changed(event)
 
         assert sensor._max_soil_conductivity == 1200.0
         assert sensor._state is False  # Now within range

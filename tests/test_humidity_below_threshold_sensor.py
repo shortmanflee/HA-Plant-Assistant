@@ -4,12 +4,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 
 from custom_components.plant_assistant.const import DOMAIN
 from custom_components.plant_assistant.sensor import (
     HumidityBelowThresholdHoursSensor,
 )
+
+
+def create_state_changed_event(new_state):
+    """Create an Event object for state changed callbacks."""
+    event_data = EventStateChangedData(
+        entity_id="sensor.test",
+        old_state=None,
+        new_state=new_state,
+    )
+    return Event("state_changed", event_data)
 
 
 @pytest.fixture
@@ -231,11 +241,8 @@ async def test_humidity_state_changed_callback(mock_hass):
     mock_hass.async_create_task.return_value = mock_task
 
     # Trigger state change
-    sensor._humidity_state_changed(
-        "sensor.test_humidity",
-        MagicMock(),
-        MagicMock(),
-    )
+    event = create_state_changed_event(MagicMock())
+    sensor._humidity_state_changed(event)
 
     # Verify task was created
     mock_hass.async_create_task.assert_called_once()

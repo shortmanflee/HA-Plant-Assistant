@@ -4,13 +4,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 
 from custom_components.plant_assistant.binary_sensor import (
     SoilConductivityLowMonitorBinarySensor,
     SoilConductivityLowMonitorConfig,
 )
 from custom_components.plant_assistant.const import DOMAIN
+
+
+def create_state_changed_event(new_state):
+    """Create an Event object for state changed callbacks."""
+    event_data = EventStateChangedData(
+        entity_id="sensor.test",
+        old_state=None,
+        new_state=new_state,
+    )
+    return Event("state_changed", event_data)
 
 
 @pytest.fixture
@@ -489,11 +499,8 @@ class TestSoilConductivityLowMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "400"
 
-        sensor._soil_conductivity_state_changed(
-            "sensor.test_conductivity",
-            old_state,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._soil_conductivity_state_changed(event)
 
         assert sensor._current_soil_conductivity == 400.0
         assert sensor._state is True
@@ -525,11 +532,8 @@ class TestSoilConductivityLowMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "50"
 
-        sensor._soil_moisture_state_changed(
-            "sensor.test_moisture",
-            old_state,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._soil_moisture_state_changed(event)
 
         assert sensor._current_soil_moisture == 50.0
         assert sensor._state is True  # Now meets moisture requirement
@@ -561,11 +565,8 @@ class TestSoilConductivityLowMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "400"
 
-        sensor._min_soil_conductivity_state_changed(
-            "sensor.min_soil_conductivity",
-            old_state,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._min_soil_conductivity_state_changed(event)
 
         assert sensor._min_soil_conductivity == 400.0
         assert sensor._state is False  # Now above threshold
@@ -597,11 +598,8 @@ class TestSoilConductivityLowMonitorBinarySensorCallbacks:
         new_state = MagicMock()
         new_state.state = "35"
 
-        sensor._min_soil_moisture_state_changed(
-            "sensor.min_soil_moisture",
-            old_state,
-            new_state,
-        )
+        event = create_state_changed_event(new_state)
+        sensor._min_soil_moisture_state_changed(event)
 
         assert sensor._min_soil_moisture == 35.0
         assert sensor._state is False  # Moisture no longer 10 points above

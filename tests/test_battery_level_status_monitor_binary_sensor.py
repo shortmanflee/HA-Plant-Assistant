@@ -4,13 +4,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 
 from custom_components.plant_assistant.binary_sensor import (
     BatteryLevelStatusMonitorBinarySensor,
     BatteryLevelStatusMonitorConfig,
 )
 from custom_components.plant_assistant.const import DOMAIN
+
+
+def create_state_changed_event(new_state):
+    """Create an Event object for state changed callbacks."""
+    event_data = EventStateChangedData(
+        entity_id="sensor.test",
+        old_state=None,
+        new_state=new_state,
+    )
+    return Event("state_changed", event_data)
 
 
 @pytest.fixture
@@ -305,7 +315,8 @@ class TestBatteryLevelStatusMonitorBinarySensorStateChanges:
         new_state = MagicMock()
         new_state.state = "45.5"
 
-        sensor._battery_state_changed("sensor.device_battery", None, new_state)
+        event = create_state_changed_event(new_state)
+        sensor._battery_state_changed(event)
 
         assert sensor._current_battery_level == 45.5
         assert sensor._state is False  # 45.5 > 10
@@ -321,7 +332,8 @@ class TestBatteryLevelStatusMonitorBinarySensorStateChanges:
         new_state = MagicMock()
         new_state.state = "5"
 
-        sensor._battery_state_changed("sensor.device_battery", None, new_state)
+        event = create_state_changed_event(new_state)
+        sensor._battery_state_changed(event)
 
         assert sensor._current_battery_level == 5.0
         assert sensor._state is True  # 5 < 10
@@ -333,7 +345,8 @@ class TestBatteryLevelStatusMonitorBinarySensorStateChanges:
         sensor._current_battery_level = 50.0
         sensor.async_write_ha_state = MagicMock()
 
-        sensor._battery_state_changed("sensor.device_battery", None, None)
+        event = create_state_changed_event(None)
+        sensor._battery_state_changed(event)
 
         assert sensor._current_battery_level is None
         assert sensor._state is None
@@ -348,7 +361,8 @@ class TestBatteryLevelStatusMonitorBinarySensorStateChanges:
         new_state = MagicMock()
         new_state.state = STATE_UNAVAILABLE
 
-        sensor._battery_state_changed("sensor.device_battery", None, new_state)
+        event = create_state_changed_event(new_state)
+        sensor._battery_state_changed(event)
 
         assert sensor._current_battery_level is None
         assert sensor._state is None
@@ -370,9 +384,9 @@ class TestBatteryLevelStatusMonitorBinarySensorAsyncMethods:
         mock_state.state = "75"
         sensor_config.hass.states.get.return_value = mock_state
 
-        # Mock async_track_state_change to avoid deprecation warnings in tests
+        # Mock async_track_state_change_event to avoid deprecation warnings in tests
         with patch(
-            "custom_components.plant_assistant.binary_sensor.async_track_state_change",
+            "custom_components.plant_assistant.binary_sensor.async_track_state_change_event",
             return_value=MagicMock(),
         ):
             await sensor.async_added_to_hass()
@@ -390,9 +404,9 @@ class TestBatteryLevelStatusMonitorBinarySensorAsyncMethods:
         # No battery state available
         sensor_config.hass.states.get.return_value = None
 
-        # Mock async_track_state_change to avoid deprecation warnings in tests
+        # Mock async_track_state_change_event to avoid deprecation warnings in tests
         with patch(
-            "custom_components.plant_assistant.binary_sensor.async_track_state_change",
+            "custom_components.plant_assistant.binary_sensor.async_track_state_change_event",
             return_value=MagicMock(),
         ):
             await sensor.async_added_to_hass()
@@ -589,9 +603,8 @@ class TestBatteryLevelStatusMonitorBinarySensorIgnoreUntil:
         future_time = dt_util.now() + timedelta(hours=2)
         new_state.state = future_time.isoformat()
 
-        sensor._battery_low_ignore_until_state_changed(
-            "datetime.battery_low_threshold_ignore_until", None, new_state
-        )
+        event = create_state_changed_event(new_state)
+        sensor._battery_low_ignore_until_state_changed(event)
 
         assert sensor._ignore_until_datetime is not None
         # State should be False due to active ignore
@@ -609,9 +622,8 @@ class TestBatteryLevelStatusMonitorBinarySensorIgnoreUntil:
         new_state = MagicMock()
         new_state.state = STATE_UNAVAILABLE
 
-        sensor._battery_low_ignore_until_state_changed(
-            "datetime.battery_low_threshold_ignore_until", None, new_state
-        )
+        event = create_state_changed_event(new_state)
+        sensor._battery_low_ignore_until_state_changed(event)
 
         assert sensor._ignore_until_datetime is None
         # Without ignore_until, low battery should trigger
@@ -627,9 +639,8 @@ class TestBatteryLevelStatusMonitorBinarySensorIgnoreUntil:
         new_state = MagicMock()
         new_state.state = STATE_UNKNOWN
 
-        sensor._battery_low_ignore_until_state_changed(
-            "datetime.battery_low_threshold_ignore_until", None, new_state
-        )
+        event = create_state_changed_event(new_state)
+        sensor._battery_low_ignore_until_state_changed(event)
 
         assert sensor._ignore_until_datetime is None
         # Without ignore_until, low battery should trigger
@@ -642,9 +653,8 @@ class TestBatteryLevelStatusMonitorBinarySensorIgnoreUntil:
         sensor.async_write_ha_state = MagicMock()
         sensor._current_battery_level = 5.0  # Low battery
 
-        sensor._battery_low_ignore_until_state_changed(
-            "datetime.battery_low_threshold_ignore_until", None, None
-        )
+        event = create_state_changed_event(None)
+        sensor._battery_low_ignore_until_state_changed(event)
 
         assert sensor._ignore_until_datetime is None
         # Without ignore_until, low battery should trigger
