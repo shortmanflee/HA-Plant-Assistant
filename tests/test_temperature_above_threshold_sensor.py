@@ -223,8 +223,16 @@ async def test_temperature_above_threshold_calculation(mock_hass, mock_entity_re
         assert result == 3
 
 
-async def test_temperature_state_changed_callback(mock_hass):
+async def test_temperature_state_changed_callback(mock_hass, mock_entity_registry):
     """Test temperature state change callback."""
+    # Set up mock entity registry with max_temperature entity
+    mock_max_temp_entity = MagicMock()
+    mock_max_temp_entity.platform = DOMAIN
+    mock_max_temp_entity.domain = "sensor"
+    mock_max_temp_entity.unique_id = f"{DOMAIN}_test_entry_max_temperature"
+    mock_max_temp_entity.entity_id = "sensor.test_garden_max_temperature"
+    mock_entity_registry.entities.values.return_value = [mock_max_temp_entity]
+
     sensor = TemperatureAboveThresholdHoursSensor(
         hass=mock_hass,
         entry_id="test_entry",
@@ -233,16 +241,59 @@ async def test_temperature_state_changed_callback(mock_hass):
         temperature_entity_id="sensor.test_temperature",
     )
 
-    # Mock async_create_task
-    mock_task = MagicMock()
-    mock_hass.async_create_task.return_value = mock_task
+    # Mock async_write_ha_state
+    sensor.async_write_ha_state = MagicMock()
 
-    # Trigger state change
-    event = create_state_changed_event(MagicMock())
-    sensor._temperature_state_changed(event)
+    # Mock max temp state (threshold is 25°C)
+    mock_max_temp_state = MagicMock()
+    mock_max_temp_state.state = "25.0"
+    mock_hass.states.get.return_value = mock_max_temp_state
 
-    # Verify task was created
-    mock_hass.async_create_task.assert_called_once()
+    # Mock statistics data with 2 hours above threshold
+    mock_stats = {
+        "sensor.test_temperature": [
+            {"mean": 26.0},  # Above threshold
+            {"mean": 24.0},  # Below threshold
+            {"mean": 27.5},  # Above threshold
+        ]
+    }
+
+    # Mock recorder instance
+    mock_recorder = MagicMock()
+    mock_recorder.async_add_executor_job = AsyncMock(return_value=mock_stats)
+
+    with (
+        patch(
+            "custom_components.plant_assistant.sensor.get_instance",
+            return_value=mock_recorder,
+        ),
+        patch(
+            "custom_components.plant_assistant.sensor.statistics_during_period"
+        ) as mock_stats_fn,
+    ):
+        mock_stats_fn.return_value = mock_stats
+
+        # Trigger state change
+        event = create_state_changed_event(MagicMock())
+        sensor._temperature_state_changed(event)  # type: ignore[arg-type]
+
+        # Verify task was created
+        mock_hass.async_create_task.assert_called_once()
+
+        # Execute the task that was created to verify state update
+        task_call = mock_hass.async_create_task.call_args[0][0]
+        await task_call
+
+        # Verify state was updated
+        assert sensor._state == 2
+        assert sensor.native_value == 2
+
+        # Verify attributes were set
+        assert sensor._attributes["source_entity"] == "sensor.test_temperature"
+        assert sensor._attributes["period_days"] == 7
+
+        # Verify async_write_ha_state was called
+        sensor.async_write_ha_state.assert_called_once()
 
 
 async def test_native_value_handling(mock_hass):
