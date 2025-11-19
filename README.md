@@ -51,11 +51,13 @@ A comprehensive Home Assistant custom component for intelligent plant care and m
 
 ### OpenPlantBook Integration
 
-Plant Assistant integrates with [OpenPlantBook](https://open.plantbook.io/) for species-specific plant care data:
+Plant Assistant integrates with [OpenPlantBook](https://open.plantbook.io/) for species-specific plant care data.
 
-1. Install the [OpenPlantBook integration](https://github.com/slashback/openplantbook-ha)
-2. Configure it with your API credentials
-3. Plant Assistant will automatically use plant care parameters from OpenPlantBook
+**Required**: You must install the [HA-OpenPlantbook-Reference-Library](https://github.com/shortmanflee/HA-OpenPlantbook-Reference-Library) integration for OpenPlantBook support:
+
+1. Install the [HA-OpenPlantbook-Reference-Library](https://github.com/shortmanflee/HA-OpenPlantbook-Reference-Library) integration via HACS or manually
+2. Configure it with your OpenPlantBook API credentials
+3. Plant Assistant will automatically use plant care parameters from OpenPlantBook through this integration
 
 ### Linking Sensors
 
