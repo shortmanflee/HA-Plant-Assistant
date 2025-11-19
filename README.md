@@ -1,273 +1,276 @@
-# Home Assistant Integration Template
+# Plant Assistant for Home Assistant
 
-A comprehensive template repository for developing Home Assistant custom integrations with best practices, testing, and development environment pre-configured.
+A comprehensive Home Assistant custom component for intelligent plant care and monitoring. Track your plants' health, automate irrigation, monitor environmental conditions, and ensure optimal growing conditions with advanced sensors and automations.
+
+[![GitHub Release][releases-shield]][releases]
+[![GitHub Activity][commits-shield]][commits]
+[![License][license-shield]](LICENSE)
+[![hacs][hacsbadge]][hacs]
 
 ## Features
 
-- 🏗️ **Complete Integration Structure**: Pre-configured directory structure following Home Assistant standards
-- 🐳 **DevContainer Ready**: Full VS Code devcontainer setup with Python 3.13, dependencies, and extensions pre-installed
-- 🧪 **Testing Setup**: Includes pytest configuration with Home Assistant custom component testing
-- 🔧 **Development Environment**: VS Code tasks and configuration for seamless development
-- 📋 **Code Quality**: Ruff linting and formatting pre-configured
-- 🐳 **HACS Ready**: Includes `hacs.json` configuration for Home Assistant Community Store
-- 📝 **Documentation**: Template files and contribution guidelines
+- 🌱 **Plant Monitoring**: Track individual plants with sensors for moisture, light, temperature, humidity, and conductivity
+- 💡 **Daily Light Integral (DLI)**: Automatic calculation of DLI and PPFD (Photosynthetic Photon Flux Density) for optimal light management
+- 💧 **Irrigation Management**: Automated irrigation zone control with scheduling and soil moisture monitoring
+- 📊 **Comprehensive Sensors**: Monitor plant health with problem detection, status alerts, and environmental thresholds
+- 🔗 **OpenPlantBook Integration**: Connect to [OpenPlantBook](https://open.plantbook.io/) for species-specific care requirements
+- 🏡 **Multi-Location Support**: Organize plants by location (rooms, zones, etc.)
+- 📱 **ESPHome Integration**: Seamless integration with ESPHome-based plant sensors
+- 🎯 **Smart Alerts**: Binary sensors for water needs, fertilizer schedules, battery levels, and environmental conditions
 
-## Quick Start
+## Installation
 
-### Using This Template
+### HACS (Recommended)
 
-1. Click "Use this template" button on GitHub
-2. Create your new repository from this template
-3. Clone your new repository:
+1. Ensure [HACS](https://hacs.xyz/) is installed in your Home Assistant instance
+2. In Home Assistant, go to **HACS** → **Integrations**
+3. Click the **⋮** menu in the top right and select **Custom repositories**
+4. Add `https://github.com/shortmanflee/HA-Plant-Assistant` as an **Integration**
+5. Click **Download** and restart Home Assistant
+6. Go to **Settings** → **Devices & Services** → **Add Integration**
+7. Search for **Plant Assistant** and follow the setup wizard
 
-   ```bash
-   git clone https://github.com/yourusername/your-integration-name.git
-   cd your-integration-name
-   ```
+### Manual Installation
 
-4. **🐳 Recommended**: Open in VS Code and use the devcontainer:
-   - Open VS Code: `code .`
-   - Click "Reopen in Container" when prompted
-   - Everything will be automatically configured!
+1. Download the latest release from the [releases page][releases]
+2. Extract the `custom_components/plant_assistant` directory to your Home Assistant `custom_components` folder
+3. Restart Home Assistant
+4. Go to **Settings** → **Devices & Services** → **Add Integration**
+5. Search for **Plant Assistant** and follow the setup wizard
 
-### Customizing Your Integration
+## Configuration
 
-1. **Rename the integration directory**:
+### Initial Setup
 
-   ```bash
-   mv custom_components/integration_template custom_components/your_integration_name
-   ```
+1. Go to **Settings** → **Devices & Services** → **Add Integration**
+2. Search for **Plant Assistant**
+3. Follow the configuration flow:
+   - **Optional**: Link an ESPHome device for automatic sensor discovery
+   - **Alternative**: Enter a custom name for your plant or location
+4. Configure plant details and monitoring preferences
 
-2. **Update the integration files**:
-   - Edit `custom_components/your_integration_name/__init__.py`
-   - Update `hacs.json` with your integration details
-   - Modify `README.md` for your specific integration
+### OpenPlantBook Integration
 
-3. **Update repository references**:
-   Run the provided task to update all references:
+Plant Assistant integrates with [OpenPlantBook](https://open.plantbook.io/) for species-specific plant care data:
 
-   ```bash
-   ./.vscode/dependencies/update_repo_references.sh
-   ```
+1. Install the [OpenPlantBook integration](https://github.com/slashback/openplantbook-ha)
+2. Configure it with your API credentials
+3. Plant Assistant will automatically use plant care parameters from OpenPlantBook
 
-## Development Environment
+### Linking Sensors
 
-This template provides two development approaches, with **devcontainer being the recommended method** for the best development experience.
+After setup, you can link various sensors to each plant or location:
 
-### 🐳 Recommended: DevContainer (VS Code)
+- **Soil Moisture** sensors
+- **Light/Illuminance** sensors for DLI calculation
+- **Temperature** sensors
+- **Humidity** sensors
+- **Conductivity** sensors (for fertilizer monitoring)
 
-The easiest way to get started is using the included devcontainer configuration:
+## Entities Created
 
-1. **Prerequisites**:
-   - [VS Code](https://code.visualstudio.com/)
-   - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-   - [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
+### Sensors
 
-2. **Setup**:
-   - Open the repository in VS Code
-   - When prompted, click "Reopen in Container" (or use Command Palette: "Dev Containers: Reopen in Container")
-   - The devcontainer will automatically:
-     - Set up Python 3.13 environment
-     - Install all dependencies
-     - Configure the development environment
-     - Install recommended VS Code extensions
+Each plant location can have the following sensors:
 
-3. **Ready to develop**: Everything is pre-configured and ready to use!
+- **Environmental Sensors**:
+  - Min/Max Light (lux)
+  - Min/Max Temperature
+  - Min/Max Humidity
+  - Min/Max Soil Moisture
+  - Min/Max Soil Conductivity
+- **Light Metrics**:
+  - PPFD (Photosynthetic Photon Flux Density)
+  - DLI (Daily Light Integral)
+  - DLI Weekly Average
+  - DLI Prior Period
+- **Status Sensors**:
+  - Plant Count
+  - Location Count
+  - Error Count
+  - Fertilizer Due
 
-### 💻 Alternative: Local Development
+### Binary Sensors
 
-If you prefer local development without containers:
+Problem detection and status monitoring:
 
-#### Prerequisites
+- **Plant Health**:
+  - Soil Moisture Low/High
+  - Soil Moisture Water Soon
+  - Soil Conductivity Low/High
+  - DLI Status Monitor
+  - Humidity Above/Below Threshold
+  - Temperature Above/Below Threshold
+- **System Status**:
+  - Battery Level Status
+  - ESPHome Running Status
+  - Error Status Monitor
+  - Irrigation Zone Status
+  - Schedule Misconfiguration
+  - Recently Watered
+
+### Switches
+
+Control and automation switches:
+
+- Irrigation zone enable/disable
+- Auto-schedule controls
+- Manual override switches
+
+### Buttons
+
+Quick actions for maintenance:
+
+- Reset error count
+- Irrigation controls
+
+### Number Entities
+
+Adjustable parameters for fine-tuning:
+
+- Moisture thresholds
+- Conductivity thresholds
+- Light requirements
+- Schedule parameters
+
+### DateTime Entities
+
+Time-based scheduling:
+
+- Last watered timestamp
+- Next fertilization schedule
+- Irrigation schedules
+
+## Usage Examples
+
+### Automation: Water When Soil is Dry
+
+```yaml
+automation:
+  - alias: "Water Plant When Dry"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.plant_location_soil_moisture_low
+        to: "on"
+    action:
+      - service: notify.mobile_app
+        data:
+          message: "Your plant needs water!"
+      - service: switch.turn_on
+        target:
+          entity_id: switch.irrigation_zone_1
+```
+
+### Automation: Alert on Insufficient Light
+
+```yaml
+automation:
+  - alias: "Alert Low Light"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.plant_location_dli
+        below: 5
+    action:
+      - service: notify.mobile_app
+        data:
+          message: "Your plant is not getting enough light (DLI below 5)"
+```
+
+### Lovelace Card Example
+
+```yaml
+type: entities
+title: My Plant
+entities:
+  - entity: sensor.my_plant_soil_moisture
+  - entity: sensor.my_plant_dli
+  - entity: sensor.my_plant_temperature
+  - entity: binary_sensor.my_plant_soil_moisture_low
+  - entity: binary_sensor.my_plant_dli_status
+  - entity: sensor.my_plant_fertilizer_due
+```
+
+## Daily Light Integral (DLI)
+
+Plant Assistant automatically calculates DLI from your light sensors:
+
+- **DLI** measures the total amount of photosynthetically active light delivered to plants over a 24-hour period
+- Calculated in mol/m²/day using illuminance (lux) readings
+- Helps ensure your plants receive optimal light for growth
+- Weekly averages help track trends and adjust placement
+
+### DLI Guidelines
+
+- **Low Light Plants**: 5-10 mol/m²/day
+- **Medium Light Plants**: 10-20 mol/m²/day
+- **High Light Plants**: 20-40 mol/m²/day
+
+## Development
+
+### Prerequisites
 
 - Python 3.11+
-- Virtual environment (recommended)
+- Home Assistant development environment
 
-#### Setup
+### Setup Development Environment
 
-1. **Create and activate virtual environment**:
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/shortmanflee/HA-Plant-Assistant.git
+   cd HA-Plant-Assistant
+   ```
+
+2. **Recommended**: Open in VS Code with DevContainer:
+   - Install Docker Desktop and VS Code Dev Containers extension
+   - Open the folder in VS Code
+   - Click "Reopen in Container" when prompted
+
+3. **Alternative**: Local development:
 
    ```bash
    python -m venv .venv
    source .venv/bin/activate  # On macOS/Linux
-   # or
-   .venv\Scripts\activate     # On Windows
-   ```
-
-2. **Install dependencies**:
-   Use the VS Code task "Install Dependencies" or run:
-
-   ```bash
-   pip install --upgrade pip
    pip install -r requirements.txt
    ```
 
-3. **Setup development environment**:
-   Use the VS Code task "Setup Config Directory" or run:
-
-   ```bash
-   mkdir -p config
-   ln -sf $(pwd)/custom_components config/custom_components
-   ```
-
-### Available VS Code Tasks
-
-- **Install Dependencies**: Install all required Python packages
-- **Start Home Assistant (Development)**: Launch HA with your integration in debug mode
-- **Setup Config Directory**: Configure the development environment
-- **Run Tests**: Execute the test suite with pytest
-- **Lint and Fix with Ruff**: Format and lint your Python code
-- **Lint Markdown**: Check markdown files for formatting issues
-- **Fix Markdown**: Automatically fix markdown formatting issues
-- **Lint All (Python + Markdown)**: Run both Python and Markdown linting
-- **Update Repository References**: Update template references to your integration
-
-### Running Home Assistant
-
-Start Home Assistant in development mode:
-
-```bash
-hass --config ./config --debug
-```
-
-Your integration will be available at `http://localhost:8080`
-
-## Testing
-
-Run tests using pytest:
+### Running Tests
 
 ```bash
 python -m pytest tests/ -v
 ```
 
-The template includes:
+### Code Quality
 
-- Test configuration in `pyproject.toml`
-- Coverage reporting
-- Async test support
-- Home Assistant custom component testing utilities
-
-## Code Quality
-
-This template includes comprehensive linting and code quality tools that run both locally and in CI/CD:
-
-### 🔧 Available Linters
-
-All linter configurations are stored in the `.linter/` directory:
-
-- **Ruff** (`.linter/ruff.toml`): Fast Python linter and formatter
-- **MyPy** (`.linter/mypy.ini`): Static type checking for Python
-- **Pylint** (`.linter/pylintrc`): Additional Python code analysis
-- **Bandit** (built-in): Security vulnerability scanner
-- **yamllint** (`.linter/yamllint`): YAML file linting
-- **markdownlint** (`.linter/.markdownlint.jsonc`): Markdown formatting
-- **CSpell** (`.linter/cspell.json`): Spell checking across all files
-
-### 🚀 Running Linters Locally
-
-#### Quick Commands
+Run pre-commit hooks to ensure code quality:
 
 ```bash
-# Format and lint Python code
-source .venv/bin/activate && ruff --config .linter/ruff.toml format . && ruff --config .linter/ruff.toml check . --fix
-
-# Type checking
-mypy --config-file .linter/mypy.ini custom_components/
-
-# Security scan
-bandit -r custom_components/
-
-# YAML linting
-yamllint --config-file .linter/yamllint .
-
-# Markdown linting
-npm run lint:markdown
-
-# Spell checking
-npm run spell:check
-```
-
-#### VS Code Tasks
-
-Use the Command Palette (`Ctrl+Shift+P`) and run:
-
-- **Full Lint Suite**: Runs all linters (Ruff, MyPy, Bandit, YAML, Markdown, Spell check)
-- **Enhanced Full Lint Suite**: Includes additional tools (Pylint, dead code detection, docstring checks)
-- **Lint and Fix with Ruff**: Python formatting and linting
-- **Lint Markdown**: Markdown file checking
-- **Type Check with MyPy**: Static type analysis
-- **Security Check with Bandit**: Vulnerability scanning
-
-### 🤖 GitHub Actions CI/CD
-
-All linters automatically run on every push and pull request via GitHub Actions (`.github/workflows/lint.yml`):
-
-- ✅ **Ruff** - Code formatting and linting
-- ✅ **MyPy** - Type checking
-- ✅ **Pylint** - Additional Python analysis
-- ✅ **Bandit** - Security scanning
-- ✅ **yamllint** - YAML validation
-- ✅ **markdownlint** - Markdown formatting
-- ✅ **CSpell** - Spell checking
-
-The CI runs on Python 3.13 and ensures all code meets quality standards before merging.
-
-### 📝 Configuration Notes
-
-- **Ruff**: Based on Home Assistant core configuration, includes all checks with integration-specific exclusions
-- **MyPy**: Configured for strict type checking with Home Assistant imports handled
-- **yamllint**: Configured to work with GitHub Actions workflows and excludes `node_modules/` and `.venv/`
-- **CSpell**: Includes common Home Assistant terms and technical vocabulary
-- **markdownlint**: Allows HTML and flexible line lengths for documentation
-
-## Markdown linting
-
-```bash
-npm run lint:markdown:fix
-```
-
-### Pre-commit Hooks
-
-Pre-commit hooks are automatically installed in the devcontainer and will run both Python and Markdown linting before each commit:
-
-```bash
-# Manually run pre-commit on all files
 pre-commit run --all-files
-```
-
-## Directory Structure
-
-```text
-your-integration/
-├── custom_components/
-│   └── your_integration_name/
-│       ├── __init__.py          # Integration entry point
-│       ├── manifest.json        # Integration metadata
-│       └── ...                  # Your integration files
-├── tests/                       # Test files
-├── config/                      # Development HA config
-├── .vscode/                     # VS Code configuration
-├── requirements.txt             # Python dependencies
-├── pyproject.toml              # Project configuration
-├── hacs.json                   # HACS configuration
-└── README.md                   # This file
 ```
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to your integration.
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## Support
+
+- **Issues**: [GitHub Issues](https://github.com/shortmanflee/HA-Plant-Assistant/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/shortmanflee/HA-Plant-Assistant/discussions)
 
 ## License
 
-This template is released under the MIT License. See [LICENSE](LICENSE) for details.
-
-## Resources
-
-- [Home Assistant Developer Documentation](https://developers.home-assistant.io/)
-- [Home Assistant Architecture](https://developers.home-assistant.io/docs/architecture/)
-- [Integration Development](https://developers.home-assistant.io/docs/creating_component_index/)
-- [HACS Documentation](https://hacs.xyz/docs/publish/start)
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgements
 
-This repo has been adapted from the [Integration Blueprint](https://github.com/ludeeus/integration_blueprint) repo maintained by [ludeeus](https://github.com/ludeeus).
+- Built with the [Home Assistant Integration Template](https://github.com/shortmanflee/HA-Integration-Template)
+- Inspired by [Integration Blueprint](https://github.com/ludeeus/integration_blueprint) by [ludeeus](https://github.com/ludeeus)
+- Plant care data powered by [OpenPlantBook](https://open.plantbook.io/)
+
+[commits-shield]: https://img.shields.io/github/commit-activity/y/shortmanflee/HA-Plant-Assistant.svg?style=for-the-badge
+[commits]: https://github.com/shortmanflee/HA-Plant-Assistant/commits/main
+[hacs]: https://github.com/hacs/integration
+[hacsbadge]: https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge
+[license-shield]: https://img.shields.io/github/license/shortmanflee/HA-Plant-Assistant.svg?style=for-the-badge
+[releases-shield]: https://img.shields.io/github/release/shortmanflee/HA-Plant-Assistant.svg?style=for-the-badge
+[releases]: https://github.com/shortmanflee/HA-Plant-Assistant/releases
