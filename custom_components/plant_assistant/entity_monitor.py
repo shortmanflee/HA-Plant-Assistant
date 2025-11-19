@@ -83,33 +83,118 @@ class EntityMonitor:
     async def _handle_entity_rename(
         self, old_entity_id: str, new_entity_id: str
     ) -> None:
-        """Handle entity rename by updating mirror entities."""
+        """Handle entity rename by updating mirror entities and config entries."""
         try:
             # Find all mirror entities that reference the old entity ID
             mirror_entities = await self._find_mirror_entities_for_source(old_entity_id)
 
-            if not mirror_entities:
+            if mirror_entities:
+                _LOGGER.info(
+                    "Found %d mirror entities to update for renamed source "
+                    "entity %s -> %s",
+                    len(mirror_entities),
+                    old_entity_id,
+                    new_entity_id,
+                )
+
+                # Update each mirror entity's source reference
+                for mirror_entity_id in mirror_entities:
+                    await self._update_mirror_entity_source(
+                        mirror_entity_id, old_entity_id, new_entity_id
+                    )
+            else:
                 _LOGGER.debug(
                     "No mirror entities found for renamed entity %s", old_entity_id
                 )
-                return
 
-            _LOGGER.info(
-                "Found %d mirror entities to update for renamed source entity %s -> %s",
-                len(mirror_entities),
-                old_entity_id,
-                new_entity_id,
+            # Update all config entries that reference the renamed entity
+            # This ensures state change listeners are re-subscribed after reload
+            await self._update_all_config_entries_for_rename(
+                old_entity_id, new_entity_id
             )
-
-            # Update each mirror entity's source reference
-            for mirror_entity_id in mirror_entities:
-                await self._update_mirror_entity_source(
-                    mirror_entity_id, old_entity_id, new_entity_id
-                )
 
         except Exception:
             _LOGGER.exception(
                 "Error handling entity rename from %s to %s",
+                old_entity_id,
+                new_entity_id,
+            )
+
+    def _get_entity_id_from_unique_id(self, unique_id: str) -> str | None:
+        """
+        Look up the current entity_id for a given unique_id.
+
+        This helps handle cases where the source entity was renamed but we only
+        have its unique_id stored. Returns the current entity_id if found.
+        """
+        if not self._entity_registry or not unique_id:
+            return None
+
+        try:
+            for entity_entry in self._entity_registry.entities.values():
+                if entity_entry.unique_id == unique_id:
+                    return entity_entry.entity_id
+        except (TypeError, AttributeError, ValueError):
+            pass
+
+        return None
+
+    def _get_unique_id_from_entity_id(self, entity_id: str) -> str | None:
+        """
+        Look up the unique_id for a given entity_id.
+
+        Used to capture and store unique_ids when updating configurations.
+        """
+        if not self._entity_registry or not entity_id:
+            return None
+
+        try:
+            entity_entry = self._entity_registry.async_get(entity_id)
+            if entity_entry and entity_entry.unique_id:
+                return entity_entry.unique_id
+        except (TypeError, AttributeError, ValueError):
+            pass
+
+        return None
+
+    async def _update_all_config_entries_for_rename(
+        self, old_entity_id: str, new_entity_id: str
+    ) -> None:
+        """
+        Update all config entries that reference the renamed entity.
+
+        This method searches through all Plant Assistant config entries to find
+        any that reference the old entity ID and updates them to use the new ID.
+        After updating, it triggers a reload so state change listeners are
+        re-subscribed with the correct entity IDs.
+        """
+        if not self._entity_registry:
+            _LOGGER.debug(
+                "Entity registry not available - skipping config entry updates"
+            )
+            return
+
+        try:
+            # Get all config entries for Plant Assistant
+            config_entries = self.hass.config_entries.async_entries(DOMAIN)
+
+            for config_entry in config_entries:
+                try:
+                    # Check if this entry references the renamed entity
+                    await self._update_config_entry_source_entity(
+                        config_entry, old_entity_id, new_entity_id
+                    )
+                except Exception:
+                    _LOGGER.exception(
+                        "Error updating config entry %s for renamed entity %s -> %s",
+                        config_entry.entry_id,
+                        old_entity_id,
+                        new_entity_id,
+                    )
+
+        except Exception:
+            _LOGGER.exception(
+                "Error updating config entries for renamed entity %s -> %s",
                 old_entity_id,
                 new_entity_id,
             )
@@ -127,6 +212,15 @@ class EntityMonitor:
             return mirror_entities
 
         try:
+            # First, get the unique_id of the source entity for reliable matching
+            source_unique_id = None
+            try:
+                source_entry = self._entity_registry.async_get(source_entity_id)
+                if source_entry and source_entry.unique_id:
+                    source_unique_id = source_entry.unique_id
+            except (TypeError, AttributeError, ValueError):
+                pass
+
             # Get all entities for our domain
             for entity_entry in self._entity_registry.entities.values():
                 if (
@@ -144,19 +238,36 @@ class EntityMonitor:
                         "_illuminance_mirror",
                         "_soil_moisture_mirror",
                         "_soil_conductivity_mirror",
+                        "_soil_conductivity_status",
+                        "_humidity_linked",  # Humidity linked sensors
+                        "_monitor_",  # Fallback for generic monitoring sensors
+                        "_esphome_running_status",  # ESPHome running status monitor
                     ]
                 ):
-                    # Get the entity state to check source_entity attribute
+                    # Get the entity state to check source attributes
                     state = self.hass.states.get(entity_entry.entity_id)
-                    if (
-                        state
-                        and state.attributes.get("source_entity") == source_entity_id
-                    ):
-                        mirror_entities.append(entity_entry.entity_id)
+                    if state:
+                        # Primary: Match by source_unique_id (most reliable)
+                        # Resilient to entity renames
+                        source_unique_id_match = (
+                            source_unique_id is not None
+                            and state.attributes.get("source_unique_id")
+                            == source_unique_id
+                        )
+
+                        if source_unique_id_match:
+                            mirror_entities.append(entity_entry.entity_id)
+                            _LOGGER.debug(
+                                "Found mirror entity %s referencing source %s "
+                                "(unique_id_match=%s)",
+                                entity_entry.entity_id,
+                                source_entity_id,
+                                source_unique_id_match,
+                            )
+                    else:
                         _LOGGER.debug(
-                            "Found mirror entity %s referencing source %s",
+                            "Mirror entity %s not found in states",
                             entity_entry.entity_id,
-                            source_entity_id,
                         )
         except Exception:
             _LOGGER.exception("Error finding mirror entities")
@@ -220,7 +331,7 @@ class EntityMonitor:
                 mirror_entity_id,
             )
 
-    async def _update_config_entry_source_entity(  # noqa: PLR0912
+    async def _update_config_entry_source_entity(  # noqa: PLR0912, PLR0915
         self,
         config_entry: ConfigEntry[dict[str, Any]],
         old_source_entity_id: str,
@@ -233,11 +344,95 @@ class EntityMonitor:
             data = dict(config_entry.data)
             updated = False
 
+            # Capture the unique_id of the new source entity for resilient tracking
+            new_unique_id = self._get_unique_id_from_entity_id(new_source_entity_id)
+
             # Check if this is a main Plant Assistant entry with locations
             if "irrigation_zones" in options:
                 zones = dict(options["irrigation_zones"])
                 for zone_id, zone_data_raw in zones.items():
                     zone_data = dict(zone_data_raw)
+                    zone_name = zone_data.get("name", f"Zone {zone_id}")
+
+                    # Get the linked device ID for this zone
+                    linked_device_id = zone_data.get("linked_device_id")
+
+                    # If we have a linked device, discover switch entities from it
+                    # instead of constructing entity IDs from zone name
+                    if linked_device_id:
+                        # Import helper to avoid circular imports
+                        from .sensor import (  # noqa: PLC0415
+                            find_device_entities_by_pattern,
+                        )
+
+                        switch_entities = find_device_entities_by_pattern(
+                            self.hass,
+                            linked_device_id,
+                            "switch",
+                            [
+                                "schedule",
+                                "sunrise_schedule",
+                                "afternoon_schedule",
+                                "sunset_schedule",
+                                "allow_rain_water_delivery",
+                                "allow_water_main_delivery",
+                            ],
+                        )
+
+                        # Build field mappings from discovered entities
+                        switch_field_mappings = {}
+                        for keyword, (entity_id, _unique_id) in switch_entities.items():
+                            if keyword == "schedule":
+                                switch_field_mappings[entity_id] = (
+                                    "master_schedule_switch_unique_id"
+                                )
+                            elif keyword == "sunrise_schedule":
+                                switch_field_mappings[entity_id] = (
+                                    "sunrise_switch_unique_id"
+                                )
+                            elif keyword == "afternoon_schedule":
+                                switch_field_mappings[entity_id] = (
+                                    "afternoon_switch_unique_id"
+                                )
+                            elif keyword == "sunset_schedule":
+                                switch_field_mappings[entity_id] = (
+                                    "sunset_switch_unique_id"
+                                )
+                            elif keyword == "allow_rain_water_delivery":
+                                switch_field_mappings[entity_id] = (
+                                    "allow_rain_water_delivery_switch_unique_id"
+                                )
+                            elif keyword == "allow_water_main_delivery":
+                                switch_field_mappings[entity_id] = (
+                                    "allow_water_main_delivery_switch_unique_id"
+                                )
+                    else:
+                        # Fallback: no linked device, skip switch processing
+                        switch_field_mappings = {}
+
+                    # Check if any zone-level switch was renamed
+                    for (
+                        expected_entity_id,
+                        unique_id_field,
+                    ) in switch_field_mappings.items():
+                        if (
+                            expected_entity_id == old_source_entity_id
+                            and new_unique_id
+                            and unique_id_field not in zone_data
+                        ):
+                            # This zone's switch was renamed - store new unique_id
+                            zone_data[unique_id_field] = new_unique_id
+                            updated = True
+                            _LOGGER.info(
+                                "Captured %s for zone %s after rename: "
+                                "%s -> %s (unique_id: %s)",
+                                unique_id_field,
+                                zone_name,
+                                old_source_entity_id,
+                                new_source_entity_id,
+                                new_unique_id,
+                            )
+
                     if "locations" in zone_data:
                         locations = dict(zone_data["locations"])
                         for location_id, location_data_raw in locations.items():
@@ -251,14 +446,20 @@ class EntityMonitor:
                                 location_data["humidity_entity_id"] = (
                                     new_source_entity_id
                                 )
+                                # Also store unique_id for resilience
+                                if new_unique_id:
+                                    location_data["humidity_entity_unique_id"] = (
+                                        new_unique_id
+                                    )
                                 updated = True
                                 _LOGGER.info(
                                     "Updated humidity_entity_id in zone %s,"
-                                    " location %s: %s -> %s",
+                                    " location %s: %s -> %s (unique_id: %s)",
                                     zone_id,
                                     location_id,
                                     old_source_entity_id,
                                     new_source_entity_id,
+                                    new_unique_id or "unknown",
                                 )
 
                             locations[location_id] = location_data
@@ -271,11 +472,16 @@ class EntityMonitor:
                 if data["humidity_entity_id"] == old_source_entity_id:
                     # Update the data (not options for subentries)
                     data["humidity_entity_id"] = new_source_entity_id
+                    # Also store unique_id for resilience
+                    if new_unique_id:
+                        data["humidity_entity_unique_id"] = new_unique_id
                     updated = True
                     _LOGGER.info(
-                        "Updated subentry data humidity_entity_id: %s -> %s",
+                        "Updated subentry data humidity_entity_id: %s -> %s"
+                        " (unique_id: %s)",
                         old_source_entity_id,
                         new_source_entity_id,
+                        new_unique_id or "unknown",
                     )
 
             # Check if the renamed entity belongs to a monitoring device

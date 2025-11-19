@@ -88,6 +88,7 @@ CONF_NAME = "name"
 CONF_LINKED_DEVICE_ID = "linked_device_id"
 CONF_MONITORING_DEVICE_ID = "monitoring_device_id"
 CONF_HUMIDITY_ENTITY_ID = "humidity_entity_id"
+CONF_HUMIDITY_ENTITY_UNIQUE_ID = "humidity_entity_unique_id"
 CONF_PLANT_DEVICE_ID = "plant_device_id"
 CONF_SLOT_NAME = "slot_name"
 CONF_ZONE_ID = "zone_id"
@@ -95,6 +96,19 @@ CONF_LOCATION_ID = "location_id"
 CONF_SLOT_ID = "slot_id"
 CONF_ACTION = "action"
 CONF_ORDER = "order"
+
+# Unique ID fields for entity references (entity rename resilience)
+CONF_MASTER_SCHEDULE_SWITCH_UNIQUE_ID = "master_schedule_switch_unique_id"
+CONF_SUNRISE_SWITCH_UNIQUE_ID = "sunrise_switch_unique_id"
+CONF_AFTERNOON_SWITCH_UNIQUE_ID = "afternoon_switch_unique_id"
+CONF_SUNSET_SWITCH_UNIQUE_ID = "sunset_switch_unique_id"
+CONF_ALLOW_RAIN_WATER_DELIVERY_SWITCH_UNIQUE_ID = (
+    "allow_rain_water_delivery_switch_unique_id"
+)
+CONF_ALLOW_WATER_MAIN_DELIVERY_SWITCH_UNIQUE_ID = (
+    "allow_water_main_delivery_switch_unique_id"
+)
+CONF_SOIL_MOISTURE_ENTITY_UNIQUE_ID = "soil_moisture_entity_unique_id"
 
 # Limits
 MAX_PLANT_SLOTS = 20
@@ -125,7 +139,6 @@ ICON_DLI = "mdi:counter"
 # Human-friendly reading name for PPFD (capitalized for display).
 # Keep short tokens/unique ids lowercase elsewhere.
 READING_PPFD = "PPFD"
-# Keep the short token for backwards-compatibility in places that expect 'dli'
 READING_DLI = "dli"
 
 # Friendly display name for Daily Light Integral and a slug for entity ids
@@ -147,24 +160,28 @@ MONITORING_SENSOR_MAPPINGS = {
         "suffix": "temperature_mirror",
         "icon": "mdi:thermometer",
         "name": "Temperature",
+        "unit": "°C",
     },
     "illuminance": {
         "device_class": "illuminance",
         "suffix": "illuminance_mirror",
         "icon": "mdi:brightness-6",
         "name": "Illuminance",
+        "unit": "lx",
     },
     "soil_moisture": {
         "device_class": "moisture",
         "suffix": "soil_moisture_mirror",
         "icon": "mdi:water-percent",
         "name": "Soil Moisture",
+        "unit": "%",
     },
     "soil_conductivity": {
         "device_class": "conductivity",
         "suffix": "soil_conductivity_mirror",
         "icon": "mdi:flash",
         "name": "Soil Conductivity",
+        "unit": "µS/cm",
         "unit_pattern": [
             "µS/cm",
             "μS/cm",
@@ -177,12 +194,14 @@ MONITORING_SENSOR_MAPPINGS = {
         "suffix": "monitor_battery_level",
         "icon": "mdi:battery",
         "name": "Monitor Battery Level",
+        "unit": "%",
     },
     "signal_strength": {
         "device_class": "signal_strength",
         "suffix": "monitor_signal_strength",
         "icon": "mdi:wifi",
         "name": "Monitor Signal Strength",
+        "unit": "dBm",
     },
 }
 

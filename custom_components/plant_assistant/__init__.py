@@ -28,15 +28,13 @@ _LOGGER = logging.getLogger(__name__)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
-async def async_setup(hass: HomeAssistant, _config: dict[str, Any]) -> bool:
-    """Set up the Plant Assistant integration (legacy YAML)."""
-    hass.data.setdefault(DOMAIN, {})
-    return True
-
-
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
+    Platform.SWITCH,
+    Platform.NUMBER,
     Platform.DATETIME,
+    Platform.BINARY_SENSOR,
+    Platform.BUTTON,
 ]
 
 
@@ -148,9 +146,7 @@ async def async_setup_entry(
     entry.async_on_unload(entry.add_update_listener(async_update_options))
 
     # Forward setup to all platforms (use plural API) - devices are now created
-    hass.async_create_task(
-        hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    )
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 

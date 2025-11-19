@@ -11,6 +11,8 @@ from custom_components.plant_assistant.sensor import (
     HumidityAboveThresholdHoursSensor,
 )
 
+from .conftest import create_state_changed_event
+
 
 @pytest.fixture
 def mock_hass():
@@ -231,11 +233,8 @@ async def test_humidity_state_changed_callback(mock_hass):
     mock_hass.async_create_task.return_value = mock_task
 
     # Trigger state change
-    sensor._humidity_state_changed(
-        "sensor.test_humidity",
-        MagicMock(),
-        MagicMock(),
-    )
+    event = create_state_changed_event(MagicMock())
+    sensor._humidity_state_changed(event)
 
     # Verify task was created
     mock_hass.async_create_task.assert_called_once()
