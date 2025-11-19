@@ -81,6 +81,70 @@ class MonitoringSensorMapping(TypedDict, total=False):
 _LOGGER = logging.getLogger(__name__)
 
 
+def _zone_has_esphome_device(
+    hass: HomeAssistant, entry: ConfigEntry[Any], subentry: Any
+) -> bool:
+    """
+    Check if the irrigation zone for this subentry has an ESPHome device linked.
+
+    Returns True if the zone has a linked_device_id with an esphome identifier,
+    False otherwise (virtual zone or non-esphome device).
+    """
+    try:
+        zone_id = subentry.data.get("zone_id")
+        if not zone_id:
+            return False
+
+        if not entry.options:
+            return False
+
+        zones = entry.options.get("irrigation_zones", {})
+        zone = zones.get(zone_id, {})
+        linked_device_id = zone.get("linked_device_id")
+
+        if not linked_device_id:
+            return False
+
+        # Check if the device has an esphome identifier
+        device_registry = dr.async_get(hass)
+        device = device_registry.async_get(linked_device_id)
+
+        if not device or not device.identifiers:
+            return False
+
+        # Check if any identifier tuple has 'esphome' as the domain
+        return any(domain == "esphome" for domain, _ in device.identifiers)
+
+    except (AttributeError, KeyError):
+        return False
+
+
+def _find_recently_watered_entity(
+    hass: HomeAssistant, location_name: str
+) -> str | None:
+    """
+    Find recently watered binary sensor entity for a location.
+
+    Returns:
+        Entity ID if found, None otherwise.
+
+    """
+    ent_reg = er.async_get(hass)
+
+    for entity in ent_reg.entities.values():
+        if (
+            entity.platform == DOMAIN
+            and entity.domain == "binary_sensor"
+            and entity.unique_id
+            and "recently_watered" in entity.unique_id
+            and location_name.lower().replace(" ", "_") in entity.unique_id.lower()
+        ):
+            _LOGGER.debug("Found recently watered sensor: %s", entity.entity_id)
+            return entity.entity_id
+
+    return None
+
+
 def _detect_sensor_type_from_entity(hass: HomeAssistant, entity_id: str) -> str | None:
     """
     Detect the sensor type from a source entity's device_class or entity_id.
@@ -1237,6 +1301,65 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                         "Added humidity above threshold weekly duration sensor for %s",
                         location_name,
                     )
+
+            # Create watering detection sensors for non-ESPHome zones
+            # These sensors help detect watering by monitoring moisture spikes
+            # Only create if location has monitoring device with soil moisture sensor
+            # AND is linked to an irrigation zone WITHOUT an ESPHome device
+            if monitoring_device_id:
+                # Check if zone has ESPHome device
+                has_esphome = _zone_has_esphome_device(hass, entry, subentry)
+
+                # Only create watering detection sensors for non-ESPHome zones
+                if not has_esphome:
+                    # Find soil moisture sensor to create statistics sensor from
+                    soil_moisture_entity_id = None
+                    soil_moisture_entity_unique_id = None
+                    for sensor in mirrored_sensors:
+                        if (
+                            isinstance(sensor, MonitoringSensor)
+                            and hasattr(sensor, "source_entity_id")
+                            and "moisture" in sensor.source_entity_id.lower()
+                        ):
+                            soil_moisture_entity_id = sensor.source_entity_id
+                            soil_moisture_entity_unique_id = getattr(
+                                sensor, "source_entity_unique_id", None
+                            )
+                            break
+
+                    if soil_moisture_entity_id:
+                        # Create Recent Change statistics sensor
+                        # This tracks the % change in soil moisture over 3 hours
+                        recent_change_sensor = SoilMoistureRecentChangeSensor(
+                            hass=hass,
+                            entry_id=subentry.subentry_id,
+                            location_device_id=location_device_id,
+                            location_name=location_name,
+                            soil_moisture_entity_id=soil_moisture_entity_id,
+                            soil_moisture_entity_unique_id=soil_moisture_entity_unique_id,
+                        )
+                        subentry_entities.append(recent_change_sensor)
+                        _LOGGER.debug(
+                            "Added soil moisture recent change sensor for %s",
+                            location_name,
+                        )
+
+                        # Create Last Watered timestamp sensor
+                        # Tracks when Recently Watered sensor detects watering
+                        # recently_watered_entity_id resolved dynamically
+                        # at runtime since binary sensors created after sensors
+                        last_watered_sensor = PlantLocationLastWateredSensor(
+                            hass=hass,
+                            entry_id=subentry.subentry_id,
+                            location_device_id=location_device_id,
+                            location_name=location_name,
+                            recently_watered_entity_id=None,  # Resolved dynamically
+                        )
+                        subentry_entities.append(last_watered_sensor)
+                        _LOGGER.debug(
+                            "Added last watered sensor for %s",
+                            location_name,
+                        )
 
             # Add entities with proper subentry association (like openplantbook_ref)
             _LOGGER.debug(
@@ -3854,6 +3977,205 @@ def _metric_to_attr(metric: str) -> str:
     return metric
 
 
+class PlantLocationLastWateredSensor(SensorEntity, RestoreEntity):
+    """
+    Sensor that tracks when a plant location was last watered.
+
+    This sensor monitors a 'recently_watered' binary sensor and records
+    the timestamp when watering is detected (transition from off to on).
+    The sensor uses the timestamp device_class for proper formatting.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        recently_watered_entity_id: str | None,
+    ) -> None:
+        """
+        Initialize the plant location last watered sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The config entry ID.
+            location_device_id: The device identifier for the location.
+            location_name: The name of the plant location.
+            recently_watered_entity_id: Entity ID of the recently watered binary sensor
+                (can be None if not yet created).
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self.location_name = location_name
+        self.recently_watered_entity_id = recently_watered_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} Watered"
+        self._attr_device_class = SensorDeviceClass.TIMESTAMP
+        self._attr_icon = "mdi:watering-can"
+
+        # Create unique ID
+        self._attr_unique_id = f"{DOMAIN}_{entry_id}_watered"
+
+        # Set device info to associate with the location device
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+        )
+
+        # Initialize state to today at midnight
+        today_midnight = dt_util.now().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        self._state: Any = today_midnight.isoformat()
+        self._attributes: dict[str, Any] = {
+            "detection_method": "initial_default",
+        }
+        self._unsubscribe = None
+
+    @callback
+    def _handle_recently_watered_change(self, event: Event) -> None:
+        """Handle state change of the recently watered binary sensor."""
+        try:
+            new_state = event.data.get("new_state")
+            old_state = event.data.get("old_state")
+
+            if not new_state or not old_state:
+                return
+
+            # Detect transition from off to on (watering detected)
+            if old_state.state == "off" and new_state.state == "on":
+                # Record the current timestamp
+                watered_time = dt_util.now()
+                old_time = self._state
+                self._state = watered_time.isoformat()
+
+                # Store context in attributes
+                self._attributes = {
+                    "source_entity": self.recently_watered_entity_id,
+                    "detection_method": "moisture_spike",
+                }
+
+                _LOGGER.debug(
+                    "Updated %s last watered time from %s to %s",
+                    self.location_name,
+                    old_time,
+                    self._state,
+                )
+
+                self.async_write_ha_state()
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Error processing recently watered change for %s: %s",
+                self.location_name,
+                exc,
+            )
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self._state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+
+        # Parse ISO 8601 datetime string to datetime object for TIMESTAMP device class
+        try:
+            if isinstance(self._state, str):
+                # Use dt_util.parse_datetime to handle ISO 8601 format with timezone
+                parsed_dt = dt_util.parse_datetime(self._state)
+                if parsed_dt:
+                    return parsed_dt
+                _LOGGER.warning(
+                    "Failed to parse datetime for %s: %s",
+                    self.location_name,
+                    self._state,
+                )
+                return None
+        except (ValueError, TypeError) as exc:
+            _LOGGER.warning(
+                "Error converting state to datetime for %s: %s",
+                self.location_name,
+                exc,
+            )
+            return None
+        else:
+            # Already a datetime object
+            return self._state
+
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        return "mdi:watering-can"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return self._attributes if self._attributes else None
+
+    async def async_added_to_hass(self) -> None:
+        """Set up state listener when entity is added to hass."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if (
+            last_state := await self.async_get_last_state()
+        ) and last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._state = last_state.state
+            if last_state.attributes:
+                self._attributes = dict(last_state.attributes)
+
+            _LOGGER.debug(
+                "Restored last watered sensor %s with state: %s",
+                self.entity_id,
+                self._state,
+            )
+
+        # Dynamically find the recently watered entity if not provided
+        if not self.recently_watered_entity_id:
+            self.recently_watered_entity_id = _find_recently_watered_entity(
+                self.hass, self.location_name
+            )
+            if self.recently_watered_entity_id:
+                _LOGGER.debug(
+                    "Found recently watered entity for %s: %s",
+                    self.location_name,
+                    self.recently_watered_entity_id,
+                )
+            else:
+                _LOGGER.warning(
+                    "Could not find recently watered entity for %s - "
+                    "last watered sensor will not function until entity is found",
+                    self.location_name,
+                )
+                return
+
+        # Subscribe to recently watered binary sensor state changes
+        try:
+            self._unsubscribe = async_track_state_change_event(
+                self.hass,
+                [self.recently_watered_entity_id],
+                self._handle_recently_watered_change,
+            )
+            _LOGGER.debug(
+                "Set up state listener for %s tracking %s",
+                self.location_name,
+                self.recently_watered_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up state listener for %s: %s",
+                self.location_name,
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
 class PlantCountLocationSensor(SensorEntity):
     """A sensor that counts the number of plants assigned to slots in a location."""
 
@@ -3933,44 +4255,59 @@ class MonitoringSensor(SensorEntity):
         # Set entity name to include device name for better entity_id formatting
         self._attr_name = f"{device_name} {entity_name}"
 
-        # Generate unique_id using device name and sensor type suffix
-        # Format: plant_assistant_<entry_id>_<device_name>_<sensor_type_suffix>
+        # Generate unique_id
+        self._setup_unique_id(device_name, sensor_type)
+
+        self._state = None
+        self._attributes: dict[str, Any] = {}
+        self._unsubscribe = None
+
+        # Set device_class, icon, and unit from mappings if available
+        self._apply_sensor_mappings(sensor_type)
+
+        # Resolve source entity ID using resilient lookup
+        self._resolve_source_entity()
+
+        # Initialize with current state of source entity
+        self._initialize_from_source()
+
+        # Subscribe to source entity state changes
+        self._subscribe_to_source()
+
+    def _setup_unique_id(self, device_name: str, sensor_type: str | None) -> None:
+        """Generate and set unique_id for this sensor."""
         if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
             mapping: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[sensor_type]
             suffix = mapping.get("suffix", sensor_type)
         else:
-            # Fallback to sanitized source entity id
             source_entity_safe = self.source_entity_id.replace(".", "_")
             suffix = f"monitor_{source_entity_safe}"
 
-        # Create a safe device name for the unique_id
         device_name_safe = device_name.lower().replace(" ", "_")
         self._attr_unique_id = f"{DOMAIN}_{self.entry_id}_{device_name_safe}_{suffix}"
 
-        self._state = None
-        self._attributes = {}
-        self._unsubscribe = None
+    def _apply_sensor_mappings(self, sensor_type: str | None) -> None:
+        """Apply device_class, icon, and unit from sensor type mappings."""
+        if not (sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS):
+            return
 
-        # Set device_class, icon, and unit from mappings if available
-        if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
-            mapping_config: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[
-                sensor_type
-            ]
-            device_class_val = mapping_config.get("device_class")
-            if device_class_val:
-                try:
-                    self._attr_device_class = SensorDeviceClass(device_class_val)
-                except ValueError:
-                    self._attr_device_class = None
-            self._attr_icon = mapping_config.get("icon")
-            # Use unit from mapping if available, otherwise get from source
-            unit = mapping_config.get("unit")
-            if unit:
-                self._attr_native_unit_of_measurement = unit
+        mapping_config: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[
+            sensor_type
+        ]
+        device_class_val = mapping_config.get("device_class")
+        if device_class_val:
+            with contextlib.suppress(ValueError):
+                self._attr_device_class = SensorDeviceClass(device_class_val)
 
-        # Resolve source entity ID using resilient lookup
+        self._attr_icon = mapping_config.get("icon")
+        unit = mapping_config.get("unit")
+        if unit:
+            self._attr_native_unit_of_measurement = unit
+
+    def _resolve_source_entity(self) -> None:
+        """Resolve the source entity ID using resilient lookup."""
         resolved_entity_id = _resolve_entity_id(
-            hass, self.source_entity_id, self.source_entity_unique_id
+            self.hass, self.source_entity_id, self.source_entity_unique_id
         )
         if resolved_entity_id != self.source_entity_id:
             _LOGGER.debug(
@@ -3980,25 +4317,35 @@ class MonitoringSensor(SensorEntity):
             )
             self.source_entity_id = resolved_entity_id
 
-        # Initialize with current state of source entity
-        if source_state := hass.states.get(self.source_entity_id):
-            self._state = source_state.state
-            self._attributes = dict(source_state.attributes)
-            self._attributes["source_entity"] = self.source_entity_id
+    def _initialize_from_source(self) -> None:
+        """Initialize state and attributes from source entity."""
+        source_state = self.hass.states.get(self.source_entity_id)
+        if not source_state:
+            return
 
-            # Capture source entity unique_id for resilient tracking
-            self._capture_source_unique_id()
+        self._state = source_state.state
+        self._attributes = dict(source_state.attributes)
+        self._attributes["source_entity"] = self.source_entity_id
 
-            # If no unit was set from mapping, try to get it from source entity
-            if not hasattr(self, "_attr_native_unit_of_measurement"):
-                source_unit = source_state.attributes.get("unit_of_measurement")
-                if source_unit:
-                    self._attr_native_unit_of_measurement = source_unit
+        self._capture_source_unique_id()
 
-        # Subscribe to source entity state changes
+        # Copy unit if not already set
+        if not hasattr(self, "_attr_native_unit_of_measurement"):
+            source_unit = source_state.attributes.get("unit_of_measurement")
+            if source_unit:
+                self._attr_native_unit_of_measurement = source_unit
+
+        # Copy state_class to enable statistics
+        if not hasattr(self, "_attr_state_class"):
+            source_state_class = source_state.attributes.get("state_class")
+            if source_state_class:
+                self._attr_state_class = source_state_class
+
+    def _subscribe_to_source(self) -> None:
+        """Subscribe to source entity state changes."""
         try:
             self._unsubscribe = async_track_state_change_event(
-                hass, self.source_entity_id, self._source_state_changed
+                self.hass, self.source_entity_id, self._source_state_changed
             )
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.warning(
@@ -4034,6 +4381,13 @@ class MonitoringSensor(SensorEntity):
             # Preserve source_unique_id if already captured
             if "source_unique_id" not in self._attributes:
                 self._capture_source_unique_id()
+
+            # Update state_class to match source if it changes
+            source_state_class = new_state.attributes.get("state_class")
+            if source_state_class and source_state_class != getattr(
+                self, "_attr_state_class", None
+            ):
+                self._attr_state_class = source_state_class
 
         self.async_write_ha_state()
 
@@ -4455,6 +4809,9 @@ class AggregatedLocationSensor(SensorEntity):
         # the display precision in Home Assistant if desired.
         self._attr_suggested_display_precision = 0
 
+        # Set state_class to enable statistics
+        self._attr_state_class = "measurement"
+
         # Set device info to associate with location device
         device_info = DeviceInfo(
             identifiers={(DOMAIN, location_device_id)},
@@ -4762,6 +5119,10 @@ class AggregatedSensor(SensorEntity):
         # that aggregated numeric values are displayed as integers unless
         # the user overrides the precision in Home Assistant.
         self._attr_suggested_display_precision = 0
+
+        # Set state_class to enable statistics
+        self._attr_state_class = "measurement"
+
         self._unsubscribe = None
         self._plant_entity_ids: list[str] | None = None
         self._plant_entity_unique_ids: dict[
@@ -6914,6 +7275,186 @@ class HumidityAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.warning(
                 "Failed to set up humidity above threshold sensor: %s",
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
+class SoilMoistureRecentChangeSensor(SensorEntity):
+    """
+    Statistics sensor that tracks recent change in soil moisture percentage.
+
+    This sensor monitors the percentage change in soil moisture over a 3-hour window.
+    When the change is >= 10%, it indicates the plant was likely watered.
+
+    This sensor is only created for non-ESPHome zones where watering detection
+    must be inferred from moisture changes rather than direct irrigation events.
+    """
+
+    def __init__(  # noqa: PLR0913
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        location_device_id: str,
+        location_name: str,
+        soil_moisture_entity_id: str,
+        soil_moisture_entity_unique_id: str | None = None,
+    ) -> None:
+        """
+        Initialize the soil moisture recent change sensor.
+
+        Args:
+            hass: The Home Assistant instance.
+            entry_id: The config entry ID.
+            location_device_id: The device identifier for the location.
+            location_name: The name of the plant location.
+            soil_moisture_entity_id: Entity ID of the soil moisture sensor to monitor.
+            soil_moisture_entity_unique_id: Unique ID of the soil moisture sensor.
+
+        """
+        self.hass = hass
+        self.entry_id = entry_id
+        self.location_device_id = location_device_id
+        self.location_name = location_name
+        self.soil_moisture_entity_id = soil_moisture_entity_id
+        self.soil_moisture_entity_unique_id = soil_moisture_entity_unique_id
+
+        # Set entity attributes
+        self._attr_name = f"{location_name} Soil Moisture Recent Change"
+
+        # Generate unique_id
+        location_name_safe = location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{entry_id}_{location_name_safe}_soil_moisture_recent_change"
+        )
+
+        # Set sensor properties
+        self._attr_device_class = None  # No device class for change percentage
+        self._attr_native_unit_of_measurement = "%"
+        self._attr_icon = "mdi:water-percent"
+        self._attr_state_class = "measurement"
+
+        # Set device info to associate with the location device
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, location_device_id)},
+        )
+
+        self._state: float | None = None
+        self._unsubscribe = None
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the native value of the sensor."""
+        if self._state is None:
+            return None
+
+        # Return the change percentage
+        # Positive values indicate moisture increase (watering)
+        # Negative values indicate moisture decrease (drying)
+        return round(self._state, 1)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return {
+            "source_entity": self.soil_moisture_entity_id,
+            "window_duration": "3 hours",
+            "watering_threshold": 10.0,
+        }
+
+    @callback
+    def _soil_moisture_state_changed(self, _event: Event) -> None:
+        """Handle soil moisture sensor state changes."""
+        # Trigger recalculation when soil moisture changes
+        self.hass.async_create_task(self._async_update_state())
+
+    async def _async_update_state(self) -> None:
+        """Update the sensor state."""
+        await self.async_update()
+        self.async_write_ha_state()
+
+    async def async_update(self) -> None:
+        """Update sensor state by calculating recent moisture change."""
+        try:
+            # Get recorder instance
+            recorder_instance = get_instance(self.hass)
+
+            # Calculate time range: last 3 hours
+            end_time = dt_util.now()
+            start_time = end_time - timedelta(hours=3)
+
+            # Get statistics for the soil moisture sensor over last 3 hours
+            stats = await recorder_instance.async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                start_time,
+                end_time,
+                {self.soil_moisture_entity_id},
+                "hour",
+                None,
+                {"mean"},
+            )
+
+            if not stats or self.soil_moisture_entity_id not in stats:
+                # No statistics available yet
+                self._state = None
+                return
+
+            sensor_stats = stats[self.soil_moisture_entity_id]
+            if len(sensor_stats) < 2:  # noqa: PLR2004
+                # Need at least 2 data points to calculate change
+                self._state = None
+                return
+
+            # Get first and last mean values
+            first_stat = sensor_stats[0]
+            last_stat = sensor_stats[-1]
+
+            first_mean = first_stat.get("mean")
+            last_mean = last_stat.get("mean")
+
+            if first_mean is None or last_mean is None:
+                self._state = None
+                return
+
+            # Calculate change: positive = increase (watering), negative = decrease
+            change = last_mean - first_mean
+            self._state = change
+
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            _LOGGER.debug(
+                "Error calculating recent moisture change for %s: %s",
+                self.location_name,
+                exc,
+            )
+            self._state = None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to soil moisture sensor state changes."""
+        try:
+            # Subscribe to soil moisture sensor state changes
+            # Update when soil moisture changes to recalculate the recent change
+            self._unsubscribe = async_track_state_change_event(
+                self.hass,
+                self.soil_moisture_entity_id,
+                self._soil_moisture_state_changed,
+            )
+            _LOGGER.debug(
+                "Soil moisture recent change sensor %s subscribed to %s",
+                self.entity_id,
+                self.soil_moisture_entity_id,
+            )
+
+            # Perform initial calculation
+            await self._async_update_state()
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up soil moisture recent change sensor: %s",
                 exc,
             )
 

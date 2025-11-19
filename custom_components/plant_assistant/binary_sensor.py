@@ -8,6 +8,7 @@ such as soil moisture levels falling below configured thresholds.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -45,6 +46,12 @@ BATTERY_LEVEL_THRESHOLD = 10
 # Error count threshold for problem status
 ERROR_COUNT_THRESHOLD = 3
 
+# Time constants
+SECONDS_IN_24_HOURS = 86400  # 24 hours in seconds
+WATERING_RECENT_CHANGE_THRESHOLD = (
+    10.0  # Percent change threshold for watering detection
+)
+
 
 @dataclass
 class SoilMoistureLowMonitorConfig:
@@ -70,6 +77,19 @@ class SoilMoistureHighMonitorConfig:
     soil_moisture_entity_id: str
     location_device_id: str | None = None
     soil_moisture_entity_unique_id: str | None = None
+    has_esphome_device: bool = False
+
+
+@dataclass
+class SoilMoistureHighOverrideMonitorConfig:
+    """Configuration for SoilMoistureHighOverrideMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    soil_moisture_entity_id: str
+    location_device_id: str | None = None
 
 
 @dataclass
@@ -107,6 +127,19 @@ class SoilConductivityHighMonitorConfig:
     irrigation_zone_name: str
     soil_conductivity_entity_id: str
     location_device_id: str | None = None
+    has_esphome_device: bool = False
+
+
+@dataclass
+class SoilConductivityHighOverrideMonitorConfig:
+    """Configuration for SoilConductivityHighOverrideMonitorBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_name: str
+    irrigation_zone_name: str
+    soil_conductivity_entity_id: str
+    location_device_id: str | None = None
 
 
 @dataclass
@@ -120,6 +153,7 @@ class SoilConductivityStatusMonitorConfig:
     soil_conductivity_entity_id: str
     soil_conductivity_entity_unique_id: str | None = None
     location_device_id: str | None = None
+    has_esphome_device: bool = False
 
 
 @dataclass
@@ -133,6 +167,7 @@ class SoilMoistureStatusMonitorConfig:
     soil_moisture_entity_id: str
     soil_moisture_entity_unique_id: str | None = None
     location_device_id: str | None = None
+    has_esphome_device: bool = False
 
 
 @dataclass
@@ -315,6 +350,17 @@ class IrrigationZoneStatusMonitorConfig:
     irrigation_zone_name: str
     zone_id: str
     zone_device_identifier: tuple[str, str]
+
+
+@dataclass
+class RecentlyWateredBinarySensorConfig:
+    """Configuration for RecentlyWateredBinarySensor."""
+
+    hass: HomeAssistant
+    entry_id: str
+    location_device_id: str
+    location_name: str
+    recent_change_entity_id: str
 
 
 class PlantCountStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
@@ -3878,6 +3924,7 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self.irrigation_zone_name = config.irrigation_zone_name
         self.soil_moisture_entity_id = config.soil_moisture_entity_id
         self._soil_moisture_entity_unique_id = config.soil_moisture_entity_unique_id
+        self.has_esphome_device = config.has_esphome_device
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Soil Moisture High Monitor"
@@ -3895,6 +3942,7 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self._max_soil_moisture: float | None = None
         self._current_soil_moisture: float | None = None
         self._ignore_until_datetime: Any = None
+        self._last_watered_entity_id: str | None = None
         self._unsubscribe: Any = None
         self._unsubscribe_max: Any = None
         self._unsubscribe_ignore_until: Any = None
@@ -3911,6 +3959,46 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             return float(value)
         except (ValueError, TypeError):
             return None
+
+    def _was_watered_recently(self) -> bool:
+        """
+        Check if plant was watered in the last 24 hours.
+
+        This check is only performed for zones WITHOUT ESPHome devices,
+        as ESPHome zones get direct watering data from irrigation events.
+
+        Returns True if watered within last 24 hours, False otherwise.
+        """
+        # Skip this check if zone has ESPHome device - they have direct watering data
+        if self.has_esphome_device:
+            return False
+
+        if not self._last_watered_entity_id:
+            return False
+
+        last_watered_state = self.hass.states.get(self._last_watered_entity_id)
+        if not last_watered_state or last_watered_state.state in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+        ):
+            return False
+
+        try:
+            last_watered_time = dt_util.parse_datetime(last_watered_state.state)
+            if not last_watered_time:
+                return False
+
+            now = dt_util.now()
+            time_since_watering = (now - last_watered_time).total_seconds()
+
+            # Check if within 24 hours
+            if time_since_watering < SECONDS_IN_24_HOURS:
+                return True
+
+        except (ValueError, TypeError, AttributeError) as exc:
+            _LOGGER.debug("Error checking last watered time: %s", exc)
+
+        return False
 
     def _update_state(self) -> None:
         """Update binary sensor state based on current moisture and threshold."""
@@ -3929,6 +4017,11 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                     return
             except (TypeError, AttributeError) as exc:
                 _LOGGER.debug("Error checking ignore until datetime: %s", exc)
+
+        # For non-ESPHome zones, suppress if watered in last 24 hours
+        if not self.has_esphome_device and self._was_watered_recently():
+            self._state = False
+            return
 
         # Binary sensor is ON (problem) when current moisture > maximum threshold
         self._state = self._current_soil_moisture > self._max_soil_moisture
@@ -3987,6 +4080,38 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             _LOGGER.debug(
                 "Error finding soil moisture high ignore until entity: %s", exc
             )
+
+        return None
+
+    async def _find_last_watered_sensor(self) -> str | None:
+        """
+        Find the last watered timestamp sensor for this location.
+
+        Only searches for non-ESPHome zones as ESPHome zones have
+        direct watering data from irrigation events.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        # Skip for ESPHome zones
+        if self.has_esphome_device:
+            return None
+
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id
+                    and f"{location_name_safe}_last_watered" in entity.unique_id
+                ):
+                    _LOGGER.debug("Found last watered sensor: %s", entity.entity_id)
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding last watered sensor: %s", exc)
 
         return None
 
@@ -4185,6 +4310,30 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self.location_name,
             )
 
+    async def _setup_last_watered_subscription(self) -> None:
+        """Find last watered sensor for non-ESPHome zones."""
+        # Only look for last watered sensor if zone doesn't have ESPHome device
+        if self.has_esphome_device:
+            _LOGGER.debug(
+                "Skipping last watered sensor lookup for %s - zone has ESPHome device",
+                self.location_name,
+            )
+            return
+
+        last_watered_entity_id = await self._find_last_watered_sensor()
+        if last_watered_entity_id:
+            self._last_watered_entity_id = last_watered_entity_id
+            _LOGGER.debug(
+                "Found last watered sensor for %s: %s",
+                self.location_name,
+                last_watered_entity_id,
+            )
+        else:
+            _LOGGER.debug(
+                "Last watered sensor not found for location %s (will be created later)",
+                self.location_name,
+            )
+
     async def _setup_soil_moisture_subscription(self) -> None:
         """Subscribe to soil moisture entity state changes."""
         # Re-resolve entity_id immediately before subscription to handle any
@@ -4248,6 +4397,7 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         # Set up subscriptions
         await self._setup_max_soil_moisture_subscription()
         await self._setup_ignore_until_subscription()
+        await self._setup_last_watered_subscription()
         await self._setup_soil_moisture_subscription()
 
         # Update initial state
@@ -4265,6 +4415,333 @@ class SoilMoistureHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             and self._unsubscribe_ignore_until
         ):
             self._unsubscribe_ignore_until()
+
+
+class SoilMoistureHighOverrideMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Informational binary sensor showing when high moisture warnings are suppressed.
+
+    This sensor turns ON when the plant was recently watered (within 24 hours)
+    AND the soil moisture is above the maximum threshold. It indicates that the
+    high moisture condition exists but warnings are being suppressed because
+    watering was detected.
+
+    This sensor is only created for non-ESPHome zones where watering detection
+    is inferred from moisture spikes rather than direct irrigation events.
+    """
+
+    def __init__(self, config: SoilMoistureHighOverrideMonitorConfig) -> None:
+        """
+        Initialize the Soil Moisture High Override Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.location_device_id = config.location_device_id
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+        self.soil_moisture_entity_id = config.soil_moisture_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Soil Moisture High Override"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_soil_moisture_high_override"
+        )
+
+        # Set binary sensor properties - this is informational, not a problem
+        self._attr_device_class = None
+        self._attr_icon = "mdi:water-check-outline"
+        self._attr_entity_category = None  # Make it visible, not diagnostic
+
+        # Set device info to associate with the location device
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, self.location_device_id)},
+        )
+
+        self._state: bool | None = None
+        self._soil_moisture: float | None = None
+        self._max_soil_moisture: float | None = None
+        self._last_watered_time: Any = None
+        self._unsubscribe: Any = None
+        self._unsubscribe_max: Any = None
+        self._unsubscribe_last_watered: Any = None
+        self._last_watered_entity_id: str | None = None
+
+    def _was_watered_recently(self) -> bool:
+        """
+        Check if the plant was watered within the last 24 hours.
+
+        Returns:
+            True if watered within last 24 hours, False otherwise.
+
+        """
+        if self._last_watered_time is None:
+            return False
+
+        try:
+            # Parse the last watered timestamp
+            last_watered_dt = None
+            if isinstance(self._last_watered_time, str):
+                last_watered_dt = dt_util.parse_datetime(self._last_watered_time)
+            else:
+                last_watered_dt = self._last_watered_time
+
+            if last_watered_dt is None:
+                return False
+
+            # Check if within 24 hours
+            now = dt_util.now()
+            time_since_watering = (now - last_watered_dt).total_seconds()
+
+            if time_since_watering < SECONDS_IN_24_HOURS:
+                return True
+
+        except (ValueError, TypeError, AttributeError) as exc:
+            _LOGGER.debug(
+                "Error checking last watered time for %s: %s",
+                self.location_name,
+                exc,
+            )
+
+        return False
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on conditions."""
+        # Sensor is unavailable if required data is missing
+        if self._soil_moisture is None or self._max_soil_moisture is None:
+            self._state = None
+            return
+
+        # Binary sensor is ON when:
+        # 1. Plant was watered recently (within 24 hours)
+        # 2. AND soil moisture is above maximum threshold
+        is_above_max = self._soil_moisture > self._max_soil_moisture
+        was_watered_recently = self._was_watered_recently()
+
+        self._state = is_above_max and was_watered_recently
+
+    async def _find_last_watered_sensor(self) -> str | None:
+        """
+        Find the last watered sensor for this location.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+            expected_unique_id = (
+                f"{DOMAIN}_{self.entry_id}_{location_name_safe}_last_watered"
+            )
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id == expected_unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found last watered sensor: %s for location %s",
+                        entity.entity_id,
+                        self.location_name,
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding last watered sensor: %s", exc)
+
+        return None
+
+    @callback
+    def _soil_moisture_state_changed(self, event: Event[EventStateChangedData]) -> None:
+        """Handle soil moisture sensor state changes."""
+        new_state = event.data.get("new_state")
+
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._soil_moisture = None
+        else:
+            try:
+                self._soil_moisture = float(new_state.state)
+            except (ValueError, TypeError):
+                _LOGGER.debug(
+                    "Could not convert soil moisture to float: %s",
+                    new_state.state,
+                )
+                self._soil_moisture = None
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _max_soil_moisture_state_changed(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
+        """Handle max soil moisture threshold sensor state changes."""
+        new_state = event.data.get("new_state")
+
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._max_soil_moisture = None
+        else:
+            try:
+                self._max_soil_moisture = float(new_state.state)
+            except (ValueError, TypeError):
+                _LOGGER.debug(
+                    "Could not convert max soil moisture to float: %s",
+                    new_state.state,
+                )
+                self._max_soil_moisture = None
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _last_watered_state_changed(self, event: Event[EventStateChangedData]) -> None:
+        """Handle last watered sensor state changes."""
+        new_state = event.data.get("new_state")
+
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._last_watered_time = None
+        else:
+            self._last_watered_time = new_state.state
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return true if the binary sensor is on."""
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return {
+            "soil_moisture": self._soil_moisture,
+            "max_soil_moisture": self._max_soil_moisture,
+            "last_watered": self._last_watered_time,
+            "was_watered_recently": self._was_watered_recently(),
+            "suppression_period_hours": 24,
+        }
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state from last state."""
+        if not (last_state := await self.async_get_last_state()):
+            return
+
+        if last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._state = last_state.state == "on"
+
+        if last_state.attributes:
+            if (moisture := last_state.attributes.get("soil_moisture")) is not None:
+                with contextlib.suppress(ValueError, TypeError):
+                    self._soil_moisture = float(moisture)
+
+            if (
+                max_moist := last_state.attributes.get("max_soil_moisture")
+            ) is not None:
+                with contextlib.suppress(ValueError, TypeError):
+                    self._max_soil_moisture = float(max_moist)
+
+            self._last_watered_time = last_state.attributes.get("last_watered")
+
+        _LOGGER.debug(
+            "Restored soil moisture high override sensor %s with state: %s",
+            self.entity_id,
+            self._state,
+        )
+
+    async def _setup_last_watered_listener(self) -> None:
+        """Set up listener for last watered sensor."""
+        self._last_watered_entity_id = await self._find_last_watered_sensor()
+        if not self._last_watered_entity_id:
+            return
+
+        if (
+            initial_state := self.hass.states.get(self._last_watered_entity_id)
+        ) and initial_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._last_watered_time = initial_state.state
+
+        self._unsubscribe_last_watered = async_track_state_change_event(
+            self.hass,
+            [self._last_watered_entity_id],
+            self._last_watered_state_changed,
+        )
+
+    async def _setup_max_moisture_listener(self) -> None:
+        """Set up listener for max soil moisture threshold sensor."""
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        max_entity_id = f"number.{location_name_safe}_max_soil_moisture"
+
+        if not self.hass.states.get(max_entity_id):
+            return
+
+        if (
+            initial_state := self.hass.states.get(max_entity_id)
+        ) and initial_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            with contextlib.suppress(ValueError, TypeError):
+                self._max_soil_moisture = float(initial_state.state)
+
+        self._unsubscribe_max = async_track_state_change_event(
+            self.hass,
+            [max_entity_id],
+            self._max_soil_moisture_state_changed,
+        )
+
+    async def _setup_moisture_listener(self) -> None:
+        """Set up listener for soil moisture sensor."""
+        try:
+            if (
+                initial_state := self.hass.states.get(self.soil_moisture_entity_id)
+            ) and initial_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                with contextlib.suppress(ValueError, TypeError):
+                    self._soil_moisture = float(initial_state.state)
+
+            self._unsubscribe = async_track_state_change_event(
+                self.hass,
+                [self.soil_moisture_entity_id],
+                self._soil_moisture_state_changed,
+            )
+            _LOGGER.debug(
+                "Set up state listener for %s tracking %s",
+                self.location_name,
+                self.soil_moisture_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up state listener for %s: %s",
+                self.location_name,
+                exc,
+            )
+
+    async def async_added_to_hass(self) -> None:
+        """Set up state listeners when entity is added to hass."""
+        await super().async_added_to_hass()
+
+        await self._restore_previous_state()
+        await self._setup_last_watered_listener()
+        await self._setup_max_moisture_listener()
+        await self._setup_moisture_listener()
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+        if hasattr(self, "_unsubscribe_max") and self._unsubscribe_max:
+            self._unsubscribe_max()
+        if (
+            hasattr(self, "_unsubscribe_last_watered")
+            and self._unsubscribe_last_watered
+        ):
+            self._unsubscribe_last_watered()
 
 
 class SoilMoistureWaterSoonMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
@@ -4967,6 +5444,7 @@ class SoilConductivityHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
         self.location_name = config.location_name
         self.irrigation_zone_name = config.irrigation_zone_name
         self.soil_conductivity_entity_id = config.soil_conductivity_entity_id
+        self.has_esphome_device = config.has_esphome_device
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Soil Conductivity High Monitor"
@@ -4984,6 +5462,7 @@ class SoilConductivityHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
         self._state: bool | None = None
         self._max_soil_conductivity: float | None = None
         self._current_soil_conductivity: float | None = None
+        self._last_watered_entity_id: str | None = None
         self._unsubscribe: Any = None
         self._unsubscribe_conductivity_max: Any = None
 
@@ -5002,6 +5481,46 @@ class SoilConductivityHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
         except (ValueError, TypeError):
             return None
 
+    def _was_watered_recently(self) -> bool:
+        """
+        Check if plant was watered in the last 24 hours.
+
+        This check is only performed for zones WITHOUT ESPHome devices,
+        as ESPHome zones get direct watering data from irrigation events.
+
+        Returns True if watered within last 24 hours, False otherwise.
+        """
+        # Skip this check if zone has ESPHome device - they have direct watering data
+        if self.has_esphome_device:
+            return False
+
+        if not self._last_watered_entity_id:
+            return False
+
+        last_watered_state = self.hass.states.get(self._last_watered_entity_id)
+        if not last_watered_state or last_watered_state.state in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+        ):
+            return False
+
+        try:
+            last_watered_time = dt_util.parse_datetime(last_watered_state.state)
+            if not last_watered_time:
+                return False
+
+            now = dt_util.now()
+            time_since_watering = (now - last_watered_time).total_seconds()
+
+            # Check if within 24 hours
+            if time_since_watering < SECONDS_IN_24_HOURS:
+                return True
+
+        except (ValueError, TypeError, AttributeError) as exc:
+            _LOGGER.debug("Error checking last watered time: %s", exc)
+
+        return False
+
     def _update_state(self) -> None:
         """Update binary sensor state based on conductivity and maximum threshold."""
         # If either value is unavailable, set state to None (sensor unavailable)
@@ -5010,6 +5529,11 @@ class SoilConductivityHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
             or self._max_soil_conductivity is None
         ):
             self._state = None
+            return
+
+        # For non-ESPHome zones, suppress if watered recently
+        if not self.has_esphome_device and self._was_watered_recently():
+            self._state = False
             return
 
         # Binary sensor is ON (problem) when current conductivity > maximum threshold
@@ -5040,6 +5564,38 @@ class SoilConductivityHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
 
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.debug("Error finding max soil conductivity sensor: %s", exc)
+
+        return None
+
+    async def _find_last_watered_sensor(self) -> str | None:
+        """
+        Find the last watered timestamp sensor for this location.
+
+        Only searches for non-ESPHome zones as ESPHome zones have
+        direct watering data from irrigation events.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        # Skip for ESPHome zones
+        if self.has_esphome_device:
+            return None
+
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id
+                    and f"{location_name_safe}_last_watered" in entity.unique_id
+                ):
+                    _LOGGER.debug("Found last watered sensor: %s", entity.entity_id)
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding last watered sensor: %s", exc)
 
         return None
 
@@ -5185,6 +5741,30 @@ class SoilConductivityHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
                 self.location_name,
             )
 
+    async def _setup_last_watered_subscription(self) -> None:
+        """Find last watered sensor for non-ESPHome zones."""
+        # Only look for last watered sensor if zone doesn't have ESPHome device
+        if self.has_esphome_device:
+            _LOGGER.debug(
+                "Skipping last watered sensor lookup for %s - zone has ESPHome device",
+                self.location_name,
+            )
+            return
+
+        last_watered_entity_id = await self._find_last_watered_sensor()
+        if last_watered_entity_id:
+            self._last_watered_entity_id = last_watered_entity_id
+            _LOGGER.debug(
+                "Found last watered sensor for %s: %s",
+                self.location_name,
+                last_watered_entity_id,
+            )
+        else:
+            _LOGGER.debug(
+                "Last watered sensor not found for location %s (will be created later)",
+                self.location_name,
+            )
+
     async def async_added_to_hass(self) -> None:
         """Add entity to hass and subscribe to state changes."""
         # Restore previous state if available
@@ -5194,6 +5774,7 @@ class SoilConductivityHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
         # Set up subscriptions
         await self._setup_soil_conductivity_subscription()
         await self._setup_max_soil_conductivity_subscription()
+        await self._setup_last_watered_subscription()
 
         # Update initial state
         self._update_state()
@@ -5208,6 +5789,340 @@ class SoilConductivityHighMonitorBinarySensor(BinarySensorEntity, RestoreEntity)
             and self._unsubscribe_conductivity_max
         ):
             self._unsubscribe_conductivity_max()
+
+
+class SoilConductivityHighOverrideMonitorBinarySensor(
+    BinarySensorEntity, RestoreEntity
+):
+    """
+    Informational binary sensor showing when high conductivity warnings are suppressed.
+
+    This sensor turns ON when the plant was recently watered (within 24 hours)
+    AND the soil conductivity is above the maximum threshold. It indicates that the
+    high conductivity condition exists but warnings are being suppressed because
+    watering was detected.
+
+    This sensor is only created for non-ESPHome zones where watering detection
+    is inferred from moisture spikes rather than direct irrigation events.
+    """
+
+    def __init__(self, config: SoilConductivityHighOverrideMonitorConfig) -> None:
+        """
+        Initialize the Soil Conductivity High Override Monitor binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.location_device_id = config.location_device_id
+        self.location_name = config.location_name
+        self.irrigation_zone_name = config.irrigation_zone_name
+        self.soil_conductivity_entity_id = config.soil_conductivity_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Soil Conductivity High Override"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}"
+            "_soil_conductivity_high_override"
+        )
+
+        # Set binary sensor properties - this is informational, not a problem
+        self._attr_device_class = None
+        self._attr_icon = "mdi:sprout-outline"
+        self._attr_entity_category = None  # Make it visible, not diagnostic
+
+        # Set device info to associate with the location device
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, self.location_device_id)},
+        )
+
+        self._state: bool | None = None
+        self._soil_conductivity: float | None = None
+        self._max_soil_conductivity: float | None = None
+        self._last_watered_time: Any = None
+        self._unsubscribe: Any = None
+        self._unsubscribe_max: Any = None
+        self._unsubscribe_last_watered: Any = None
+        self._last_watered_entity_id: str | None = None
+
+    def _was_watered_recently(self) -> bool:
+        """
+        Check if the plant was watered within the last 24 hours.
+
+        Returns:
+            True if watered within last 24 hours, False otherwise.
+
+        """
+        if self._last_watered_time is None:
+            return False
+
+        try:
+            # Parse the last watered timestamp
+            last_watered_dt = None
+            if isinstance(self._last_watered_time, str):
+                last_watered_dt = dt_util.parse_datetime(self._last_watered_time)
+            else:
+                last_watered_dt = self._last_watered_time
+
+            if last_watered_dt is None:
+                return False
+
+            # Check if within 24 hours
+            now = dt_util.now()
+            time_since_watering = (now - last_watered_dt).total_seconds()
+
+            if time_since_watering < SECONDS_IN_24_HOURS:
+                return True
+
+        except (ValueError, TypeError, AttributeError) as exc:
+            _LOGGER.debug(
+                "Error checking last watered time for %s: %s",
+                self.location_name,
+                exc,
+            )
+
+        return False
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on conditions."""
+        # Sensor is unavailable if required data is missing
+        if self._soil_conductivity is None or self._max_soil_conductivity is None:
+            self._state = None
+            return
+
+        # Binary sensor is ON when:
+        # 1. Plant was watered recently (within 24 hours)
+        # 2. AND soil conductivity is above maximum threshold
+        is_above_max = self._soil_conductivity > self._max_soil_conductivity
+        was_watered_recently = self._was_watered_recently()
+
+        self._state = is_above_max and was_watered_recently
+
+    async def _find_last_watered_sensor(self) -> str | None:
+        """
+        Find the last watered sensor for this location.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+            expected_unique_id = (
+                f"{DOMAIN}_{self.entry_id}_{location_name_safe}_last_watered"
+            )
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id == expected_unique_id
+                ):
+                    _LOGGER.debug(
+                        "Found last watered sensor: %s for location %s",
+                        entity.entity_id,
+                        self.location_name,
+                    )
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding last watered sensor: %s", exc)
+
+        return None
+
+    @callback
+    def _soil_conductivity_state_changed(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
+        """Handle soil conductivity sensor state changes."""
+        new_state = event.data.get("new_state")
+
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._soil_conductivity = None
+        else:
+            try:
+                self._soil_conductivity = float(new_state.state)
+            except (ValueError, TypeError):
+                _LOGGER.debug(
+                    "Could not convert soil conductivity to float: %s",
+                    new_state.state,
+                )
+                self._soil_conductivity = None
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _max_soil_conductivity_state_changed(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
+        """Handle max soil conductivity threshold sensor state changes."""
+        new_state = event.data.get("new_state")
+
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._max_soil_conductivity = None
+        else:
+            try:
+                self._max_soil_conductivity = float(new_state.state)
+            except (ValueError, TypeError):
+                _LOGGER.debug(
+                    "Could not convert max soil conductivity to float: %s",
+                    new_state.state,
+                )
+                self._max_soil_conductivity = None
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @callback
+    def _last_watered_state_changed(self, event: Event[EventStateChangedData]) -> None:
+        """Handle last watered sensor state changes."""
+        new_state = event.data.get("new_state")
+
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._last_watered_time = None
+        else:
+            self._last_watered_time = new_state.state
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return true if the binary sensor is on."""
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return {
+            "soil_conductivity": self._soil_conductivity,
+            "max_soil_conductivity": self._max_soil_conductivity,
+            "last_watered": self._last_watered_time,
+            "was_watered_recently": self._was_watered_recently(),
+            "suppression_period_hours": 24,
+        }
+
+    async def _restore_previous_state(self) -> None:
+        """Restore previous state from last state."""
+        if not (last_state := await self.async_get_last_state()):
+            return
+
+        if last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._state = last_state.state == "on"
+
+        if last_state.attributes:
+            if (
+                conductivity := last_state.attributes.get("soil_conductivity")
+            ) is not None:
+                with contextlib.suppress(ValueError, TypeError):
+                    self._soil_conductivity = float(conductivity)
+
+            if (
+                max_cond := last_state.attributes.get("max_soil_conductivity")
+            ) is not None:
+                with contextlib.suppress(ValueError, TypeError):
+                    self._max_soil_conductivity = float(max_cond)
+
+            self._last_watered_time = last_state.attributes.get("last_watered")
+
+        _LOGGER.debug(
+            "Restored soil conductivity high override sensor %s with state: %s",
+            self.entity_id,
+            self._state,
+        )
+
+    async def _setup_last_watered_listener(self) -> None:
+        """Set up listener for last watered sensor."""
+        self._last_watered_entity_id = await self._find_last_watered_sensor()
+        if not self._last_watered_entity_id:
+            return
+
+        if (
+            initial_state := self.hass.states.get(self._last_watered_entity_id)
+        ) and initial_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._last_watered_time = initial_state.state
+
+        self._unsubscribe_last_watered = async_track_state_change_event(
+            self.hass,
+            [self._last_watered_entity_id],
+            self._last_watered_state_changed,
+        )
+
+    async def _setup_max_conductivity_listener(self) -> None:
+        """Set up listener for max soil conductivity threshold sensor."""
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        max_entity_id = f"number.{location_name_safe}_max_soil_conductivity"
+
+        if not self.hass.states.get(max_entity_id):
+            return
+
+        if (
+            initial_state := self.hass.states.get(max_entity_id)
+        ) and initial_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            with contextlib.suppress(ValueError, TypeError):
+                self._max_soil_conductivity = float(initial_state.state)
+
+        self._unsubscribe_max = async_track_state_change_event(
+            self.hass,
+            [max_entity_id],
+            self._max_soil_conductivity_state_changed,
+        )
+
+    async def _setup_conductivity_listener(self) -> None:
+        """Set up listener for soil conductivity sensor."""
+        try:
+            if (
+                initial_state := self.hass.states.get(self.soil_conductivity_entity_id)
+            ) and initial_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                with contextlib.suppress(ValueError, TypeError):
+                    self._soil_conductivity = float(initial_state.state)
+
+            self._unsubscribe = async_track_state_change_event(
+                self.hass,
+                [self.soil_conductivity_entity_id],
+                self._soil_conductivity_state_changed,
+            )
+            _LOGGER.debug(
+                "Set up state listener for %s tracking %s",
+                self.location_name,
+                self.soil_conductivity_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up state listener for %s: %s",
+                self.location_name,
+                exc,
+            )
+
+    async def async_added_to_hass(self) -> None:
+        """Set up state listeners when entity is added to hass."""
+        await super().async_added_to_hass()
+
+        await self._restore_previous_state()
+        await self._setup_last_watered_listener()
+        await self._setup_max_conductivity_listener()
+        await self._setup_conductivity_listener()
+
+        # Update initial state
+        self._update_state()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+        if hasattr(self, "_unsubscribe_max") and self._unsubscribe_max:
+            self._unsubscribe_max()
+        if (
+            hasattr(self, "_unsubscribe_last_watered")
+            and self._unsubscribe_last_watered
+        ):
+            self._unsubscribe_last_watered()
 
 
 class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
@@ -5237,6 +6152,7 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
         self.soil_conductivity_entity_unique_id = (
             config.soil_conductivity_entity_unique_id
         )
+        self.has_esphome_device = config.has_esphome_device
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Soil Conductivity Status"
@@ -5255,6 +6171,7 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
         self._min_soil_conductivity: float | None = 0.0
         self._max_soil_conductivity: float | None = 0.0
         self._current_soil_conductivity: float | None = 0.0
+        self._last_watered_entity_id: str | None = None
         self._unsubscribe: Any = None
         self._unsubscribe_conductivity_min: Any = None
         self._unsubscribe_conductivity_max: Any = None
@@ -5274,6 +6191,46 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
         except (ValueError, TypeError):
             return None
 
+    def _was_watered_recently(self) -> bool:
+        """
+        Check if plant was watered in the last 24 hours.
+
+        This check is only performed for zones WITHOUT ESPHome devices,
+        as ESPHome zones get direct watering data from irrigation events.
+
+        Returns True if watered within last 24 hours, False otherwise.
+        """
+        # Skip this check if zone has ESPHome device - they have direct watering data
+        if self.has_esphome_device:
+            return False
+
+        if not self._last_watered_entity_id:
+            return False
+
+        last_watered_state = self.hass.states.get(self._last_watered_entity_id)
+        if not last_watered_state or last_watered_state.state in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+        ):
+            return False
+
+        try:
+            last_watered_time = dt_util.parse_datetime(last_watered_state.state)
+            if not last_watered_time:
+                return False
+
+            now = dt_util.now()
+            time_since_watering = (now - last_watered_time).total_seconds()
+
+            # Check if within 24 hours
+            if time_since_watering < SECONDS_IN_24_HOURS:
+                return True
+
+        except (ValueError, TypeError, AttributeError) as exc:
+            _LOGGER.debug("Error checking last watered time: %s", exc)
+
+        return False
+
     def _update_state(self) -> None:
         """Update binary sensor state based on conductivity and thresholds."""
         # If any required value is unavailable, set state to None (sensor unavailable)
@@ -5291,8 +6248,13 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
             self._state = True
             self._conductivity_status = "low"
         elif self._current_soil_conductivity > self._max_soil_conductivity:
-            self._state = True
-            self._conductivity_status = "high"
+            # For non-ESPHome zones, suppress high conductivity if watered recently
+            if not self.has_esphome_device and self._was_watered_recently():
+                self._state = False
+                self._conductivity_status = "normal"
+            else:
+                self._state = True
+                self._conductivity_status = "high"
         else:
             self._state = False
             self._conductivity_status = "normal"
@@ -5350,6 +6312,38 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
 
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.debug("Error finding max soil conductivity sensor: %s", exc)
+
+        return None
+
+    async def _find_last_watered_sensor(self) -> str | None:
+        """
+        Find the last watered timestamp sensor for this location.
+
+        Only searches for non-ESPHome zones as ESPHome zones have
+        direct watering data from irrigation events.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        # Skip for ESPHome zones
+        if self.has_esphome_device:
+            return None
+
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id
+                    and f"{location_name_safe}_last_watered" in entity.unique_id
+                ):
+                    _LOGGER.debug("Found last watered sensor: %s", entity.entity_id)
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding last watered sensor: %s", exc)
 
         return None
 
@@ -5559,6 +6553,24 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
                 self.location_name,
             )
 
+    async def _setup_last_watered_subscription(self) -> None:
+        """Find last watered sensor for non-ESPHome zones."""
+        # Only find last watered sensor for non-ESPHome zones
+        if not self.has_esphome_device:
+            last_watered_entity_id = await self._find_last_watered_sensor()
+            if last_watered_entity_id:
+                self._last_watered_entity_id = last_watered_entity_id
+                _LOGGER.debug(
+                    "Found last watered sensor for %s: %s",
+                    self.location_name,
+                    last_watered_entity_id,
+                )
+            else:
+                _LOGGER.debug(
+                    "No last watered sensor found for location %s",
+                    self.location_name,
+                )
+
     async def async_added_to_hass(self) -> None:
         """Add entity to hass and subscribe to state changes."""
         # Restore previous state if available
@@ -5569,6 +6581,7 @@ class SoilConductivityStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntit
         await self._setup_soil_conductivity_subscription()
         await self._setup_min_soil_conductivity_subscription()
         await self._setup_max_soil_conductivity_subscription()
+        await self._setup_last_watered_subscription()
 
         # Update initial state
         self._update_state()
@@ -5616,6 +6629,7 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self.irrigation_zone_name = config.irrigation_zone_name
         self.soil_moisture_entity_id = config.soil_moisture_entity_id
         self.soil_moisture_entity_unique_id = config.soil_moisture_entity_unique_id
+        self.has_esphome_device = config.has_esphome_device
 
         # Set entity attributes
         self._attr_name = f"{self.location_name} Soil Moisture Status"
@@ -5637,6 +6651,7 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         self._max_soil_moisture: float | None = 0.0
         self._current_soil_moisture: float | None = 0.0
         self._ignore_until_datetime: Any = None
+        self._last_watered_entity_id: str | None = None
         self._unsubscribe: Any = None
         self._unsubscribe_moisture_min: Any = None
         self._unsubscribe_moisture_max: Any = None
@@ -5654,6 +6669,46 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             return float(value)
         except (ValueError, TypeError):
             return None
+
+    def _was_watered_recently(self) -> bool:
+        """
+        Check if plant was watered in the last 24 hours.
+
+        This check is only performed for zones WITHOUT ESPHome devices,
+        as ESPHome zones get direct watering data from irrigation events.
+
+        Returns True if watered within last 24 hours, False otherwise.
+        """
+        # Skip this check if zone has ESPHome device - they have direct watering data
+        if self.has_esphome_device:
+            return False
+
+        if not self._last_watered_entity_id:
+            return False
+
+        last_watered_state = self.hass.states.get(self._last_watered_entity_id)
+        if not last_watered_state or last_watered_state.state in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+        ):
+            return False
+
+        try:
+            last_watered_time = dt_util.parse_datetime(last_watered_state.state)
+            if not last_watered_time:
+                return False
+
+            now = dt_util.now()
+            time_since_watering = (now - last_watered_time).total_seconds()
+
+            # Check if within 24 hours
+            if time_since_watering < SECONDS_IN_24_HOURS:
+                return True
+
+        except (ValueError, TypeError, AttributeError) as exc:
+            _LOGGER.debug("Error checking last watered time: %s", exc)
+
+        return False
 
     def _update_state(self) -> None:
         """Update binary sensor state based on moisture and thresholds."""
@@ -5687,8 +6742,13 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
             self._state = True
             self._moisture_status = "low"
         elif self._current_soil_moisture > self._max_soil_moisture:
-            self._state = True
-            self._moisture_status = "high"
+            # For non-ESPHome zones, suppress high moisture if watered in last 24 hours
+            if not self.has_esphome_device and self._was_watered_recently():
+                self._state = False
+                self._moisture_status = "normal"
+            else:
+                self._state = True
+                self._moisture_status = "high"
         elif (
             self._current_soil_moisture <= water_soon_threshold
             and self._current_soil_moisture >= self._min_soil_moisture
@@ -5779,6 +6839,38 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
 
         except (AttributeError, KeyError, ValueError) as exc:
             _LOGGER.debug("Error finding soil moisture ignore until entity: %s", exc)
+
+        return None
+
+    async def _find_last_watered_sensor(self) -> str | None:
+        """
+        Find the last watered timestamp sensor for this location.
+
+        Only searches for non-ESPHome zones as ESPHome zones have
+        direct watering data from irrigation events.
+
+        Returns the entity_id if found, None otherwise.
+        """
+        # Skip for ESPHome zones
+        if self.has_esphome_device:
+            return None
+
+        try:
+            ent_reg = er.async_get(self.hass)
+            location_name_safe = self.location_name.lower().replace(" ", "_")
+
+            for entity in ent_reg.entities.values():
+                if (
+                    entity.platform == DOMAIN
+                    and entity.domain == "sensor"
+                    and entity.unique_id
+                    and f"{location_name_safe}_last_watered" in entity.unique_id
+                ):
+                    _LOGGER.debug("Found last watered sensor: %s", entity.entity_id)
+                    return entity.entity_id
+
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.debug("Error finding last watered sensor: %s", exc)
 
         return None
 
@@ -6068,6 +7160,30 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
                 self.location_name,
             )
 
+    async def _setup_last_watered_subscription(self) -> None:
+        """Find last watered sensor for non-ESPHome zones."""
+        # Only look for last watered sensor if zone doesn't have ESPHome device
+        if self.has_esphome_device:
+            _LOGGER.debug(
+                "Skipping last watered sensor lookup for %s - zone has ESPHome device",
+                self.location_name,
+            )
+            return
+
+        last_watered_entity_id = await self._find_last_watered_sensor()
+        if last_watered_entity_id:
+            self._last_watered_entity_id = last_watered_entity_id
+            _LOGGER.debug(
+                "Found last watered sensor for %s: %s",
+                self.location_name,
+                last_watered_entity_id,
+            )
+        else:
+            _LOGGER.debug(
+                "Last watered sensor not found for location %s (will be created later)",
+                self.location_name,
+            )
+
     async def async_added_to_hass(self) -> None:
         """Add entity to hass and subscribe to state changes."""
         # Restore previous state if available
@@ -6079,6 +7195,7 @@ class SoilMoistureStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
         await self._setup_min_soil_moisture_subscription()
         await self._setup_max_soil_moisture_subscription()
         await self._setup_ignore_until_subscription()
+        await self._setup_last_watered_subscription()
 
         # Update initial state
         self._update_state()
@@ -8340,6 +9457,157 @@ class LinkStatusBinarySensor(BinarySensorEntity, RestoreEntity):
             self._unsubscribe_ignore_until()
 
 
+class RecentlyWateredBinarySensor(BinarySensorEntity, RestoreEntity):
+    """
+    Binary sensor that detects when a plant location has been recently watered.
+
+    This sensor monitors a 'recent_change' statistics sensor that tracks the
+    percentage change in soil moisture over a 3-hour window. When the change
+    is >= 10%, it indicates the plant was likely watered, and this sensor turns ON.
+
+    This sensor is only created for plant locations associated with irrigation zones
+    that do NOT have ESPHome devices, as ESPHome zones have direct irrigation data.
+    """
+
+    def __init__(self, config: RecentlyWateredBinarySensorConfig) -> None:
+        """
+        Initialize the Recently Watered binary sensor.
+
+        Args:
+            config: Configuration object containing sensor parameters.
+
+        """
+        self.hass = config.hass
+        self.entry_id = config.entry_id
+        self.location_device_id = config.location_device_id
+        self.location_name = config.location_name
+        self.recent_change_entity_id = config.recent_change_entity_id
+
+        # Set entity attributes
+        self._attr_name = f"{self.location_name} Recently Watered"
+
+        # Generate unique_id
+        location_name_safe = self.location_name.lower().replace(" ", "_")
+        self._attr_unique_id = (
+            f"{DOMAIN}_{self.entry_id}_{location_name_safe}_recently_watered"
+        )
+
+        # Set binary sensor properties - use moisture device class
+        self._attr_device_class = BinarySensorDeviceClass.MOISTURE
+        self._attr_icon = "mdi:water-check"
+
+        # Set device info to associate with the location device
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, self.location_device_id)},
+        )
+
+        self._state: bool | None = None
+        self._recent_change: float | None = None
+        self._unsubscribe: Any = None
+
+    def _update_state(self) -> None:
+        """Update binary sensor state based on recent moisture change."""
+        # If recent change is unknown, set state to False (off)
+        # This prevents the sensor from showing as "Unknown"
+        if self._recent_change is None:
+            self._state = False
+            return
+
+        # Binary sensor is ON when recent change exceeds threshold
+        # This indicates watering was detected
+        self._state = self._recent_change >= WATERING_RECENT_CHANGE_THRESHOLD
+
+    @callback
+    def _recent_change_state_changed(self, event: Event[EventStateChangedData]) -> None:
+        """Handle recent change sensor state changes."""
+        new_state = event.data.get("new_state")
+
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._recent_change = None
+        else:
+            try:
+                self._recent_change = float(new_state.state)
+            except (ValueError, TypeError):
+                _LOGGER.debug(
+                    "Could not convert recent change to float: %s",
+                    new_state.state,
+                )
+                self._recent_change = None
+
+        self._update_state()
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return true if the binary sensor is on."""
+        return self._state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        return {
+            "recent_change_percent": self._recent_change,
+            "detection_threshold": 10.0,
+            "source_entity": self.recent_change_entity_id,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Set up state listener when entity is added to hass."""
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        if last_state := await self.async_get_last_state():
+            if last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                self._state = last_state.state == "on"
+
+            # Restore recent_change from attributes if available
+            if last_state.attributes:
+                recent_change = last_state.attributes.get("recent_change_percent")
+                if recent_change is not None:
+                    with contextlib.suppress(ValueError, TypeError):
+                        self._recent_change = float(recent_change)
+
+            _LOGGER.debug(
+                "Restored recently watered sensor %s with state: %s",
+                self.entity_id,
+                self._state,
+            )
+
+        # Subscribe to recent change sensor state changes
+        try:
+            # Get initial state
+            if (
+                initial_state := self.hass.states.get(self.recent_change_entity_id)
+            ) and initial_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                try:
+                    self._recent_change = float(initial_state.state)
+                    self._update_state()
+                except (ValueError, TypeError):
+                    pass
+
+            self._unsubscribe = async_track_state_change_event(
+                self.hass,
+                [self.recent_change_entity_id],
+                self._recent_change_state_changed,
+            )
+            _LOGGER.debug(
+                "Set up state listener for %s tracking %s",
+                self.location_name,
+                self.recent_change_entity_id,
+            )
+        except (AttributeError, KeyError, ValueError) as exc:
+            _LOGGER.warning(
+                "Failed to set up state listener for %s: %s",
+                self.location_name,
+                exc,
+            )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up when entity is removed."""
+        if self._unsubscribe:
+            self._unsubscribe()
+
+
 class DailyLightIntegralStatusMonitorBinarySensor(BinarySensorEntity, RestoreEntity):
     """
     Binary sensor that monitors Daily Light Integral (DLI) status against thresholds.
@@ -9173,12 +10441,78 @@ def _get_irrigation_zone_name(entry: ConfigEntry[Any], subentry: Any) -> str:
     return irrigation_zone_name
 
 
-async def _create_soil_moisture_sensor(
+def _zone_has_esphome_device(
+    hass: HomeAssistant, entry: ConfigEntry[Any], subentry: Any
+) -> bool:
+    """
+    Check if the irrigation zone for this subentry has an ESPHome device linked.
+
+    Returns True if the zone has a linked_device_id with an esphome identifier,
+    False otherwise (virtual zone or non-esphome device).
+    """
+    try:
+        zone_id = subentry.data.get("zone_id")
+        if not zone_id:
+            return False
+
+        if not entry.options:
+            return False
+
+        zones = entry.options.get("irrigation_zones", {})
+        zone = zones.get(zone_id, {})
+        linked_device_id = zone.get("linked_device_id")
+
+        if not linked_device_id:
+            return False
+
+        # Check if the device has an esphome identifier
+        device_registry = dr.async_get(hass)
+        device = device_registry.async_get(linked_device_id)
+
+        if not device or not device.identifiers:
+            return False
+
+        # Check if any identifier tuple has 'esphome' as the domain
+        return any(domain == "esphome" for domain, _ in device.identifiers)
+
+    except (AttributeError, KeyError):
+        return False
+
+
+def _find_recent_change_entity(hass: HomeAssistant, location_name: str) -> str | None:
+    """
+    Find soil moisture recent change entity for a location.
+
+    Returns:
+        Entity ID if found, None otherwise.
+
+    """
+    ent_reg = er.async_get(hass)
+
+    for entity in ent_reg.entities.values():
+        if (
+            entity.platform == DOMAIN
+            and entity.domain == "sensor"
+            and entity.unique_id
+            and "soil_moisture_recent_change" in entity.unique_id
+            and location_name.lower().replace(" ", "_") in entity.unique_id.lower()
+        ):
+            _LOGGER.debug(
+                "Found soil moisture recent change sensor: %s", entity.entity_id
+            )
+            return entity.entity_id
+
+    return None
+
+
+async def _create_soil_moisture_sensor(  # noqa: PLR0913
     hass: HomeAssistant,
     subentry_id: str,
     location_name: str,
     irrigation_zone_name: str,
     location_device_id: str | None,
+    *,
+    has_esphome_device: bool = False,
 ) -> BinarySensorEntity | None:
     """Create soil moisture status monitor sensor."""
     soil_moisture_result = _find_soil_moisture_entity(hass, location_name)
@@ -9195,6 +10529,7 @@ async def _create_soil_moisture_sensor(
         soil_moisture_entity_id=soil_moisture_entity_id,
         soil_moisture_entity_unique_id=soil_moisture_unique_id,
         location_device_id=location_device_id,
+        has_esphome_device=has_esphome_device,
     )
     sensor = SoilMoistureStatusMonitorBinarySensor(moisture_status_config)
     _LOGGER.debug(
@@ -9204,12 +10539,14 @@ async def _create_soil_moisture_sensor(
     return sensor
 
 
-async def _create_soil_conductivity_sensor(
+async def _create_soil_conductivity_sensor(  # noqa: PLR0913
     hass: HomeAssistant,
     subentry_id: str,
     location_name: str,
     irrigation_zone_name: str,
     location_device_id: str | None,
+    *,
+    has_esphome_device: bool = False,
 ) -> BinarySensorEntity | None:
     """Create soil conductivity status monitor sensor."""
     soil_conductivity_result = _find_soil_conductivity_entity(hass, location_name)
@@ -9228,6 +10565,7 @@ async def _create_soil_conductivity_sensor(
         soil_conductivity_entity_id=soil_conductivity_entity_id,
         soil_conductivity_entity_unique_id=soil_conductivity_unique_id,
         location_device_id=location_device_id,
+        has_esphome_device=has_esphome_device,
     )
     sensor = SoilConductivityStatusMonitorBinarySensor(conductivity_status_config)
     _LOGGER.debug(
@@ -9486,7 +10824,7 @@ async def _create_link_monitors(
     return sensors
 
 
-async def _create_subentry_sensors(
+async def _create_subentry_sensors(  # noqa: PLR0912, PLR0915
     hass: HomeAssistant,
     entry: ConfigEntry[Any],
     subentry_id: str,
@@ -9571,15 +10909,28 @@ async def _create_subentry_sensors(
         _LOGGER.debug("No soil moisture sensor found for location %s", location_name)
         return subentry_binary_sensors
 
+    # Determine if zone has ESPHome device
+    has_esphome_device = _zone_has_esphome_device(hass, entry, subentry)
+
     # Create all environmental sensors
     moisture_sensor = await _create_soil_moisture_sensor(
-        hass, subentry_id, location_name, irrigation_zone_name, location_device_id
+        hass,
+        subentry_id,
+        location_name,
+        irrigation_zone_name,
+        location_device_id,
+        has_esphome_device=has_esphome_device,
     )
     if moisture_sensor:
         subentry_binary_sensors.append(moisture_sensor)
 
     conductivity_sensor = await _create_soil_conductivity_sensor(
-        hass, subentry_id, location_name, irrigation_zone_name, location_device_id
+        hass,
+        subentry_id,
+        location_name,
+        irrigation_zone_name,
+        location_device_id,
+        has_esphome_device=has_esphome_device,
     )
     if conductivity_sensor:
         subentry_binary_sensors.append(conductivity_sensor)
@@ -9619,6 +10970,40 @@ async def _create_subentry_sensors(
     )
     link_monitors = await _create_link_monitors(link_monitor_config)
     subentry_binary_sensors.extend(link_monitors)
+
+    # Create Recently Watered binary sensor for non-ESPHome zones
+    # This sensor monitors the Recent Change sensor and turns ON when
+    # soil moisture increases by 10% or more (indicating watering)
+    if not _zone_has_esphome_device(hass, entry, subentry):
+        recent_change_entity_id = _find_recent_change_entity(hass, location_name)
+        if recent_change_entity_id:
+            recently_watered_config = RecentlyWateredBinarySensorConfig(
+                hass=hass,
+                entry_id=subentry_id,
+                location_name=location_name,
+                location_device_id=location_device_id,
+                recent_change_entity_id=recent_change_entity_id,
+            )
+            recently_watered_sensor = RecentlyWateredBinarySensor(
+                recently_watered_config
+            )
+            subentry_binary_sensors.append(recently_watered_sensor)
+            _LOGGER.debug(
+                "Created recently watered binary sensor for %s (non-ESPHome zone)",
+                location_name,
+            )
+        else:
+            _LOGGER.debug(
+                "No recent change sensor found for %s - "
+                "skipping recently watered sensor",
+                location_name,
+            )
+    else:
+        _LOGGER.debug(
+            "Skipping recently watered sensor for %s - "
+            "ESPHome zone has direct watering data",
+            location_name,
+        )
 
     return subentry_binary_sensors
 
