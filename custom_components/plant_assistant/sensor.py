@@ -1665,7 +1665,7 @@ class IrrigationZoneLastRunStartTimeSensor(SensorEntity, RestoreEntity):
                 start_time,
             )
 
-        return start_time
+        return cast("str | None", start_time)
 
     @callback
     def _handle_esphome_event(self, event: Any) -> None:
@@ -1893,7 +1893,7 @@ class IrrigationZoneLastRunEndTimeSensor(SensorEntity, RestoreEntity):
                 end_time,
             )
 
-        return end_time
+        return cast("str | None", end_time)
 
     @callback
     def _handle_esphome_event(self, event: Any) -> None:
@@ -2120,7 +2120,7 @@ class IrrigationZoneLastFertiliserInjectionSensor(SensorEntity, RestoreEntity):
                 injection_time,
             )
 
-        return injection_time
+        return cast("str | None", injection_time)
 
     @callback
     def _handle_esphome_event(self, event: Any) -> None:
@@ -2327,7 +2327,7 @@ class IrrigationZoneLastRunExpectedDurationSensor(SensorEntity, RestoreEntity):
                 duration,
             )
 
-        return duration
+        return cast("str | None", duration)
 
     @callback
     def _handle_esphome_event(self, event: Any) -> None:
@@ -2711,7 +2711,7 @@ class IrrigationZoneLastRunWaterMainUsageSensor(SensorEntity, RestoreEntity):
                 usage,
             )
 
-        return usage
+        return cast("str | None", usage)
 
     @callback
     def _handle_esphome_event(self, event: Any) -> None:
@@ -2900,7 +2900,7 @@ class IrrigationZoneLastRunRainWaterUsageSensor(SensorEntity, RestoreEntity):
                 usage,
             )
 
-        return usage
+        return cast("str | None", usage)
 
     @callback
     def _handle_esphome_event(self, event: Any) -> None:
@@ -3089,7 +3089,7 @@ class IrrigationZoneLastRunFertiliserUsageSensor(SensorEntity, RestoreEntity):
                 usage,
             )
 
-        return usage
+        return cast("str | None", usage)
 
     @callback
     def _handle_esphome_event(self, event: Any) -> None:
@@ -3276,7 +3276,7 @@ class IrrigationZoneLastErrorSensor(SensorEntity, RestoreEntity):
                 error_time,
             )
 
-        return error_time
+        return cast("str | None", error_time)
 
     @callback
     def _handle_esphome_event(self, event: Any) -> None:
@@ -3474,7 +3474,7 @@ class IrrigationZoneLastErrorTypeSensor(SensorEntity, RestoreEntity):
                 error_type,
             )
 
-        return error_type
+        return cast("str | None", error_type)
 
     @callback
     def _handle_esphome_event(self, event: Any) -> None:
@@ -3652,7 +3652,7 @@ class IrrigationZoneLastErrorMessageSensor(SensorEntity, RestoreEntity):
                 error_detail,
             )
 
-        return error_detail
+        return cast("str | None", error_detail)
 
     @callback
     def _handle_esphome_event(self, event: Any) -> None:

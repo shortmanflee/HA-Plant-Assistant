@@ -19,9 +19,10 @@ repos:
         args: [--config, .linter/ruff.toml]
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.17.1
+    rev: v1.13.0
     hooks:
       - id: mypy
+        always_run: true
         args: [--config-file, .linter/mypy.ini]
         additional_dependencies: [types-requests, homeassistant, voluptuous]
 
