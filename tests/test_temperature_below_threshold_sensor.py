@@ -238,10 +238,6 @@ async def test_temperature_state_changed_callback(mock_hass):
     # Verify async_create_task was called to schedule the update
     mock_hass.async_create_task.assert_called_once()
 
-    # Close the coroutine that was passed to async_create_task to avoid warnings
-    coroutine = mock_hass.async_create_task.call_args[0][0]
-    coroutine.close()
-
 
 async def test_async_update_state(mock_hass, mock_entity_registry):
     """Test async state update recalculates and writes state."""

@@ -273,8 +273,10 @@ async def test_temperature_state_changed_callback(mock_hass, mock_entity_registr
     ):
         mock_stats_fn.return_value = mock_stats
 
-        # Trigger state change
-        event = create_state_changed_event(MagicMock())
+        # Trigger state change with realistic temperature state
+        mock_temp_state = MagicMock()
+        mock_temp_state.state = "26.5"
+        event = create_state_changed_event(mock_temp_state)
         sensor._temperature_state_changed(event)  # type: ignore[arg-type]
 
         # Verify task was created
