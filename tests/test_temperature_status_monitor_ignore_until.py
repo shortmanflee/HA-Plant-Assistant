@@ -1,11 +1,10 @@
 """Tests for Temperature Status Monitor binary sensor ignore until functionality."""
 
 from datetime import timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE
-from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from custom_components.plant_assistant.binary_sensor import (
@@ -13,39 +12,7 @@ from custom_components.plant_assistant.binary_sensor import (
     TemperatureStatusMonitorConfig,
 )
 
-
-def create_state_changed_event(new_state):
-    """Create an Event object for state changed callbacks."""
-    event_data = EventStateChangedData(
-        entity_id="sensor.test",
-        old_state=None,
-        new_state=new_state,
-    )
-    return Event("state_changed", event_data)
-
-
-@pytest.fixture
-def mock_hass():
-    """Create a mock Home Assistant instance."""
-    hass = MagicMock(spec=HomeAssistant)
-    hass.states = MagicMock()
-    hass.data = {}
-    hass.async_create_task = MagicMock()
-    return hass
-
-
-@pytest.fixture
-def mock_entity_registry():
-    """Create a mock entity registry."""
-    registry = MagicMock()
-    registry.entities = MagicMock()
-    registry.entities.values = MagicMock(return_value=[])
-
-    with patch(
-        "custom_components.plant_assistant.binary_sensor.er.async_get",
-        return_value=registry,
-    ):
-        yield registry
+from .conftest import create_state_changed_event
 
 
 @pytest.fixture

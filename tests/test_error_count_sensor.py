@@ -4,19 +4,10 @@ import unittest
 from unittest.mock import Mock, patch
 
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import Event, EventStateChangedData
 
 from custom_components.plant_assistant.sensor import IrrigationZoneErrorCountSensor
 
-
-def create_state_changed_event(new_state):
-    """Create an Event object for state changed callbacks."""
-    event_data = EventStateChangedData(
-        entity_id="sensor.test",
-        old_state=None,
-        new_state=new_state,
-    )
-    return Event("state_changed", event_data)
+from .conftest import create_state_changed_event
 
 
 class TestIrrigationZoneErrorCountSensor(unittest.TestCase):
