@@ -7,7 +7,7 @@ pytest-cov==6.2.1
 homeassistant==2025.8.3
 pytest-homeassistant-custom-component==0.13.272
 mypy==1.13.0
-bandit[toml]==1.7.10
+bandit[toml]==1.8.6
 yamllint==1.35.1
 pre-commit==4.3.0
 pylint==3.3.1
