@@ -530,22 +530,22 @@ class TestIrrigationZoneFertiliserDueSensor:
     def test_zone_id_normalization(
         self, hass_mock: Mock
     ) -> IrrigationZoneFertiliserDueSensor:
-        """Test that zone IDs are normalized from dashes to underscores."""
+        """Test that zone names are normalized from spaces to underscores."""
         sensor = IrrigationZoneFertiliserDueSensor(
             hass=hass_mock,
             entry_id="test_entry",
             zone_device_id=("esphome", "abc123"),
-            zone_name="Front Garden",
+            zone_name="Front Garden",  # Space will be converted to underscore
             zone_id="zone-1",
         )
 
         hass_mock.states.get.side_effect = [
             MockState("on"),  # system switch
-            MockState("on"),  # zone enabled - using zone_1 format
+            MockState("on"),  # zone enabled - using front_garden format
         ]
 
-        # Check that _build_entity_id is called with zone_1 format
-        sensor._get_entity_state("input_boolean.zone_1_fertiliser_injection")
+        # Check that entity state is retrieved correctly
+        sensor._get_entity_state("input_boolean.front_garden_fertiliser_injection")
         hass_mock.states.get.assert_called()
 
     @patch("custom_components.plant_assistant.sensor.dt_util.now")
@@ -622,13 +622,13 @@ class TestIrrigationZoneFertiliserDueSensor:
         sensor._attributes = {
             "last_evaluation": "2025-01-15T10:30:00+00:00",
             "event_type": "esphome.irrigation_gateway_update",
-            "zone_id": "zone-1",
+            "zone_name": "Lawn",
         }
 
         attrs = sensor.extra_state_attributes
         assert attrs is not None
         assert "last_evaluation" in attrs
-        assert attrs["zone_id"] == "zone-1"
+        assert attrs["zone_name"] == "Lawn"
 
     def test_extra_state_attributes_empty(
         self, sensor: IrrigationZoneFertiliserDueSensor
@@ -656,7 +656,7 @@ class TestIrrigationZoneFertiliserDueSensor:
         # Mock previous state
         last_state = Mock()
         last_state.state = "on"
-        last_state.attributes = {"zone_id": "zone-1"}
+        last_state.attributes = {"zone_name": "Lawn"}
 
         mock_get_last_state.return_value = last_state
 
@@ -668,7 +668,7 @@ class TestIrrigationZoneFertiliserDueSensor:
 
         # Check that state was restored
         assert sensor._state == "on"
-        assert "zone_id" in sensor._attributes
+        assert "zone_name" in sensor._attributes
 
     @patch(
         "custom_components.plant_assistant.sensor.IrrigationZoneFertiliserDueSensor.async_get_last_state"

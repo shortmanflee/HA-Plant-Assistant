@@ -30,7 +30,7 @@ from homeassistant.const import (
     EntityCategory,
     UnitOfTime,
 )
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -1120,6 +1120,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                     if (
                         isinstance(sensor, MonitoringSensor)
                         and hasattr(sensor, "source_entity_id")
+                        and sensor.source_entity_id
                         and "illuminance" in sensor.source_entity_id.lower()
                     ):
                         # Capture both entity_id and unique_id for resilient lookup
@@ -1227,6 +1228,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                     if (
                         isinstance(sensor, MonitoringSensor)
                         and hasattr(sensor, "source_entity_id")
+                        and sensor.source_entity_id
                         and "temperature" in sensor.source_entity_id.lower()
                     ):
                         # Capture both entity_id and unique_id for resilient lookup
@@ -1319,6 +1321,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                         if (
                             isinstance(sensor, MonitoringSensor)
                             and hasattr(sensor, "source_entity_id")
+                            and sensor.source_entity_id
                             and "moisture" in sensor.source_entity_id.lower()
                         ):
                             soil_moisture_entity_id = sensor.source_entity_id
@@ -1637,9 +1640,9 @@ class IrrigationZoneLastRunStartTimeSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone start time from event data.
 
-        The zone ID is converted to a key like 'zone_1_start_time' for Zone 1.
-        The zone_id may be stored as 'zone-1' in config but the event data
-        uses 'zone_1_start_time' format, so we normalize by replacing dashes.
+        The zone_name is converted to a key like 'lawn_start_time'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
 
         Args:
             event_data: The event data dictionary.
@@ -1648,19 +1651,16 @@ class IrrigationZoneLastRunStartTimeSensor(SensorEntity, RestoreEntity):
             The start time value if found, None otherwise.
 
         """
-        # Convert zone_id from 'zone-1' format to 'zone_1_start_time' format
-        # by replacing dashes with underscores
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_start_time"
+        # Convert zone_name to lowercase and replace spaces with underscores
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_start_time"
         start_time = event_data.get(zone_key)
 
         if start_time:
             _LOGGER.debug(
-                "Extracted zone start time for %s: zone_id=%s, "
-                "normalized=%s, key=%s, value=%s",
+                "Extracted zone start time for %s: normalized=%s, key=%s, value=%s",
                 self.zone_name,
-                self.zone_id,
-                normalized_zone_id,
+                normalized_zone_name,
                 zone_key,
                 start_time,
             )
@@ -1704,10 +1704,11 @@ class IrrigationZoneLastRunStartTimeSensor(SensorEntity, RestoreEntity):
             self._state = start_time
 
             # Store event data in attributes
+            normalized_zone_name = self.zone_name.lower().replace(" ", "_")
             self._attributes = {
                 "event_type": "esphome.irrigation_gateway_update",
-                "zone_id": self.zone_id,
-                "zone_key": f"{self.zone_id.replace('-', '_')}_start_time",
+                "zone_name": self.zone_name,
+                "zone_key": f"{normalized_zone_name}_start_time",
             }
 
             # Log the update
@@ -1865,9 +1866,9 @@ class IrrigationZoneLastRunEndTimeSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone end time from event data.
 
-        The zone ID is converted to a key like 'zone_1_end_time' for Zone 1.
-        The zone_id may be stored as 'zone-1' in config but the event data
-        uses 'zone_1_end_time' format, so we normalize by replacing dashes.
+        The zone_name is converted to a key like 'lawn_end_time'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
 
         Args:
             event_data: The event data dictionary.
@@ -1876,19 +1877,16 @@ class IrrigationZoneLastRunEndTimeSensor(SensorEntity, RestoreEntity):
             The end time value if found, None otherwise.
 
         """
-        # Convert zone_id from 'zone-1' format to 'zone_1_end_time' format
-        # by replacing dashes with underscores
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_end_time"
+        # Convert zone_name to lowercase and replace spaces with underscores
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_end_time"
         end_time = event_data.get(zone_key)
 
         if end_time:
             _LOGGER.debug(
-                "Extracted zone end time for %s: zone_id=%s, "
-                "normalized=%s, key=%s, value=%s",
+                "Extracted zone end time for %s: normalized=%s, key=%s, value=%s",
                 self.zone_name,
-                self.zone_id,
-                normalized_zone_id,
+                normalized_zone_name,
                 zone_key,
                 end_time,
             )
@@ -2095,9 +2093,9 @@ class IrrigationZoneLastFertiliserInjectionSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone fertiliser injection time from event data.
 
-        The zone ID is converted to a key like 'zone_1_fertiliser_injection_time'.
-        The zone_id may be stored as 'zone-1' in config but the event data
-        uses 'zone_1_fertiliser_injection_time' format, so we normalize.
+        The zone_name is converted to a key like 'lawn_fertiliser_injection_time'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
 
         Args:
             event_data: The event data dictionary.
@@ -2106,16 +2104,16 @@ class IrrigationZoneLastFertiliserInjectionSensor(SensorEntity, RestoreEntity):
             The fertiliser injection time value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_fertiliser_injection_time"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_fertiliser_injection_time"
         injection_time = event_data.get(zone_key)
 
         if injection_time:
             _LOGGER.debug(
                 "Extracted zone fertiliser injection time for %s: "
-                "zone_id=%s, key=%s, value=%s",
+                "normalized=%s, key=%s, value=%s",
                 self.zone_name,
-                self.zone_id,
+                normalized_zone_name,
                 zone_key,
                 injection_time,
             )
@@ -2307,6 +2305,10 @@ class IrrigationZoneLastRunExpectedDurationSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone expected duration from event data.
 
+        The zone_name is converted to a key like 'lawn_duration'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
+
         Args:
             event_data: The event data dictionary.
 
@@ -2314,15 +2316,16 @@ class IrrigationZoneLastRunExpectedDurationSensor(SensorEntity, RestoreEntity):
             The duration value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_duration"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_duration"
         duration = event_data.get(zone_key)
 
         if duration:
             _LOGGER.debug(
-                "Extracted zone expected duration for %s: zone_id=%s, key=%s, value=%s",
+                "Extracted zone expected duration for %s: zone_name=%s, "
+                "key=%s, value=%s",
                 self.zone_name,
-                self.zone_id,
+                normalized_zone_name,
                 zone_key,
                 duration,
             )
@@ -2503,9 +2506,9 @@ class IrrigationZoneLastRunActualDurationSensor(SensorEntity, RestoreEntity):
             The duration in minutes, or None if calculation fails.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        start_key = f"{normalized_zone_id}_start_time"
-        end_key = f"{normalized_zone_id}_end_time"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        start_key = f"{normalized_zone_name}_start_time"
+        end_key = f"{normalized_zone_name}_end_time"
 
         start_time = event_data.get(start_key)
         end_time = event_data.get(end_key)
@@ -2553,9 +2556,11 @@ class IrrigationZoneLastRunActualDurationSensor(SensorEntity, RestoreEntity):
             old_state = self._state
             self._state = duration
 
+            normalized_zone_name = self.zone_name.lower().replace(" ", "_")
             self._attributes = {
                 "event_type": "esphome.irrigation_gateway_update",
-                "zone_id": self.zone_id,
+                "zone_name": self.zone_name,
+                "zone_key": f"{normalized_zone_name}_start_time",
             }
 
             if old_state != self._state:
@@ -2699,8 +2704,8 @@ class IrrigationZoneLastRunWaterMainUsageSensor(SensorEntity, RestoreEntity):
             The water main usage value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_water_main_usage"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_water_main_usage"
         usage = event_data.get(zone_key)
 
         if usage:
@@ -2888,8 +2893,8 @@ class IrrigationZoneLastRunRainWaterUsageSensor(SensorEntity, RestoreEntity):
             The rain water tank usage value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_rain_water_tank_usage"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_rain_water_tank_usage"
         usage = event_data.get(zone_key)
 
         if usage:
@@ -3077,8 +3082,8 @@ class IrrigationZoneLastRunFertiliserUsageSensor(SensorEntity, RestoreEntity):
             The fertiliser usage value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_fertiliser_usage"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_fertiliser_usage"
         usage = event_data.get(zone_key)
 
         if usage:
@@ -3116,9 +3121,11 @@ class IrrigationZoneLastRunFertiliserUsageSensor(SensorEntity, RestoreEntity):
             old_state = self._state
             self._state = usage
 
+            normalized_zone_name = self.zone_name.lower().replace(" ", "_")
             self._attributes = {
                 "event_type": "esphome.irrigation_gateway_update",
-                "zone_id": self.zone_id,
+                "zone_name": self.zone_name,
+                "zone_key": f"{normalized_zone_name}_fertiliser_usage",
             }
 
             if old_state != self._state:
@@ -3257,6 +3264,10 @@ class IrrigationZoneLastErrorSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone error time from event data.
 
+        The zone_name is converted to a key like 'lawn_error_time'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
+
         Args:
             event_data: The event data dictionary.
 
@@ -3264,8 +3275,8 @@ class IrrigationZoneLastErrorSensor(SensorEntity, RestoreEntity):
             The error time value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_error_time"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_error_time"
         error_time = event_data.get(zone_key)
 
         if error_time:
@@ -3455,6 +3466,10 @@ class IrrigationZoneLastErrorTypeSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone error type from event data.
 
+        The zone_name is converted to a key like 'lawn_error_type'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
+
         Args:
             event_data: The event data dictionary.
 
@@ -3462,8 +3477,8 @@ class IrrigationZoneLastErrorTypeSensor(SensorEntity, RestoreEntity):
             The error type value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_error_type"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_error_type"
         error_type = event_data.get(zone_key)
 
         if error_type:
@@ -3633,6 +3648,10 @@ class IrrigationZoneLastErrorMessageSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone error detail/message from event data.
 
+        The zone_name is converted to a key like 'lawn_error_detail'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
+
         Args:
             event_data: The event data dictionary.
 
@@ -3640,8 +3659,8 @@ class IrrigationZoneLastErrorMessageSensor(SensorEntity, RestoreEntity):
             The error detail value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_error_detail"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_error_detail"
         error_detail = event_data.get(zone_key)
 
         if error_detail:
@@ -3823,7 +3842,9 @@ class IrrigationZoneErrorCountSensor(SensorEntity, RestoreEntity):
         )
 
     @callback
-    def _handle_last_error_state_change(self, event: Event) -> None:
+    def _handle_last_error_state_change(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
         """Handle Last Error entity state changes."""
         new_state = event.data.get("new_state")
         try:
@@ -4036,7 +4057,9 @@ class PlantLocationLastWateredSensor(SensorEntity, RestoreEntity):
         self._unsubscribe = None
 
     @callback
-    def _handle_recently_watered_change(self, event: Event) -> None:
+    def _handle_recently_watered_change(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
         """Handle state change of the recently watered binary sensor."""
         try:
             new_state = event.data.get("new_state")
@@ -4255,9 +4278,6 @@ class MonitoringSensor(SensorEntity):
         # Set entity name to include device name for better entity_id formatting
         self._attr_name = f"{device_name} {entity_name}"
 
-        # Generate unique_id
-        self._setup_unique_id(device_name, sensor_type)
-
         self._state = None
         self._attributes: dict[str, Any] = {}
         self._unsubscribe = None
@@ -4265,8 +4285,14 @@ class MonitoringSensor(SensorEntity):
         # Set device_class, icon, and unit from mappings if available
         self._apply_sensor_mappings(sensor_type)
 
-        # Resolve source entity ID using resilient lookup
+        # Resolve source entity ID using resilient lookup BEFORE generating unique_id,
+        # because unique_id generation may depend on the resolved source entity ID
+        # for non-standard sensor types (critical ordering: unique_id generation may
+        # depend on resolved source entity ID)
         self._resolve_source_entity()
+
+        # Generate unique_id after resolving source entity
+        self._setup_unique_id(device_name, sensor_type)
 
         # Initialize with current state of source entity
         self._initialize_from_source()
@@ -4276,12 +4302,30 @@ class MonitoringSensor(SensorEntity):
 
     def _setup_unique_id(self, device_name: str, sensor_type: str | None) -> None:
         """Generate and set unique_id for this sensor."""
+        device_name_normalized = device_name.lower().replace(" ", "_")
+        sensor_type_normalized = (
+            sensor_type.lower().replace(" ", "_") if sensor_type else None
+        )
+
         if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
             mapping: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[sensor_type]
             suffix = mapping.get("suffix", sensor_type)
-        else:
+        # Fall back to source entity ID for non-standard sensor types
+        elif self.source_entity_id:
             source_entity_safe = self.source_entity_id.replace(".", "_")
             suffix = f"monitor_{source_entity_safe}"
+        else:
+            # Last resort fallback: use source_entity_unique_id for uniqueness
+            # Create unique suffix using source_entity_unique_id to ensure
+            # uniqueness across multiple sensor instances of same device
+            if self.source_entity_unique_id:
+                unique_id_safe = self.source_entity_unique_id.replace("_", "-")
+                base = sensor_type_normalized or device_name_normalized
+                suffix_fallback = f"{base}_{unique_id_safe}"
+            else:
+                suffix_fallback = sensor_type_normalized or device_name_normalized
+
+            suffix = f"monitor_{suffix_fallback}"
 
         device_name_safe = device_name.lower().replace(" ", "_")
         self._attr_unique_id = f"{DOMAIN}_{self.entry_id}_{device_name_safe}_{suffix}"
@@ -4319,6 +4363,8 @@ class MonitoringSensor(SensorEntity):
 
     def _initialize_from_source(self) -> None:
         """Initialize state and attributes from source entity."""
+        if not self.source_entity_id:
+            return
         source_state = self.hass.states.get(self.source_entity_id)
         if not source_state:
             return
@@ -4343,6 +4389,11 @@ class MonitoringSensor(SensorEntity):
 
     def _subscribe_to_source(self) -> None:
         """Subscribe to source entity state changes."""
+        if not self.source_entity_id:
+            _LOGGER.debug(
+                "Skipping source entity subscription: source_entity_id not set"
+            )
+            return
         try:
             self._unsubscribe = async_track_state_change_event(
                 self.hass, self.source_entity_id, self._source_state_changed
@@ -4358,7 +4409,7 @@ class MonitoringSensor(SensorEntity):
         """Capture the source entity's unique_id for resilient tracking."""
         try:
             entity_reg = er.async_get(self.hass)
-            if entity_reg is not None:
+            if self.source_entity_id and entity_reg is not None:
                 source_entry = entity_reg.async_get(self.source_entity_id)
                 if source_entry and source_entry.unique_id:
                     self._attributes["source_unique_id"] = source_entry.unique_id
@@ -4367,7 +4418,7 @@ class MonitoringSensor(SensorEntity):
             pass
 
     @callback
-    def _source_state_changed(self, event: Event) -> None:
+    def _source_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle source entity state changes."""
         new_state = event.data.get("new_state")
         if new_state is None:
@@ -4408,6 +4459,8 @@ class MonitoringSensor(SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
+        if not self.source_entity_id:
+            return False
         source_state = self.hass.states.get(self.source_entity_id)
         return source_state is not None
 
@@ -4563,7 +4616,9 @@ class HumidityLinkedSensor(SensorEntity):
             self.humidity_entity_id = resolved_entity_id
 
         # Initialize with current state of humidity entity
-        if humidity_state := hass.states.get(self.humidity_entity_id):
+        if self.humidity_entity_id and (
+            humidity_state := hass.states.get(self.humidity_entity_id)
+        ):
             self._state = humidity_state.state
             self._attributes = dict(humidity_state.attributes)
             self._attributes["source_entity"] = self.humidity_entity_id
@@ -4585,22 +4640,23 @@ class HumidityLinkedSensor(SensorEntity):
             )
             or self.humidity_entity_id
         )
-        try:
-            self._unsubscribe = async_track_state_change_event(
-                hass, self.humidity_entity_id, self._humidity_state_changed
-            )
-        except (AttributeError, KeyError, ValueError) as exc:
-            _LOGGER.warning(
-                "Failed to subscribe to humidity entity %s: %s",
-                self.humidity_entity_id,
-                exc,
-            )
+        if self.humidity_entity_id:
+            try:
+                self._unsubscribe = async_track_state_change_event(
+                    hass, self.humidity_entity_id, self._humidity_state_changed
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to humidity entity %s: %s",
+                    self.humidity_entity_id,
+                    exc,
+                )
 
     def _capture_humidity_unique_id(self) -> None:
         """Capture the humidity entity's unique_id for resilient tracking."""
         try:
             entity_reg = er.async_get(self.hass)
-            if entity_reg is not None:
+            if self.humidity_entity_id and entity_reg is not None:
                 source_entry = entity_reg.async_get(self.humidity_entity_id)
                 if source_entry and source_entry.unique_id:
                     self._attributes["source_unique_id"] = source_entry.unique_id
@@ -4609,7 +4665,7 @@ class HumidityLinkedSensor(SensorEntity):
             pass
 
     @callback
-    def _humidity_state_changed(self, event: Event) -> None:
+    def _humidity_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle humidity entity state changes."""
         new_state = event.data.get("new_state")
         if new_state is None:
@@ -4642,6 +4698,8 @@ class HumidityLinkedSensor(SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
+        if not self.humidity_entity_id:
+            return False
         humidity_state = self.hass.states.get(self.humidity_entity_id)
         return humidity_state is not None
 
@@ -4983,9 +5041,7 @@ class AggregatedLocationSensor(SensorEntity):
         return self._value
 
     @callback
-    def _on_plant_entity_change(
-        self, _entity_id: str, _old_state: Any, _new_state: Any
-    ) -> None:
+    def _on_plant_entity_change(self, _event: Event[EventStateChangedData]) -> None:
         """Handle plant entity state changes."""
         self._value = self._compute_value()
         self.async_write_ha_state()
@@ -5176,7 +5232,7 @@ class AggregatedSensor(SensorEntity):
         return self._value
 
     @callback
-    def _state_changed(self, _entity_id: str, _old_state: Any, _new_state: Any) -> None:
+    def _state_changed(self, _event: Event[EventStateChangedData]) -> None:
         """Recompute aggregation when a tracked plant entity changes."""
         if getattr(self, "_plant_entity_ids", None):
             plants = _plants_from_entity_states(
@@ -5467,7 +5523,7 @@ class PlantLocationPpfdSensor(SensorEntity):
         return None
 
     @callback
-    def _illuminance_state_changed(self, event: Event) -> None:
+    def _illuminance_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle illuminance sensor state changes."""
         new_state = event.data.get("new_state")
         if new_state is None:
@@ -5722,7 +5778,7 @@ class DliPriorPeriodSensor(RestoreEntity, SensorEntity):
             )
 
     @callback
-    def _dli_state_changed(self, event: Event) -> None:
+    def _dli_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle DLI sensor state changes."""
         new_state = event.data.get("new_state")
         if new_state is None:
@@ -5954,7 +6010,9 @@ class WeeklyAverageDliSensor(SensorEntity):
         return None
 
     @callback
-    def _dli_prior_period_state_changed(self, event: Event) -> None:
+    def _dli_prior_period_state_changed(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
         """Handle DLI prior_period sensor state changes."""
         new_state = event.data.get("new_state")
         if new_state is None:
@@ -6264,7 +6322,7 @@ class TemperatureBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
         return hours_below
 
     @callback
-    def _temperature_state_changed(self, _event: Event) -> None:
+    def _temperature_state_changed(self, _event: Event[EventStateChangedData]) -> None:
         """Handle temperature sensor state changes."""
         # Trigger recalculation when temperature changes
         self.hass.async_create_task(self._async_update_state())
@@ -6567,7 +6625,7 @@ class TemperatureAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         return hours_above
 
     @callback
-    def _temperature_state_changed(self, _event: Event) -> None:
+    def _temperature_state_changed(self, _event: Event[EventStateChangedData]) -> None:
         """Handle temperature sensor state changes."""
         # Trigger recalculation when temperature changes
         self.hass.async_create_task(self._async_update_state())
@@ -6871,7 +6929,7 @@ class HumidityBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
         return hours_below
 
     @callback
-    def _humidity_state_changed(self, _event: Event) -> None:
+    def _humidity_state_changed(self, _event: Event[EventStateChangedData]) -> None:
         """Handle humidity sensor state changes."""
         # Trigger recalculation when humidity changes
         self.hass.async_create_task(self._async_update_state())
@@ -7187,7 +7245,7 @@ class HumidityAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         return hours_above
 
     @callback
-    def _humidity_state_changed(self, _event: Event) -> None:
+    def _humidity_state_changed(self, _event: Event[EventStateChangedData]) -> None:
         """Handle humidity sensor state changes."""
         # Trigger recalculation when humidity changes
         self.hass.async_create_task(self._async_update_state())
@@ -7367,7 +7425,9 @@ class SoilMoistureRecentChangeSensor(SensorEntity):
         }
 
     @callback
-    def _soil_moisture_state_changed(self, _event: Event) -> None:
+    def _soil_moisture_state_changed(
+        self, _event: Event[EventStateChangedData]
+    ) -> None:
         """Handle soil moisture sensor state changes."""
         # Trigger recalculation when soil moisture changes
         self.hass.async_create_task(self._async_update_state())

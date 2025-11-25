@@ -13,44 +13,44 @@ from custom_components.plant_assistant.sensor import (
 class TestIrrigationZoneLastRunStartTimeSensor:
     """Test IrrigationZoneLastRunStartTimeSensor."""
 
-    def test_extract_zone_start_time_with_dash_zone_id(self):
-        """Test that zone_id with dashes is normalized to underscores."""
+    def test_extract_zone_start_time_with_zone_name(self):
+        """Test that zone_name is normalized to extract device data."""
         hass = Mock()
         sensor = IrrigationZoneLastRunStartTimeSensor(
             hass=hass,
             entry_id="test_entry",
             zone_device_id=("esphome", "device_123"),
-            zone_name="Test Zone",
-            zone_id="zone-2",  # Zone ID with dash
+            zone_name="Flower Bed",  # Zone name as displayed
+            zone_id="zone-2",  # Still used for unique_id, but not for event extraction
         )
 
-        # Event data uses underscores in the key
+        # Event data uses device names with underscores
         event_data = {
             "trigger": "Zone Deactivated",
-            "current_zone": "Zone 2",
-            "zone_1_start_time": "2025-11-06T20:24:17+00:00",
-            "zone_2_start_time": "2025-11-06T20:24:17+00:00",
-            "zone_2_duration": "5",
+            "current_zone": "Flower Bed",
+            "lawn_start_time": "2025-11-06T20:24:17+00:00",
+            "flower_bed_start_time": "2025-11-06T20:24:17+00:00",
+            "flower_bed_duration": "5",
         }
 
-        # Should extract zone_2_start_time even though zone_id is "zone-2"
+        # Should extract flower_bed_start_time based on zone_name "Flower Bed"
         start_time = sensor._extract_zone_start_time(event_data)
         assert start_time == "2025-11-06T20:24:17+00:00"
 
-    def test_extract_zone_start_time_with_underscore_zone_id(self):
-        """Test that zone_id with underscores works correctly."""
+    def test_extract_zone_start_time_with_lowercase_zone_name(self):
+        """Test that zone_name with underscores works correctly."""
         hass = Mock()
         sensor = IrrigationZoneLastRunStartTimeSensor(
             hass=hass,
             entry_id="test_entry",
             zone_device_id=("esphome", "device_123"),
-            zone_name="Test Zone",
-            zone_id="zone_1",  # Zone ID with underscore
+            zone_name="lawn",  # Zone name already lowercase
+            zone_id="zone_1",  # Still used for unique_id
         )
 
         event_data = {
-            "zone_1_start_time": "2025-11-06T20:25:00+00:00",
-            "zone_2_start_time": "2025-11-06T20:24:17+00:00",
+            "lawn_start_time": "2025-11-06T20:25:00+00:00",
+            "flower_bed_start_time": "2025-11-06T20:24:17+00:00",
         }
 
         start_time = sensor._extract_zone_start_time(event_data)
@@ -63,15 +63,16 @@ class TestIrrigationZoneLastRunStartTimeSensor:
             hass=hass,
             entry_id="test_entry",
             zone_device_id=("esphome", "device_123"),
-            zone_name="Test Zone",
+            zone_name="Planters",
             zone_id="zone-3",
         )
 
         event_data = {
-            "zone_1_start_time": "2025-11-06T20:24:17+00:00",
-            "zone_2_start_time": "2025-11-06T20:24:17+00:00",
+            "lawn_start_time": "2025-11-06T20:24:17+00:00",
+            "flower_bed_start_time": "2025-11-06T20:24:17+00:00",
         }
 
+        # planters_start_time is missing, should return None
         start_time = sensor._extract_zone_start_time(event_data)
         assert start_time is None
 
@@ -82,7 +83,7 @@ class TestIrrigationZoneLastRunStartTimeSensor:
             hass=hass,
             entry_id="test_entry",
             zone_device_id=("esphome", "device_123"),
-            zone_name="Zone 2",
+            zone_name="Flower Bed",
             zone_id="zone-2",
         )
 
@@ -92,23 +93,23 @@ class TestIrrigationZoneLastRunStartTimeSensor:
         event = Mock()
         event.data = {
             "trigger": "Zone Deactivated",
-            "current_zone": "Zone 2",
-            "zone_1_start_time": "2025-11-06T20:24:17+00:00",
-            "zone_1_end_time": "unknown",
-            "zone_1_duration": "0",
-            "zone_2_start_time": "2025-11-06T20:24:17+00:00",
-            "zone_2_end_time": "unknown",
-            "zone_2_duration": "5",
-            "zone_3_start_time": "unknown",
-            "zone_3_end_time": "unknown",
+            "current_zone": "Flower Bed",
+            "lawn_start_time": "2025-11-06T20:24:17+00:00",
+            "lawn_end_time": "unknown",
+            "lawn_duration": "0",
+            "flower_bed_start_time": "2025-11-06T20:24:17+00:00",
+            "flower_bed_end_time": "unknown",
+            "flower_bed_duration": "5",
+            "planters_start_time": "unknown",
+            "planters_end_time": "unknown",
         }
 
         sensor._handle_esphome_event(event)
 
         # Verify the state was updated
         assert sensor._state == "2025-11-06T20:24:17+00:00"
-        assert sensor._attributes["zone_id"] == "zone-2"
-        assert sensor._attributes["zone_key"] == "zone_2_start_time"
+        assert sensor._attributes["zone_name"] == "Flower Bed"
+        assert sensor._attributes["zone_key"] == "flower_bed_start_time"
         sensor.async_write_ha_state.assert_called_once()
 
     def test_handle_esphome_event_unknown_start_time(self):
@@ -118,7 +119,7 @@ class TestIrrigationZoneLastRunStartTimeSensor:
             hass=hass,
             entry_id="test_entry",
             zone_device_id=("esphome", "device_123"),
-            zone_name="Zone 3",
+            zone_name="Planters",
             zone_id="zone-3",
         )
 
@@ -127,7 +128,7 @@ class TestIrrigationZoneLastRunStartTimeSensor:
 
         event = Mock()
         event.data = {
-            "zone_3_start_time": "unknown",
+            "planters_start_time": "unknown",
         }
 
         sensor._handle_esphome_event(event)
@@ -143,7 +144,7 @@ class TestIrrigationZoneLastRunStartTimeSensor:
             hass=hass,
             entry_id="test_entry",
             zone_device_id=("esphome", "device_123"),
-            zone_name="Zone 1",
+            zone_name="Lawn",
             zone_id="zone-1",
         )
 
@@ -152,13 +153,13 @@ class TestIrrigationZoneLastRunStartTimeSensor:
         event = Mock()
         event.data = {
             "trigger": "Zone Deactivated",
-            "current_zone": "Zone 2",
-            "zone_2_start_time": "2025-11-06T20:24:17+00:00",
+            "current_zone": "Flower Bed",
+            "flower_bed_start_time": "2025-11-06T20:24:17+00:00",
         }
 
         sensor._handle_esphome_event(event)
 
-        # State should not be updated since zone_1_start_time is missing
+        # State should not be updated since lawn_start_time is missing
         assert sensor._state is None
         sensor.async_write_ha_state.assert_not_called()
 
@@ -225,22 +226,22 @@ class TestIrrigationZoneLastRunStartTimeSensor:
             hass=hass,
             entry_id="test_entry",
             zone_device_id=("esphome", "device_123"),
-            zone_name="Test Zone",
+            zone_name="Flower Bed",
             zone_id="zone-2",
         )
 
         # Set attributes
         sensor._attributes = {
             "event_type": "esphome.irrigation_gateway_update",
-            "zone_id": "zone-2",
-            "zone_key": "zone_2_start_time",
+            "zone_name": "Flower Bed",
+            "zone_key": "flower_bed_start_time",
         }
 
         attrs = sensor.extra_state_attributes
         assert attrs is not None
         assert attrs["event_type"] == "esphome.irrigation_gateway_update"
-        assert attrs["zone_id"] == "zone-2"
-        assert attrs["zone_key"] == "zone_2_start_time"
+        assert attrs["zone_name"] == "Flower Bed"
+        assert attrs["zone_key"] == "flower_bed_start_time"
 
     def test_extra_state_attributes_empty(self):
         """Test that extra_state_attributes returns None when empty."""
