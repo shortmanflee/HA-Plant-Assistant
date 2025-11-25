@@ -1655,12 +1655,10 @@ class IrrigationZoneLastRunStartTimeSensor(SensorEntity, RestoreEntity):
 
         if start_time:
             _LOGGER.debug(
-                "Extracted zone start time for %s: zone_name=%s, "
-                "normalized=%s, key=%s, value=%s",
-                self.zone_name,
+                "Extracted zone start time for %s: normalized=%s, key=%s, value=%s",
                 self.zone_name,
                 normalized_zone_name,
-                zone_key,
+                normalized_zone_name,
                 start_time,
             )
 
@@ -1883,9 +1881,7 @@ class IrrigationZoneLastRunEndTimeSensor(SensorEntity, RestoreEntity):
 
         if end_time:
             _LOGGER.debug(
-                "Extracted zone end time for %s: zone_name=%s, "
-                "normalized=%s, key=%s, value=%s",
-                self.zone_name,
+                "Extracted zone end time for %s: normalized=%s, key=%s, value=%s",
                 self.zone_name,
                 normalized_zone_name,
                 zone_key,
@@ -2112,9 +2108,9 @@ class IrrigationZoneLastFertiliserInjectionSensor(SensorEntity, RestoreEntity):
         if injection_time:
             _LOGGER.debug(
                 "Extracted zone fertiliser injection time for %s: "
-                "zone_name=%s, key=%s, value=%s",
+                "normalized=%s, key=%s, value=%s",
                 self.zone_name,
-                self.zone_name,
+                normalized_zone_name,
                 zone_key,
                 injection_time,
             )
