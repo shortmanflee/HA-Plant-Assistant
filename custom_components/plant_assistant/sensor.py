@@ -4303,11 +4303,15 @@ class MonitoringSensor(SensorEntity):
             mapping: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[sensor_type]
             suffix = mapping.get("suffix", sensor_type)
         else:
-            source_entity_safe = (
-                self.source_entity_id.replace(".", "_")
-                if isinstance(self.source_entity_id, str) and self.source_entity_id
-                else "unknown"
-            )
+            # Fall back to source entity ID for non-standard sensor types
+            if not (isinstance(self.source_entity_id, str) and self.source_entity_id):
+                msg = (
+                    f"Cannot create monitoring sensor: source_entity_id is required "
+                    f"when sensor_type '{sensor_type}' is not in "
+                    f"MONITORING_SENSOR_MAPPINGS. Got: {self.source_entity_id!r}"
+                )
+                raise ValueError(msg)
+            source_entity_safe = self.source_entity_id.replace(".", "_")
             suffix = f"monitor_{source_entity_safe}"
 
         device_name_safe = device_name.lower().replace(" ", "_")
