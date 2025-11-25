@@ -1658,7 +1658,7 @@ class IrrigationZoneLastRunStartTimeSensor(SensorEntity, RestoreEntity):
                 "Extracted zone start time for %s: normalized=%s, key=%s, value=%s",
                 self.zone_name,
                 normalized_zone_name,
-                normalized_zone_name,
+                zone_key,
                 start_time,
             )
 
@@ -2322,7 +2322,7 @@ class IrrigationZoneLastRunExpectedDurationSensor(SensorEntity, RestoreEntity):
                 "Extracted zone expected duration for %s: zone_name=%s, "
                 "key=%s, value=%s",
                 self.zone_name,
-                self.zone_name,
+                normalized_zone_name,
                 zone_key,
                 duration,
             )
