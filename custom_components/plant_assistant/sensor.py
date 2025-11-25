@@ -4302,6 +4302,11 @@ class MonitoringSensor(SensorEntity):
 
     def _setup_unique_id(self, device_name: str, sensor_type: str | None) -> None:
         """Generate and set unique_id for this sensor."""
+        device_name_normalized = device_name.lower().replace(" ", "_")
+        sensor_type_normalized = (
+            sensor_type.lower().replace(" ", "_") if sensor_type else None
+        )
+
         if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
             mapping: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[sensor_type]
             suffix = mapping.get("suffix", sensor_type)
@@ -4311,10 +4316,6 @@ class MonitoringSensor(SensorEntity):
             suffix = f"monitor_{source_entity_safe}"
         else:
             # Last resort fallback: use source_entity_unique_id for uniqueness
-            device_name_normalized = device_name.lower().replace(" ", "_")
-            sensor_type_normalized = (
-                sensor_type.lower().replace(" ", "_") if sensor_type else None
-            )
             # Create unique suffix using source_entity_unique_id to ensure
             # uniqueness across multiple sensor instances of same device
             if self.source_entity_unique_id:
