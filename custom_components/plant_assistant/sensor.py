@@ -1637,9 +1637,9 @@ class IrrigationZoneLastRunStartTimeSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone start time from event data.
 
-        The zone ID is converted to a key like 'zone_1_start_time' for Zone 1.
-        The zone_id may be stored as 'zone-1' in config but the event data
-        uses 'zone_1_start_time' format, so we normalize by replacing dashes.
+        The zone_name is converted to a key like 'lawn_start_time'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
 
         Args:
             event_data: The event data dictionary.
@@ -1648,19 +1648,18 @@ class IrrigationZoneLastRunStartTimeSensor(SensorEntity, RestoreEntity):
             The start time value if found, None otherwise.
 
         """
-        # Convert zone_id from 'zone-1' format to 'zone_1_start_time' format
-        # by replacing dashes with underscores
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_start_time"
+        # Convert zone_name to lowercase and replace spaces with underscores
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_start_time"
         start_time = event_data.get(zone_key)
 
         if start_time:
             _LOGGER.debug(
-                "Extracted zone start time for %s: zone_id=%s, "
+                "Extracted zone start time for %s: zone_name=%s, "
                 "normalized=%s, key=%s, value=%s",
                 self.zone_name,
-                self.zone_id,
-                normalized_zone_id,
+                self.zone_name,
+                normalized_zone_name,
                 zone_key,
                 start_time,
             )
@@ -1704,10 +1703,11 @@ class IrrigationZoneLastRunStartTimeSensor(SensorEntity, RestoreEntity):
             self._state = start_time
 
             # Store event data in attributes
+            normalized_zone_name = self.zone_name.lower().replace(" ", "_")
             self._attributes = {
                 "event_type": "esphome.irrigation_gateway_update",
-                "zone_id": self.zone_id,
-                "zone_key": f"{self.zone_id.replace('-', '_')}_start_time",
+                "zone_name": self.zone_name,
+                "zone_key": f"{normalized_zone_name}_start_time",
             }
 
             # Log the update
@@ -1865,9 +1865,9 @@ class IrrigationZoneLastRunEndTimeSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone end time from event data.
 
-        The zone ID is converted to a key like 'zone_1_end_time' for Zone 1.
-        The zone_id may be stored as 'zone-1' in config but the event data
-        uses 'zone_1_end_time' format, so we normalize by replacing dashes.
+        The zone_name is converted to a key like 'lawn_end_time'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
 
         Args:
             event_data: The event data dictionary.
@@ -1876,19 +1876,18 @@ class IrrigationZoneLastRunEndTimeSensor(SensorEntity, RestoreEntity):
             The end time value if found, None otherwise.
 
         """
-        # Convert zone_id from 'zone-1' format to 'zone_1_end_time' format
-        # by replacing dashes with underscores
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_end_time"
+        # Convert zone_name to lowercase and replace spaces with underscores
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_end_time"
         end_time = event_data.get(zone_key)
 
         if end_time:
             _LOGGER.debug(
-                "Extracted zone end time for %s: zone_id=%s, "
+                "Extracted zone end time for %s: zone_name=%s, "
                 "normalized=%s, key=%s, value=%s",
                 self.zone_name,
-                self.zone_id,
-                normalized_zone_id,
+                self.zone_name,
+                normalized_zone_name,
                 zone_key,
                 end_time,
             )
@@ -2095,9 +2094,9 @@ class IrrigationZoneLastFertiliserInjectionSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone fertiliser injection time from event data.
 
-        The zone ID is converted to a key like 'zone_1_fertiliser_injection_time'.
-        The zone_id may be stored as 'zone-1' in config but the event data
-        uses 'zone_1_fertiliser_injection_time' format, so we normalize.
+        The zone_name is converted to a key like 'lawn_fertiliser_injection_time'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
 
         Args:
             event_data: The event data dictionary.
@@ -2106,16 +2105,16 @@ class IrrigationZoneLastFertiliserInjectionSensor(SensorEntity, RestoreEntity):
             The fertiliser injection time value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_fertiliser_injection_time"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_fertiliser_injection_time"
         injection_time = event_data.get(zone_key)
 
         if injection_time:
             _LOGGER.debug(
                 "Extracted zone fertiliser injection time for %s: "
-                "zone_id=%s, key=%s, value=%s",
+                "zone_name=%s, key=%s, value=%s",
                 self.zone_name,
-                self.zone_id,
+                self.zone_name,
                 zone_key,
                 injection_time,
             )
@@ -2307,6 +2306,10 @@ class IrrigationZoneLastRunExpectedDurationSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone expected duration from event data.
 
+        The zone_name is converted to a key like 'lawn_duration'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
+
         Args:
             event_data: The event data dictionary.
 
@@ -2314,15 +2317,16 @@ class IrrigationZoneLastRunExpectedDurationSensor(SensorEntity, RestoreEntity):
             The duration value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_duration"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_duration"
         duration = event_data.get(zone_key)
 
         if duration:
             _LOGGER.debug(
-                "Extracted zone expected duration for %s: zone_id=%s, key=%s, value=%s",
+                "Extracted zone expected duration for %s: zone_name=%s, "
+                "key=%s, value=%s",
                 self.zone_name,
-                self.zone_id,
+                self.zone_name,
                 zone_key,
                 duration,
             )
@@ -2503,9 +2507,9 @@ class IrrigationZoneLastRunActualDurationSensor(SensorEntity, RestoreEntity):
             The duration in minutes, or None if calculation fails.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        start_key = f"{normalized_zone_id}_start_time"
-        end_key = f"{normalized_zone_id}_end_time"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        start_key = f"{normalized_zone_name}_start_time"
+        end_key = f"{normalized_zone_name}_end_time"
 
         start_time = event_data.get(start_key)
         end_time = event_data.get(end_key)
@@ -2553,9 +2557,11 @@ class IrrigationZoneLastRunActualDurationSensor(SensorEntity, RestoreEntity):
             old_state = self._state
             self._state = duration
 
+            normalized_zone_name = self.zone_name.lower().replace(" ", "_")
             self._attributes = {
                 "event_type": "esphome.irrigation_gateway_update",
-                "zone_id": self.zone_id,
+                "zone_name": self.zone_name,
+                "zone_key": f"{normalized_zone_name}_start_time",
             }
 
             if old_state != self._state:
@@ -2699,8 +2705,8 @@ class IrrigationZoneLastRunWaterMainUsageSensor(SensorEntity, RestoreEntity):
             The water main usage value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_water_main_usage"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_water_main_usage"
         usage = event_data.get(zone_key)
 
         if usage:
@@ -2888,8 +2894,8 @@ class IrrigationZoneLastRunRainWaterUsageSensor(SensorEntity, RestoreEntity):
             The rain water tank usage value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_rain_water_tank_usage"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_rain_water_tank_usage"
         usage = event_data.get(zone_key)
 
         if usage:
@@ -3077,8 +3083,8 @@ class IrrigationZoneLastRunFertiliserUsageSensor(SensorEntity, RestoreEntity):
             The fertiliser usage value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_fertiliser_usage"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_fertiliser_usage"
         usage = event_data.get(zone_key)
 
         if usage:
@@ -3116,9 +3122,11 @@ class IrrigationZoneLastRunFertiliserUsageSensor(SensorEntity, RestoreEntity):
             old_state = self._state
             self._state = usage
 
+            normalized_zone_name = self.zone_name.lower().replace(" ", "_")
             self._attributes = {
                 "event_type": "esphome.irrigation_gateway_update",
-                "zone_id": self.zone_id,
+                "zone_name": self.zone_name,
+                "zone_key": f"{normalized_zone_name}_fertiliser_usage",
             }
 
             if old_state != self._state:
@@ -3257,6 +3265,10 @@ class IrrigationZoneLastErrorSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone error time from event data.
 
+        The zone_name is converted to a key like 'lawn_error_time'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
+
         Args:
             event_data: The event data dictionary.
 
@@ -3264,8 +3276,8 @@ class IrrigationZoneLastErrorSensor(SensorEntity, RestoreEntity):
             The error time value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_error_time"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_error_time"
         error_time = event_data.get(zone_key)
 
         if error_time:
@@ -3455,6 +3467,10 @@ class IrrigationZoneLastErrorTypeSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone error type from event data.
 
+        The zone_name is converted to a key like 'lawn_error_type'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
+
         Args:
             event_data: The event data dictionary.
 
@@ -3462,8 +3478,8 @@ class IrrigationZoneLastErrorTypeSensor(SensorEntity, RestoreEntity):
             The error type value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_error_type"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_error_type"
         error_type = event_data.get(zone_key)
 
         if error_type:
@@ -3633,6 +3649,10 @@ class IrrigationZoneLastErrorMessageSensor(SensorEntity, RestoreEntity):
         """
         Extract the zone error detail/message from event data.
 
+        The zone_name is converted to a key like 'lawn_error_detail'.
+        The zone_name is normalized by replacing spaces with underscores and
+        converting to lowercase to match the event data key format.
+
         Args:
             event_data: The event data dictionary.
 
@@ -3640,8 +3660,8 @@ class IrrigationZoneLastErrorMessageSensor(SensorEntity, RestoreEntity):
             The error detail value if found, None otherwise.
 
         """
-        normalized_zone_id = self.zone_id.replace("-", "_")
-        zone_key = f"{normalized_zone_id}_error_detail"
+        normalized_zone_name = self.zone_name.lower().replace(" ", "_")
+        zone_key = f"{normalized_zone_name}_error_detail"
         error_detail = event_data.get(zone_key)
 
         if error_detail:
