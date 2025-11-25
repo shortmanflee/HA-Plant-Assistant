@@ -4306,13 +4306,16 @@ class MonitoringSensor(SensorEntity):
             mapping: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[sensor_type]
             suffix = mapping.get("suffix", sensor_type)
         # Fall back to source entity ID for non-standard sensor types
-        elif self.source_entity_id and isinstance(self.source_entity_id, str):
+        elif self.source_entity_id:
             source_entity_safe = self.source_entity_id.replace(".", "_")
             suffix = f"monitor_{source_entity_safe}"
         else:
             device_name_normalized = device_name.lower().replace(" ", "_")
-            suffix_type = sensor_type if sensor_type else device_name_normalized
-            suffix = f"monitor_{suffix_type}"
+            sensor_type_normalized = (
+                sensor_type.lower().replace(" ", "_") if sensor_type else None
+            )
+            suffix_fallback = sensor_type_normalized or device_name_normalized
+            suffix = f"monitor_{suffix_fallback}"
 
         device_name_safe = device_name.lower().replace(" ", "_")
         self._attr_unique_id = f"{DOMAIN}_{self.entry_id}_{device_name_safe}_{suffix}"
