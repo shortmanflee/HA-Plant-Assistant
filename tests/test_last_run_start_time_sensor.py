@@ -13,7 +13,7 @@ from custom_components.plant_assistant.sensor import (
 class TestIrrigationZoneLastRunStartTimeSensor:
     """Test IrrigationZoneLastRunStartTimeSensor."""
 
-    def test_extract_zone_start_time_with_device_name(self):
+    def test_extract_zone_start_time_with_zone_name(self):
         """Test that zone_name is normalized to extract device data."""
         hass = Mock()
         sensor = IrrigationZoneLastRunStartTimeSensor(
@@ -37,7 +37,7 @@ class TestIrrigationZoneLastRunStartTimeSensor:
         start_time = sensor._extract_zone_start_time(event_data)
         assert start_time == "2025-11-06T20:24:17+00:00"
 
-    def test_extract_zone_start_time_with_lowercase_device_name(self):
+    def test_extract_zone_start_time_with_lowercase_zone_name(self):
         """Test that zone_name with underscores works correctly."""
         hass = Mock()
         sensor = IrrigationZoneLastRunStartTimeSensor(

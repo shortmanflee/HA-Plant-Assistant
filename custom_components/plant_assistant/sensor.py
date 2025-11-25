@@ -4305,7 +4305,7 @@ class MonitoringSensor(SensorEntity):
         else:
             source_entity_safe = (
                 self.source_entity_id.replace(".", "_")
-                if self.source_entity_id
+                if isinstance(self.source_entity_id, str) and self.source_entity_id
                 else "unknown"
             )
             suffix = f"monitor_{source_entity_safe}"
