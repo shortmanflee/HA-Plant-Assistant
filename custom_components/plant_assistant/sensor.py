@@ -4310,11 +4310,20 @@ class MonitoringSensor(SensorEntity):
             source_entity_safe = self.source_entity_id.replace(".", "_")
             suffix = f"monitor_{source_entity_safe}"
         else:
+            # Last resort fallback: use source_entity_unique_id for uniqueness
             device_name_normalized = device_name.lower().replace(" ", "_")
             sensor_type_normalized = (
                 sensor_type.lower().replace(" ", "_") if sensor_type else None
             )
-            suffix_fallback = sensor_type_normalized or device_name_normalized
+            # Create unique suffix using source_entity_unique_id to ensure
+            # uniqueness across multiple sensor instances of same device
+            if self.source_entity_unique_id:
+                unique_id_safe = self.source_entity_unique_id.replace("_", "-")
+                base = sensor_type_normalized or device_name_normalized
+                suffix_fallback = f"{base}_{unique_id_safe}"
+            else:
+                suffix_fallback = sensor_type_normalized or device_name_normalized
+
             suffix = f"monitor_{suffix_fallback}"
 
         device_name_safe = device_name.lower().replace(" ", "_")
