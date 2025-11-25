@@ -4278,9 +4278,6 @@ class MonitoringSensor(SensorEntity):
         # Set entity name to include device name for better entity_id formatting
         self._attr_name = f"{device_name} {entity_name}"
 
-        # Generate unique_id
-        self._setup_unique_id(device_name, sensor_type)
-
         self._state = None
         self._attributes: dict[str, Any] = {}
         self._unsubscribe = None
@@ -4288,8 +4285,11 @@ class MonitoringSensor(SensorEntity):
         # Set device_class, icon, and unit from mappings if available
         self._apply_sensor_mappings(sensor_type)
 
-        # Resolve source entity ID using resilient lookup
+        # Resolve source entity ID using resilient lookup BEFORE generating unique_id
         self._resolve_source_entity()
+
+        # Generate unique_id after resolving source entity
+        self._setup_unique_id(device_name, sensor_type)
 
         # Initialize with current state of source entity
         self._initialize_from_source()
@@ -4302,17 +4302,14 @@ class MonitoringSensor(SensorEntity):
         if sensor_type and sensor_type in MONITORING_SENSOR_MAPPINGS:
             mapping: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[sensor_type]
             suffix = mapping.get("suffix", sensor_type)
-        else:
-            # Fall back to source entity ID for non-standard sensor types
-            if not (isinstance(self.source_entity_id, str) and self.source_entity_id):
-                msg = (
-                    f"Cannot create monitoring sensor: source_entity_id is required "
-                    f"when sensor_type '{sensor_type}' is not in "
-                    f"MONITORING_SENSOR_MAPPINGS. Got: {self.source_entity_id!r}"
-                )
-                raise ValueError(msg)
+        # Fall back to source entity ID for non-standard sensor types
+        elif self.source_entity_id and isinstance(self.source_entity_id, str):
             source_entity_safe = self.source_entity_id.replace(".", "_")
             suffix = f"monitor_{source_entity_safe}"
+        else:
+            # Use sensor_type or device name as fallback when source_entity_id
+            # is not available
+            suffix = f"monitor_{sensor_type or device_name.lower().replace(' ', '_')}"
 
         device_name_safe = device_name.lower().replace(" ", "_")
         self._attr_unique_id = f"{DOMAIN}_{self.entry_id}_{device_name_safe}_{suffix}"
@@ -4377,6 +4374,9 @@ class MonitoringSensor(SensorEntity):
     def _subscribe_to_source(self) -> None:
         """Subscribe to source entity state changes."""
         if not self.source_entity_id:
+            _LOGGER.debug(
+                "Skipping source entity subscription: source_entity_id not set"
+            )
             return
         try:
             self._unsubscribe = async_track_state_change_event(
