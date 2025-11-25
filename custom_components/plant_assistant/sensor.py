@@ -4285,7 +4285,10 @@ class MonitoringSensor(SensorEntity):
         # Set device_class, icon, and unit from mappings if available
         self._apply_sensor_mappings(sensor_type)
 
-        # Resolve source entity ID using resilient lookup BEFORE generating unique_id
+        # Resolve source entity ID using resilient lookup BEFORE generating unique_id,
+        # because unique_id generation may depend on the resolved source entity ID
+        # for non-standard sensor types (critical ordering: unique_id generation may
+        # depend on resolved source entity ID)
         self._resolve_source_entity()
 
         # Generate unique_id after resolving source entity
@@ -4307,9 +4310,9 @@ class MonitoringSensor(SensorEntity):
             source_entity_safe = self.source_entity_id.replace(".", "_")
             suffix = f"monitor_{source_entity_safe}"
         else:
-            # Use sensor_type or device name as fallback when source_entity_id
-            # is not available
-            suffix = f"monitor_{sensor_type or device_name.lower().replace(' ', '_')}"
+            device_name_normalized = device_name.lower().replace(" ", "_")
+            suffix_type = sensor_type if sensor_type else device_name_normalized
+            suffix = f"monitor_{suffix_type}"
 
         device_name_safe = device_name.lower().replace(" ", "_")
         self._attr_unique_id = f"{DOMAIN}_{self.entry_id}_{device_name_safe}_{suffix}"
