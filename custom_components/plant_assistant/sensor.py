@@ -30,7 +30,7 @@ from homeassistant.const import (
     EntityCategory,
     UnitOfTime,
 )
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -1120,6 +1120,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                     if (
                         isinstance(sensor, MonitoringSensor)
                         and hasattr(sensor, "source_entity_id")
+                        and sensor.source_entity_id
                         and "illuminance" in sensor.source_entity_id.lower()
                     ):
                         # Capture both entity_id and unique_id for resilient lookup
@@ -1227,6 +1228,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                     if (
                         isinstance(sensor, MonitoringSensor)
                         and hasattr(sensor, "source_entity_id")
+                        and sensor.source_entity_id
                         and "temperature" in sensor.source_entity_id.lower()
                     ):
                         # Capture both entity_id and unique_id for resilient lookup
@@ -1319,6 +1321,7 @@ async def async_setup_entry(  # noqa: PLR0912, PLR0915
                         if (
                             isinstance(sensor, MonitoringSensor)
                             and hasattr(sensor, "source_entity_id")
+                            and sensor.source_entity_id
                             and "moisture" in sensor.source_entity_id.lower()
                         ):
                             soil_moisture_entity_id = sensor.source_entity_id
@@ -3839,7 +3842,9 @@ class IrrigationZoneErrorCountSensor(SensorEntity, RestoreEntity):
         )
 
     @callback
-    def _handle_last_error_state_change(self, event: Event) -> None:
+    def _handle_last_error_state_change(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
         """Handle Last Error entity state changes."""
         new_state = event.data.get("new_state")
         try:
@@ -4052,7 +4057,9 @@ class PlantLocationLastWateredSensor(SensorEntity, RestoreEntity):
         self._unsubscribe = None
 
     @callback
-    def _handle_recently_watered_change(self, event: Event) -> None:
+    def _handle_recently_watered_change(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
         """Handle state change of the recently watered binary sensor."""
         try:
             new_state = event.data.get("new_state")
@@ -4296,7 +4303,11 @@ class MonitoringSensor(SensorEntity):
             mapping: MonitoringSensorMapping = MONITORING_SENSOR_MAPPINGS[sensor_type]
             suffix = mapping.get("suffix", sensor_type)
         else:
-            source_entity_safe = self.source_entity_id.replace(".", "_")
+            source_entity_safe = (
+                self.source_entity_id.replace(".", "_")
+                if self.source_entity_id
+                else "unknown"
+            )
             suffix = f"monitor_{source_entity_safe}"
 
         device_name_safe = device_name.lower().replace(" ", "_")
@@ -4335,6 +4346,8 @@ class MonitoringSensor(SensorEntity):
 
     def _initialize_from_source(self) -> None:
         """Initialize state and attributes from source entity."""
+        if not self.source_entity_id:
+            return
         source_state = self.hass.states.get(self.source_entity_id)
         if not source_state:
             return
@@ -4359,6 +4372,8 @@ class MonitoringSensor(SensorEntity):
 
     def _subscribe_to_source(self) -> None:
         """Subscribe to source entity state changes."""
+        if not self.source_entity_id:
+            return
         try:
             self._unsubscribe = async_track_state_change_event(
                 self.hass, self.source_entity_id, self._source_state_changed
@@ -4374,7 +4389,7 @@ class MonitoringSensor(SensorEntity):
         """Capture the source entity's unique_id for resilient tracking."""
         try:
             entity_reg = er.async_get(self.hass)
-            if entity_reg is not None:
+            if self.source_entity_id and entity_reg is not None:
                 source_entry = entity_reg.async_get(self.source_entity_id)
                 if source_entry and source_entry.unique_id:
                     self._attributes["source_unique_id"] = source_entry.unique_id
@@ -4383,7 +4398,7 @@ class MonitoringSensor(SensorEntity):
             pass
 
     @callback
-    def _source_state_changed(self, event: Event) -> None:
+    def _source_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle source entity state changes."""
         new_state = event.data.get("new_state")
         if new_state is None:
@@ -4424,6 +4439,8 @@ class MonitoringSensor(SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
+        if not self.source_entity_id:
+            return False
         source_state = self.hass.states.get(self.source_entity_id)
         return source_state is not None
 
@@ -4579,7 +4596,9 @@ class HumidityLinkedSensor(SensorEntity):
             self.humidity_entity_id = resolved_entity_id
 
         # Initialize with current state of humidity entity
-        if humidity_state := hass.states.get(self.humidity_entity_id):
+        if self.humidity_entity_id and (
+            humidity_state := hass.states.get(self.humidity_entity_id)
+        ):
             self._state = humidity_state.state
             self._attributes = dict(humidity_state.attributes)
             self._attributes["source_entity"] = self.humidity_entity_id
@@ -4601,22 +4620,23 @@ class HumidityLinkedSensor(SensorEntity):
             )
             or self.humidity_entity_id
         )
-        try:
-            self._unsubscribe = async_track_state_change_event(
-                hass, self.humidity_entity_id, self._humidity_state_changed
-            )
-        except (AttributeError, KeyError, ValueError) as exc:
-            _LOGGER.warning(
-                "Failed to subscribe to humidity entity %s: %s",
-                self.humidity_entity_id,
-                exc,
-            )
+        if self.humidity_entity_id:
+            try:
+                self._unsubscribe = async_track_state_change_event(
+                    hass, self.humidity_entity_id, self._humidity_state_changed
+                )
+            except (AttributeError, KeyError, ValueError) as exc:
+                _LOGGER.warning(
+                    "Failed to subscribe to humidity entity %s: %s",
+                    self.humidity_entity_id,
+                    exc,
+                )
 
     def _capture_humidity_unique_id(self) -> None:
         """Capture the humidity entity's unique_id for resilient tracking."""
         try:
             entity_reg = er.async_get(self.hass)
-            if entity_reg is not None:
+            if self.humidity_entity_id and entity_reg is not None:
                 source_entry = entity_reg.async_get(self.humidity_entity_id)
                 if source_entry and source_entry.unique_id:
                     self._attributes["source_unique_id"] = source_entry.unique_id
@@ -4625,7 +4645,7 @@ class HumidityLinkedSensor(SensorEntity):
             pass
 
     @callback
-    def _humidity_state_changed(self, event: Event) -> None:
+    def _humidity_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle humidity entity state changes."""
         new_state = event.data.get("new_state")
         if new_state is None:
@@ -4658,6 +4678,8 @@ class HumidityLinkedSensor(SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
+        if not self.humidity_entity_id:
+            return False
         humidity_state = self.hass.states.get(self.humidity_entity_id)
         return humidity_state is not None
 
@@ -4999,9 +5021,7 @@ class AggregatedLocationSensor(SensorEntity):
         return self._value
 
     @callback
-    def _on_plant_entity_change(
-        self, _entity_id: str, _old_state: Any, _new_state: Any
-    ) -> None:
+    def _on_plant_entity_change(self, _event: Event[EventStateChangedData]) -> None:
         """Handle plant entity state changes."""
         self._value = self._compute_value()
         self.async_write_ha_state()
@@ -5192,7 +5212,7 @@ class AggregatedSensor(SensorEntity):
         return self._value
 
     @callback
-    def _state_changed(self, _entity_id: str, _old_state: Any, _new_state: Any) -> None:
+    def _state_changed(self, _event: Event[EventStateChangedData]) -> None:
         """Recompute aggregation when a tracked plant entity changes."""
         if getattr(self, "_plant_entity_ids", None):
             plants = _plants_from_entity_states(
@@ -5483,7 +5503,7 @@ class PlantLocationPpfdSensor(SensorEntity):
         return None
 
     @callback
-    def _illuminance_state_changed(self, event: Event) -> None:
+    def _illuminance_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle illuminance sensor state changes."""
         new_state = event.data.get("new_state")
         if new_state is None:
@@ -5738,7 +5758,7 @@ class DliPriorPeriodSensor(RestoreEntity, SensorEntity):
             )
 
     @callback
-    def _dli_state_changed(self, event: Event) -> None:
+    def _dli_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle DLI sensor state changes."""
         new_state = event.data.get("new_state")
         if new_state is None:
@@ -5970,7 +5990,9 @@ class WeeklyAverageDliSensor(SensorEntity):
         return None
 
     @callback
-    def _dli_prior_period_state_changed(self, event: Event) -> None:
+    def _dli_prior_period_state_changed(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
         """Handle DLI prior_period sensor state changes."""
         new_state = event.data.get("new_state")
         if new_state is None:
@@ -6280,7 +6302,7 @@ class TemperatureBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
         return hours_below
 
     @callback
-    def _temperature_state_changed(self, _event: Event) -> None:
+    def _temperature_state_changed(self, _event: Event[EventStateChangedData]) -> None:
         """Handle temperature sensor state changes."""
         # Trigger recalculation when temperature changes
         self.hass.async_create_task(self._async_update_state())
@@ -6583,7 +6605,7 @@ class TemperatureAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         return hours_above
 
     @callback
-    def _temperature_state_changed(self, _event: Event) -> None:
+    def _temperature_state_changed(self, _event: Event[EventStateChangedData]) -> None:
         """Handle temperature sensor state changes."""
         # Trigger recalculation when temperature changes
         self.hass.async_create_task(self._async_update_state())
@@ -6887,7 +6909,7 @@ class HumidityBelowThresholdHoursSensor(SensorEntity, RestoreEntity):
         return hours_below
 
     @callback
-    def _humidity_state_changed(self, _event: Event) -> None:
+    def _humidity_state_changed(self, _event: Event[EventStateChangedData]) -> None:
         """Handle humidity sensor state changes."""
         # Trigger recalculation when humidity changes
         self.hass.async_create_task(self._async_update_state())
@@ -7203,7 +7225,7 @@ class HumidityAboveThresholdHoursSensor(SensorEntity, RestoreEntity):
         return hours_above
 
     @callback
-    def _humidity_state_changed(self, _event: Event) -> None:
+    def _humidity_state_changed(self, _event: Event[EventStateChangedData]) -> None:
         """Handle humidity sensor state changes."""
         # Trigger recalculation when humidity changes
         self.hass.async_create_task(self._async_update_state())
@@ -7383,7 +7405,9 @@ class SoilMoistureRecentChangeSensor(SensorEntity):
         }
 
     @callback
-    def _soil_moisture_state_changed(self, _event: Event) -> None:
+    def _soil_moisture_state_changed(
+        self, _event: Event[EventStateChangedData]
+    ) -> None:
         """Handle soil moisture sensor state changes."""
         # Trigger recalculation when soil moisture changes
         self.hass.async_create_task(self._async_update_state())
